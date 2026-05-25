@@ -1,0 +1,536 @@
+warning: unused variable: `subject`
+  --> src\ca\mod.rs:39:37
+   |
+39 |     pub fn issue_certificate(&self, subject: String) -> Result<Certificate, String> {
+   |                                     ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_subject`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `cert`
+  --> src\ca\mod.rs:43:34
+   |
+43 |     pub fn validate_chain(&self, cert: &Certificate) -> Result<bool, String> {
+   |                                  ^^^^ help: if this is intentional, prefix it with an underscore: `_cert`
+
+warning: unused variable: `private_key`
+  --> src\crypto\mod.rs:34:22
+   |
+34 |     pub fn sign_data(private_key: &[u8], data: &[u8]) -> Result<Signature, String> {
+   |                      ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_private_key`
+
+warning: unused variable: `data`
+  --> src\crypto\mod.rs:34:42
+   |
+34 |     pub fn sign_data(private_key: &[u8], data: &[u8]) -> Result<Signature, String> {
+   |                                          ^^^^ help: if this is intentional, prefix it with an underscore: `_data`
+
+warning: unused variable: `public_key`
+  --> src\crypto\mod.rs:38:29
+   |
+38 |     pub fn verify_signature(public_key: &[u8], data: &[u8], signature: &[u8]) -> Result<bool, String> {
+   |                             ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_public_key`
+
+warning: unused variable: `data`
+  --> src\crypto\mod.rs:38:48
+   |
+38 |     pub fn verify_signature(public_key: &[u8], data: &[u8], signature: &[u8]) -> Result<bool, String> {
+   |                                                ^^^^ help: if this is intentional, prefix it with an underscore: `_data`
+
+warning: unused variable: `signature`
+  --> src\crypto\mod.rs:38:61
+   |
+38 |     pub fn verify_signature(public_key: &[u8], data: &[u8], signature: &[u8]) -> Result<bool, String> {
+   |                                                             ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_signature`
+
+warning: unused variable: `key`
+  --> src\crypto\mod.rs:42:28
+   |
+42 |     pub fn encrypt_aes_gcm(key: &[u8], plaintext: &[u8], nonce: &[u8]) -> Result<EncryptedPayload, String> {
+   |                            ^^^ help: if this is intentional, prefix it with an underscore: `_key`
+
+warning: unused variable: `plaintext`
+  --> src\crypto\mod.rs:42:40
+   |
+42 |     pub fn encrypt_aes_gcm(key: &[u8], plaintext: &[u8], nonce: &[u8]) -> Result<EncryptedPayload, String> {
+   |                                        ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_plaintext`
+
+warning: unused variable: `nonce`
+  --> src\crypto\mod.rs:42:58
+   |
+42 |     pub fn encrypt_aes_gcm(key: &[u8], plaintext: &[u8], nonce: &[u8]) -> Result<EncryptedPayload, String> {
+   |                                                          ^^^^^ help: if this is intentional, prefix it with an underscore: `_nonce`
+
+warning: unused variable: `key`
+  --> src\crypto\mod.rs:46:28
+   |
+46 |     pub fn decrypt_aes_gcm(key: &[u8], encrypted: &EncryptedPayload) -> Result<Vec<u8>, String> {
+   |                            ^^^ help: if this is intentional, prefix it with an underscore: `_key`
+
+warning: unused variable: `encrypted`
+  --> src\crypto\mod.rs:46:40
+   |
+46 |     pub fn decrypt_aes_gcm(key: &[u8], encrypted: &EncryptedPayload) -> Result<Vec<u8>, String> {
+   |                                        ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_encrypted`
+
+warning: unused variable: `size`
+  --> src\crypto\mod.rs:50:34
+   |
+50 |     pub fn generate_random_nonce(size: usize) -> Result<Vec<u8>, String> {
+   |                                  ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: unused variable: `data`
+  --> src\crypto\mod.rs:54:24
+   |
+54 |     pub fn sha256_hash(data: &[u8]) -> Result<Vec<u8>, String> {
+   |                        ^^^^ help: if this is intentional, prefix it with an underscore: `_data`
+
+warning: unused variable: `vehicle_id`
+  --> src\auth\mod.rs:35:31
+   |
+35 |     pub fn generate_challenge(vehicle_id: String) -> Result<AuthChallenge, String> {
+   |                               ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_vehicle_id`
+
+warning: unused variable: `challenge`
+  --> src\auth\mod.rs:39:28
+   |
+39 |     pub fn verify_response(challenge: &AuthChallenge, response: &AuthResponse) -> Result<AuthResult, String> {
+   |                            ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_challenge`
+
+warning: unused variable: `response`
+  --> src\auth\mod.rs:39:55
+   |
+39 |     pub fn verify_response(challenge: &AuthChallenge, response: &AuthResponse) -> Result<AuthResult, String> {
+   |                                                       ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_response`
+
+warning: unused variable: `cert`
+  --> src\auth\mod.rs:43:33
+   |
+43 |     pub fn validate_certificate(cert: &[u8]) -> Result<bool, String> {
+   |                                 ^^^^ help: if this is intentional, prefix it with an underscore: `_cert`
+
+warning: unused variable: `nonce`
+  --> src\auth\mod.rs:47:34
+   |
+47 |     pub fn check_nonce_freshness(nonce: &[u8], timestamp: &str) -> Result<bool, String> {
+   |                                  ^^^^^ help: if this is intentional, prefix it with an underscore: `_nonce`
+
+warning: unused variable: `timestamp`
+  --> src\auth\mod.rs:47:48
+   |
+47 |     pub fn check_nonce_freshness(nonce: &[u8], timestamp: &str) -> Result<bool, String> {
+   |                                                ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_timestamp`
+
+warning: unused variable: `response`
+  --> src\vehicle\mod.rs:39:45
+   |
+39 |     pub fn verify_challenge_response(&self, response: &[u8]) -> Result<AccessDecision, String> {
+   |                                             ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_response`
+
+warning: unused variable: `nonce`
+  --> src\keyfob\mod.rs:42:34
+   |
+42 |     pub fn sign_challenge(&self, nonce: &[u8]) -> Result<ChallengeResponse, String> {
+   |                                  ^^^^^ help: if this is intentional, prefix it with an underscore: `_nonce`
+
+warning: unused variable: `session_id`
+  --> src\session\mod.rs:21:27
+   |
+21 |     pub fn create_session(session_id: String, timeout_seconds: u64) -> Result<SessionState, String> {
+   |                           ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_session_id`
+
+warning: unused variable: `timeout_seconds`
+  --> src\session\mod.rs:21:47
+   |
+21 |     pub fn create_session(session_id: String, timeout_seconds: u64) -> Result<SessionState, String> {
+   |                                               ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_timeout_seconds`
+
+warning: unused variable: `session`
+  --> src\session\mod.rs:25:31
+   |
+25 |     pub fn validate_freshness(session: &SessionState) -> Result<bool, String> {
+   |                               ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_session`
+
+warning: unused variable: `session`
+  --> src\session\mod.rs:29:26
+   |
+29 |     pub fn check_timeout(session: &SessionState) -> Result<bool, String> {
+   |                          ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_session`
+
+warning: struct `CertificateAuthority` is never constructed
+  --> src\ca\mod.rs:10:12
+   |
+10 | pub struct CertificateAuthority {
+   |            ^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `Certificate` is never constructed
+  --> src\ca\mod.rs:17:12
+   |
+17 | pub struct Certificate {
+   |            ^^^^^^^^^^^
+
+warning: associated items `new`, `initialize`, `issue_certificate`, and `validate_chain` are never used
+  --> src\ca\mod.rs:27:12
+   |
+26 | impl CertificateAuthority {
+   | ------------------------- associated items in this implementation
+27 |     pub fn new(name: String) -> Self {
+   |            ^^^
+...
+35 |     pub fn initialize(&mut self) -> Result<(), String> {
+   |            ^^^^^^^^^^
+...
+39 |     pub fn issue_certificate(&self, subject: String) -> Result<Certificate, String> {
+   |            ^^^^^^^^^^^^^^^^^
+...
+43 |     pub fn validate_chain(&self, cert: &Certificate) -> Result<bool, String> {
+   |            ^^^^^^^^^^^^^^
+
+warning: struct `KeyPair` is never constructed
+  --> src\crypto\mod.rs:10:12
+   |
+10 | pub struct KeyPair {
+   |            ^^^^^^^
+
+warning: struct `Signature` is never constructed
+  --> src\crypto\mod.rs:16:12
+   |
+16 | pub struct Signature {
+   |            ^^^^^^^^^
+
+warning: struct `EncryptedPayload` is never constructed
+  --> src\crypto\mod.rs:21:12
+   |
+21 | pub struct EncryptedPayload {
+   |            ^^^^^^^^^^^^^^^^
+
+warning: struct `CryptoEngine` is never constructed
+  --> src\crypto\mod.rs:27:12
+   |
+27 | pub struct CryptoEngine;
+   |            ^^^^^^^^^^^^
+
+warning: multiple associated functions are never used
+  --> src\crypto\mod.rs:30:12
+   |
+29 | impl CryptoEngine {
+   | ----------------- associated functions in this implementation
+30 |     pub fn generate_ed25519_keypair() -> Result<KeyPair, String> {
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+34 |     pub fn sign_data(private_key: &[u8], data: &[u8]) -> Result<Signature, String> {
+   |            ^^^^^^^^^
+...
+38 |     pub fn verify_signature(public_key: &[u8], data: &[u8], signature: &[u8]) -> Result<bool, String> {
+   |            ^^^^^^^^^^^^^^^^
+...
+42 |     pub fn encrypt_aes_gcm(key: &[u8], plaintext: &[u8], nonce: &[u8]) -> Result<EncryptedPayload, String> {
+   |            ^^^^^^^^^^^^^^^
+...
+46 |     pub fn decrypt_aes_gcm(key: &[u8], encrypted: &EncryptedPayload) -> Result<Vec<u8>, String> {
+   |            ^^^^^^^^^^^^^^^
+...
+50 |     pub fn generate_random_nonce(size: usize) -> Result<Vec<u8>, String> {
+   |            ^^^^^^^^^^^^^^^^^^^^^
+...
+54 |     pub fn sha256_hash(data: &[u8]) -> Result<Vec<u8>, String> {
+   |            ^^^^^^^^^^^
+
+warning: struct `AuthChallenge` is never constructed
+  --> src\auth\mod.rs:10:12
+   |
+10 | pub struct AuthChallenge {
+   |            ^^^^^^^^^^^^^
+
+warning: struct `AuthResponse` is never constructed
+  --> src\auth\mod.rs:17:12
+   |
+17 | pub struct AuthResponse {
+   |            ^^^^^^^^^^^^
+
+warning: enum `AuthResult` is never used
+  --> src\auth\mod.rs:24:10
+   |
+24 | pub enum AuthResult {
+   |          ^^^^^^^^^^
+
+warning: struct `AuthenticationEngine` is never constructed
+  --> src\auth\mod.rs:32:12
+   |
+32 | pub struct AuthenticationEngine;
+   |            ^^^^^^^^^^^^^^^^^^^^
+
+warning: associated functions `generate_challenge`, `verify_response`, `validate_certificate`, and `check_nonce_freshness` are never used
+  --> src\auth\mod.rs:35:12
+   |
+34 | impl AuthenticationEngine {
+   | ------------------------- associated functions in this implementation
+35 |     pub fn generate_challenge(vehicle_id: String) -> Result<AuthChallenge, String> {
+   |            ^^^^^^^^^^^^^^^^^^
+...
+39 |     pub fn verify_response(challenge: &AuthChallenge, response: &AuthResponse) -> Result<AuthResult, String> {
+   |            ^^^^^^^^^^^^^^^
+...
+43 |     pub fn validate_certificate(cert: &[u8]) -> Result<bool, String> {
+   |            ^^^^^^^^^^^^^^^^^^^^
+...
+47 |     pub fn check_nonce_freshness(nonce: &[u8], timestamp: &str) -> Result<bool, String> {
+   |            ^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `VehicleControlModule` is never constructed
+  --> src\vehicle\mod.rs:10:12
+   |
+10 | pub struct VehicleControlModule {
+   |            ^^^^^^^^^^^^^^^^^^^^
+
+warning: enum `AccessDecision` is never used
+  --> src\vehicle\mod.rs:17:10
+   |
+17 | pub enum AccessDecision {
+   |          ^^^^^^^^^^^^^^
+
+warning: associated items `new`, `initialize`, `generate_challenge`, `verify_challenge_response`, and `establish_session` are never used
+  --> src\vehicle\mod.rs:23:12
+   |
+22 | impl VehicleControlModule {
+   | ------------------------- associated items in this implementation
+23 |     pub fn new(vehicle_id: String) -> Self {
+   |            ^^^
+...
+31 |     pub fn initialize(&mut self) -> Result<(), String> {
+   |            ^^^^^^^^^^
+...
+35 |     pub fn generate_challenge(&self) -> Result<Vec<u8>, String> {
+   |            ^^^^^^^^^^^^^^^^^^
+...
+39 |     pub fn verify_challenge_response(&self, response: &[u8]) -> Result<AccessDecision, String> {
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+43 |     pub fn establish_session(&mut self) -> Result<Vec<u8>, String> {
+   |            ^^^^^^^^^^^^^^^^^
+
+warning: struct `DigitalKeyFob` is never constructed
+  --> src\keyfob\mod.rs:11:12
+   |
+11 | pub struct DigitalKeyFob {
+   |            ^^^^^^^^^^^^^
+
+warning: struct `ChallengeResponse` is never constructed
+  --> src\keyfob\mod.rs:18:12
+   |
+18 | pub struct ChallengeResponse {
+   |            ^^^^^^^^^^^^^^^^^
+
+warning: associated items `new`, `load_private_key`, `load_certificate`, `sign_challenge`, and `get_certificate` are never used
+  --> src\keyfob\mod.rs:24:12
+   |
+23 | impl DigitalKeyFob {
+   | ------------------ associated items in this implementation
+24 |     pub fn new(fob_id: String) -> Self {
+   |            ^^^
+...
+32 |     pub fn load_private_key(&mut self, key: Vec<u8>) -> Result<(), String> {
+   |            ^^^^^^^^^^^^^^^^
+...
+37 |     pub fn load_certificate(&mut self, cert: Vec<u8>) -> Result<(), String> {
+   |            ^^^^^^^^^^^^^^^^
+...
+42 |     pub fn sign_challenge(&self, nonce: &[u8]) -> Result<ChallengeResponse, String> {
+   |            ^^^^^^^^^^^^^^
+...
+46 |     pub fn get_certificate(&self) -> Result<Vec<u8>, String> {
+   |            ^^^^^^^^^^^^^^^
+
+warning: struct `SessionState` is never constructed
+  --> src\session\mod.rs:10:12
+   |
+10 | pub struct SessionState {
+   |            ^^^^^^^^^^^^
+
+warning: struct `SessionValidationEngine` is never constructed
+  --> src\session\mod.rs:18:12
+   |
+18 | pub struct SessionValidationEngine;
+   |            ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated functions `create_session`, `validate_freshness`, `check_timeout`, and `invalidate_session` are never used
+  --> src\session\mod.rs:21:12
+   |
+20 | impl SessionValidationEngine {
+   | ---------------------------- associated functions in this implementation
+21 |     pub fn create_session(session_id: String, timeout_seconds: u64) -> Result<SessionState, String> {
+   |            ^^^^^^^^^^^^^^
+...
+25 |     pub fn validate_freshness(session: &SessionState) -> Result<bool, String> {
+   |            ^^^^^^^^^^^^^^^^^^
+...
+29 |     pub fn check_timeout(session: &SessionState) -> Result<bool, String> {
+   |            ^^^^^^^^^^^^^
+...
+33 |     pub fn invalidate_session(session: &mut SessionState) -> Result<(), String> {
+   |            ^^^^^^^^^^^^^^^^^^
+
+warning: enum `AccessDecision` is never used
+ --> src\access\mod.rs:9:10
+  |
+9 | pub enum AccessDecision {
+  |          ^^^^^^^^^^^^^^
+
+warning: enum `AccessDenialReason` is never used
+  --> src\access\mod.rs:15:10
+   |
+15 | pub enum AccessDenialReason {
+   |          ^^^^^^^^^^^^^^^^^^
+
+warning: struct `AccessLog` is never constructed
+  --> src\access\mod.rs:25:12
+   |
+25 | pub struct AccessLog {
+   |            ^^^^^^^^^
+
+warning: struct `AccessDecisionEngine` is never constructed
+  --> src\access\mod.rs:32:12
+   |
+32 | pub struct AccessDecisionEngine;
+   |            ^^^^^^^^^^^^^^^^^^^^
+
+warning: associated functions `make_decision` and `log_access` are never used
+  --> src\access\mod.rs:35:12
+   |
+34 | impl AccessDecisionEngine {
+   | ------------------------- associated functions in this implementation
+35 |     pub fn make_decision(
+   |            ^^^^^^^^^^^^^
+...
+48 |     pub fn log_access(log: &AccessLog) -> Result<(), String> {
+   |            ^^^^^^^^^^
+
+warning: enum `AttackType` is never used
+  --> src\attacks\mod.rs:13:10
+   |
+13 | pub enum AttackType {
+   |          ^^^^^^^^^^
+
+warning: struct `AttackSimulation` is never constructed
+  --> src\attacks\mod.rs:23:12
+   |
+23 | pub struct AttackSimulation {
+   |            ^^^^^^^^^^^^^^^^
+
+warning: struct `AdversarialValidationEngine` is never constructed
+  --> src\attacks\mod.rs:29:12
+   |
+29 | pub struct AdversarialValidationEngine;
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated functions `simulate_replay_attack`, `simulate_forged_signature`, `simulate_fake_certificate`, `simulate_delayed_relay`, `simulate_packet_tampering`, and `simulate_unauthorized_identity` are never used
+  --> src\attacks\mod.rs:32:12
+   |
+31 | impl AdversarialValidationEngine {
+   | -------------------------------- associated functions in this implementation
+32 |     pub fn simulate_replay_attack() -> Result<AttackSimulation, String> {
+   |            ^^^^^^^^^^^^^^^^^^^^^^
+...
+36 |     pub fn simulate_forged_signature() -> Result<AttackSimulation, String> {
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+40 |     pub fn simulate_fake_certificate() -> Result<AttackSimulation, String> {
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+44 |     pub fn simulate_delayed_relay() -> Result<AttackSimulation, String> {
+   |            ^^^^^^^^^^^^^^^^^^^^^^
+...
+48 |     pub fn simulate_packet_tampering() -> Result<AttackSimulation, String> {
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+52 |     pub fn simulate_unauthorized_identity() -> Result<AttackSimulation, String> {
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+  --> src\main.rs:86:13
+   |
+86 |     fn view(&self) -> Element<Message> {
+   |             ^^^^^     ^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+   |             |
+   |             the lifetime is elided here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+   = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+   |
+86 |     fn view(&self) -> Element<'_, Message> {
+   |                               +++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> src\main.rs:105:23
+    |
+105 |     fn view_main_menu(&self) -> Element<Message> {
+    |                       ^^^^^     ^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                       |
+    |                       the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+105 |     fn view_main_menu(&self) -> Element<'_, Message> {
+    |                                         +++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> src\main.rs:124:21
+    |
+124 |     fn view_ca_menu(&self) -> Element<Message> {
+    |                     ^^^^^     ^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                     |
+    |                     the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+124 |     fn view_ca_menu(&self) -> Element<'_, Message> {
+    |                                       +++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> src\main.rs:139:23
+    |
+139 |     fn view_auth_menu(&self) -> Element<Message> {
+    |                       ^^^^^     ^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                       |
+    |                       the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+139 |     fn view_auth_menu(&self) -> Element<'_, Message> {
+    |                                         +++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> src\main.rs:152:25
+    |
+152 |     fn view_attack_menu(&self) -> Element<Message> {
+    |                         ^^^^^     ^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                         |
+    |                         the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+152 |     fn view_attack_menu(&self) -> Element<'_, Message> {
+    |                                           +++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> src\main.rs:173:29
+    |
+173 |     fn view_session_monitor(&self) -> Element<Message> {
+    |                             ^^^^^     ^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                             |
+    |                             the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+173 |     fn view_session_monitor(&self) -> Element<'_, Message> {
+    |                                               +++
+
+warning: `aiacs` (bin "aiacs") generated 63 warnings (run `cargo fix --bin "aiacs" -p aiacs` to apply 32 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.54s

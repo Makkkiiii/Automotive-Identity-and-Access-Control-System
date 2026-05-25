@@ -3,7 +3,6 @@
 /// - Generate nonce challenges
 /// - Verify certificate chains
 /// - Verify Ed25519 signatures
-
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,7 +13,7 @@ pub struct VehicleControlModule {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum AccessDecision {
+pub enum AccessGrant {
     Granted,
     Rejected,
 }
@@ -36,7 +35,7 @@ impl VehicleControlModule {
         Err("Not implemented".to_string())
     }
 
-    pub fn verify_challenge_response(&self, response: &[u8]) -> Result<AccessDecision, String> {
+    pub fn verify_challenge_response(&self, response: &[u8]) -> Result<AccessGrant, String> {
         Err("Not implemented".to_string())
     }
 

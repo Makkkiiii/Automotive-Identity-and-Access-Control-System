@@ -83,7 +83,7 @@ impl Sandbox for AIACSApp {
         }
     }
 
-    fn view(&self) -> Element<Message> {
+    fn view(&self) -> Element<'_, Message> {
         let content = match self.state {
             AppState::MainMenu => self.view_main_menu(),
             AppState::CertificateAuthority => self.view_ca_menu(),
@@ -102,7 +102,7 @@ impl Sandbox for AIACSApp {
 }
 
 impl AIACSApp {
-    fn view_main_menu(&self) -> Element<Message> {
+    fn view_main_menu(&self) -> Element<'_, Message> {
         let title = text("AIACS Control Panel").size(32);
 
         let ca_btn = button("Certificate Authority")
@@ -119,7 +119,7 @@ impl AIACSApp {
             .into()
     }
 
-    fn view_ca_menu(&self) -> Element<Message> {
+    fn view_ca_menu(&self) -> Element<'_, Message> {
         let back_btn = button("Back").on_press(Message::NavigateTo(AppState::MainMenu));
         let init_btn = button("Initialize CA").on_press(Message::CAInitialize);
         let issue_btn = button("Issue Certificate").on_press(Message::CAIssueCertificate);
@@ -129,7 +129,7 @@ impl AIACSApp {
             .into()
     }
 
-    fn view_auth_menu(&self) -> Element<Message> {
+    fn view_auth_menu(&self) -> Element<'_, Message> {
         let back_btn = button("Back").on_press(Message::NavigateTo(AppState::MainMenu));
         let legit_btn = button("Legitimate Authentication").on_press(Message::AuthLegitimate);
 
@@ -138,7 +138,7 @@ impl AIACSApp {
             .into()
     }
 
-    fn view_attack_menu(&self) -> Element<Message> {
+    fn view_attack_menu(&self) -> Element<'_, Message> {
         let back_btn = button("Back").on_press(Message::NavigateTo(AppState::MainMenu));
         let replay_btn = button("Replay Attack").on_press(Message::AttackReplay);
         let forge_btn = button("Forged Signature").on_press(Message::AttackForge);
@@ -159,7 +159,7 @@ impl AIACSApp {
         .into()
     }
 
-    fn view_session_monitor(&self) -> Element<Message> {
+    fn view_session_monitor(&self) -> Element<'_, Message> {
         let back_btn = button("Back").on_press(Message::NavigateTo(AppState::MainMenu));
 
         column![
