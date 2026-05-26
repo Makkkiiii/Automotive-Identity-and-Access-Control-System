@@ -1,11 +1,11 @@
-use serde::{Deserialize, Serialize};
-use ed25519_dalek::{SigningKey, VerifyingKey, Signer, Verifier};
 use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Nonce,
 };
-use sha2::{Sha256, Digest};
-use rand::{RngCore, rngs::OsRng};
+use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
+use rand::{rngs::OsRng, RngCore};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// Cryptographic Engine Module
 /// Responsibilities:
