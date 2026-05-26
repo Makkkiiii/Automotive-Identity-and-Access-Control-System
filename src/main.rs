@@ -1,14 +1,6 @@
+use aiacs::{access, attacks, auth, ca, crypto, keyfob, session, vehicle};
 use iced::widget::{button, column, container, text};
 use iced::{Element, Length, Sandbox, Settings};
-
-mod access;
-mod attacks;
-mod auth;
-mod ca;
-mod crypto;
-mod keyfob;
-mod session;
-mod vehicle;
 
 pub fn main() -> iced::Result {
     AIACSApp::run(Settings::default())

@@ -186,3 +186,214 @@ impl CryptoEngine {
         Ok(hasher.finalize().to_vec())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ed25519_keypair_generation() {
+        let kp1 = CryptoEngine::generate_ed25519_keypair();
+        assert!(kp1.is_ok(), "Keypair generation failed");
+
+        let kp1 = kp1.unwrap();
+        assert_eq!(kp1.public_key.len(), 32, "Public key should be 32 bytes");
+        assert_eq!(kp1.private_key.len(), 32, "Private key should be 32 bytes");
+
+        // Generate second keypair and verify they're different
+        let kp2 = CryptoEngine::generate_ed25519_keypair().unwrap();
+        assert_ne!(
+            kp1.public_key, kp2.public_key,
+            "Generated keypairs should be different"
+        );
+        assert_ne!(
+            kp1.private_key, kp2.private_key,
+            "Generated private keys should be different"
+        );
+    }
+
+    #[test]
+    fn test_signing_and_verification() {
+        let kp = CryptoEngine::generate_ed25519_keypair().unwrap();
+        let data = b"Test message for signing";
+
+        // Sign data
+        let sig_result = CryptoEngine::sign_data(&kp.private_key, data);
+        assert!(sig_result.is_ok(), "Signing should succeed");
+
+        let sig = sig_result.unwrap();
+        assert_eq!(sig.data.len(), 64, "Ed25519 signature should be 64 bytes");
+
+        // Verify with correct public key
+        let verify_result = CryptoEngine::verify_signature(&kp.public_key, data, &sig.data);
+        assert!(verify_result.is_ok(), "Verification should succeed");
+        assert!(verify_result.unwrap(), "Signature should be valid");
+    }
+
+    #[test]
+    fn test_verification_fails_with_tampered_data() {
+        let kp = CryptoEngine::generate_ed25519_keypair().unwrap();
+        let data = b"Original message";
+        let tampered = b"Tampered message";
+
+        let sig = CryptoEngine::sign_data(&kp.private_key, data).unwrap();
+
+        // Verification should fail when data is different
+        let result = CryptoEngine::verify_signature(&kp.public_key, tampered, &sig.data).unwrap();
+        assert!(!result, "Tampered data should fail verification");
+    }
+
+    #[test]
+    fn test_verification_fails_with_wrong_key() {
+        let kp1 = CryptoEngine::generate_ed25519_keypair().unwrap();
+        let kp2 = CryptoEngine::generate_ed25519_keypair().unwrap();
+        let data = b"Test message";
+
+        let sig = CryptoEngine::sign_data(&kp1.private_key, data).unwrap();
+
+        // Verification should fail with different public key
+        let result = CryptoEngine::verify_signature(&kp2.public_key, data, &sig.data).unwrap();
+        assert!(!result, "Different CA should fail verification");
+    }
+
+    #[test]
+    fn test_verification_fails_with_tampered_signature() {
+        let kp = CryptoEngine::generate_ed25519_keypair().unwrap();
+        let data = b"Test message";
+
+        let mut sig = CryptoEngine::sign_data(&kp.private_key, data).unwrap();
+        // Tamper with signature
+        sig.data[0] ^= 0xFF;
+
+        let result = CryptoEngine::verify_signature(&kp.public_key, data, &sig.data).unwrap();
+        assert!(!result, "Tampered signature should fail verification");
+    }
+
+    #[test]
+    fn test_invalid_private_key_length() {
+        let short_key = vec![1u8; 16];
+        let data = b"test";
+
+        let result = CryptoEngine::sign_data(&short_key, data);
+        assert!(result.is_err(), "Should reject invalid key length");
+        assert!(
+            result.unwrap_err().contains("32 bytes"),
+            "Error should mention key length"
+        );
+    }
+
+    #[test]
+    fn test_invalid_public_key_length() {
+        let short_key = vec![1u8; 16];
+        let data = b"test";
+        let sig = vec![0u8; 64];
+
+        let result = CryptoEngine::verify_signature(&short_key, data, &sig);
+        assert!(result.is_err(), "Should reject invalid public key length");
+    }
+
+    #[test]
+    fn test_invalid_signature_length() {
+        let kp = CryptoEngine::generate_ed25519_keypair().unwrap();
+        let data = b"test";
+        let short_sig = vec![0u8; 32];
+
+        let result = CryptoEngine::verify_signature(&kp.public_key, data, &short_sig);
+        assert!(result.is_err(), "Should reject invalid signature length");
+    }
+
+    #[test]
+    fn test_aes_gcm_encryption_decryption() {
+        let key = CryptoEngine::generate_random_nonce(32).unwrap(); // Use random data as key
+        let plaintext = b"Secret message";
+        let nonce = CryptoEngine::generate_random_nonce(12).unwrap();
+
+        // Encrypt
+        let encrypted = CryptoEngine::encrypt_aes_gcm(&key, plaintext, &nonce);
+        assert!(encrypted.is_ok(), "Encryption should succeed");
+
+        let encrypted_payload = encrypted.unwrap();
+        assert_ne!(
+            &encrypted_payload.ciphertext, plaintext,
+            "Ciphertext should differ from plaintext"
+        );
+        assert_eq!(
+            encrypted_payload.nonce.len(),
+            12,
+            "Nonce should be 12 bytes"
+        );
+        assert_eq!(
+            encrypted_payload.tag.len(),
+            16,
+            "GCM tag should be 16 bytes"
+        );
+
+        // Decrypt
+        let decrypted = CryptoEngine::decrypt_aes_gcm(&key, &encrypted_payload);
+        assert!(decrypted.is_ok(), "Decryption should succeed");
+        assert_eq!(
+            decrypted.unwrap(),
+            plaintext,
+            "Decrypted data should match plaintext"
+        );
+    }
+
+    #[test]
+    fn test_aes_gcm_fails_with_wrong_key() {
+        let key1 = CryptoEngine::generate_random_nonce(32).unwrap();
+        let key2 = CryptoEngine::generate_random_nonce(32).unwrap();
+        let plaintext = b"Secret";
+        let nonce = CryptoEngine::generate_random_nonce(12).unwrap();
+
+        let encrypted = CryptoEngine::encrypt_aes_gcm(&key1, plaintext, &nonce).unwrap();
+
+        // Decryption with wrong key should fail
+        let result = CryptoEngine::decrypt_aes_gcm(&key2, &encrypted);
+        assert!(result.is_err(), "Decryption with wrong key should fail");
+    }
+
+    #[test]
+    fn test_aes_gcm_rejects_invalid_key_size() {
+        let short_key = vec![1u8; 16];
+        let plaintext = b"test";
+        let nonce = CryptoEngine::generate_random_nonce(12).unwrap();
+
+        let result = CryptoEngine::encrypt_aes_gcm(&short_key, plaintext, &nonce);
+        assert!(result.is_err(), "Should reject invalid key size");
+    }
+
+    #[test]
+    fn test_aes_gcm_rejects_invalid_nonce_size() {
+        let key = CryptoEngine::generate_random_nonce(32).unwrap();
+        let plaintext = b"test";
+        let short_nonce = vec![1u8; 8];
+
+        let result = CryptoEngine::encrypt_aes_gcm(&key, plaintext, &short_nonce);
+        assert!(result.is_err(), "Should reject invalid nonce size");
+    }
+
+    #[test]
+    fn test_random_nonce_generation() {
+        let nonce1 = CryptoEngine::generate_random_nonce(12).unwrap();
+        assert_eq!(nonce1.len(), 12);
+
+        // Generate second nonce and verify they're different
+        let nonce2 = CryptoEngine::generate_random_nonce(12).unwrap();
+        assert_ne!(nonce1, nonce2, "Random nonces should be different");
+    }
+
+    #[test]
+    fn test_sha256_hash() {
+        let data = b"test data";
+        let hash = CryptoEngine::sha256_hash(data).unwrap();
+        assert_eq!(hash.len(), 32, "SHA-256 hash should be 32 bytes");
+
+        // Same data should produce same hash
+        let hash2 = CryptoEngine::sha256_hash(data).unwrap();
+        assert_eq!(hash, hash2, "Same data should produce same hash");
+
+        // Different data should produce different hash
+        let hash3 = CryptoEngine::sha256_hash(b"different").unwrap();
+        assert_ne!(hash, hash3, "Different data should produce different hash");
+    }
+}
