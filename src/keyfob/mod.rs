@@ -5,7 +5,6 @@
 /// - Request certificate from CA
 /// - Sign vehicle nonce challenges
 /// - Provide authentication proof
-
 use crate::ca::CertificateAuthority;
 use crate::crypto::CryptoEngine;
 use chrono::Utc;
@@ -75,8 +74,8 @@ impl DigitalKeyFob {
     /// Generate Ed25519 keypair for the key fob
     pub fn initialize(&mut self) -> Result<(), KeyFobError> {
         // Generate keypair
-        let keypair = CryptoEngine::generate_ed25519_keypair()
-            .map_err(|e| KeyFobError::KeygenFailed(e))?;
+        let keypair =
+            CryptoEngine::generate_ed25519_keypair().map_err(|e| KeyFobError::KeygenFailed(e))?;
 
         self.public_key = Some(keypair.public_key);
         self.private_key = Some(keypair.private_key);
@@ -120,8 +119,8 @@ impl DigitalKeyFob {
             ));
         }
 
-        let pub_json =
-            fs::read_to_string(&pub_key_path).map_err(|e| KeyFobError::FileIOError(e.to_string()))?;
+        let pub_json = fs::read_to_string(&pub_key_path)
+            .map_err(|e| KeyFobError::FileIOError(e.to_string()))?;
         let pub_key: Vec<u8> = serde_json::from_str(&pub_json)
             .map_err(|e| KeyFobError::SerializationError(e.to_string()))?;
 
@@ -159,8 +158,7 @@ impl DigitalKeyFob {
         let cert_path = format!("certs/fob_{}.json", self.subject_id);
         let cert_json = serde_json::to_string_pretty(&cert)
             .map_err(|e| KeyFobError::SerializationError(e.to_string()))?;
-        fs::write(&cert_path, cert_json)
-            .map_err(|e| KeyFobError::FileIOError(e.to_string()))?;
+        fs::write(&cert_path, cert_json).map_err(|e| KeyFobError::FileIOError(e.to_string()))?;
 
         Ok(())
     }
@@ -311,7 +309,11 @@ mod tests {
         assert!(response.is_ok(), "Signing should succeed");
 
         let response = response.unwrap();
-        assert_eq!(response.signature.len(), 64, "Ed25519 signature should be 64 bytes");
+        assert_eq!(
+            response.signature.len(),
+            64,
+            "Ed25519 signature should be 64 bytes"
+        );
         assert!(!response.timestamp.is_empty(), "Timestamp should be set");
     }
 
@@ -392,7 +394,10 @@ mod tests {
         let sig1 = fob.sign_challenge(nonce1).expect("Sign failed");
         let sig2 = fob.sign_challenge(nonce2).expect("Sign failed");
 
-        assert_ne!(sig1.signature, sig2.signature, "Different nonces should produce different signatures");
+        assert_ne!(
+            sig1.signature, sig2.signature,
+            "Different nonces should produce different signatures"
+        );
     }
 
     #[test]
@@ -403,9 +408,186 @@ mod tests {
         let sig1 = fob.sign_challenge(nonce).expect("Sign failed");
         let sig2 = fob.sign_challenge(nonce).expect("Sign failed");
 
-        // Note: Ed25519 with same private key and message should produce same signature
-        // Different timestamps don't affect nonce signature
-        assert_eq!(sig1.signature, sig2.signature, "Same nonce should produce same signature");
+        assert_eq!(
+            sig1.signature, sig2.signature,
+            "Same nonce should produce same signature"
+        );
+    }
+
+    #[test]
+    fn test_save_and_load_keys() {
+        let mut fob1 = DigitalKeyFob::new("FOB-VERIFY".to_string());
+        fob1.initialize().expect("Init failed");
+
+        let pub_key_before = fob1.public_key.clone();
+        let priv_key_before = fob1.private_key.clone();
+
+        fob1.save_keys().expect("Save failed");
+
+        let mut fob2 = DigitalKeyFob::new("FOB-VERIFY".to_string());
+        fob2.load_keys().expect("Load failed");
+
+        assert_eq!(
+            fob2.public_key, pub_key_before,
+            "Public key should match after load"
+        );
+        assert_eq!(
+            fob2.private_key, priv_key_before,
+            "Private key should match after load"
+        );
+    }
+
+    #[test]
+    fn test_keys_roundtrip_preserves_signing_capability() {
+        let mut fob1 = DigitalKeyFob::new("FOB-ROUNDTRIP".to_string());
+        fob1.initialize().expect("Init failed");
+
+        let nonce = b"test-nonce-verify";
+        let sig1 = fob1.sign_challenge(nonce).expect("Sign failed");
+
+        fob1.save_keys().expect("Save failed");
+
+        let mut fob2 = DigitalKeyFob::new("FOB-ROUNDTRIP".to_string());
+        fob2.load_keys().expect("Load failed");
+
+        let sig2 = fob2.sign_challenge(nonce).expect("Sign failed");
+
+        assert_eq!(
+            sig1.signature, sig2.signature,
+            "Signatures should match after roundtrip"
+        );
+    }
+
+    #[test]
+    fn test_certificate_persistence() {
+        let mut fob = create_fob_with_keys("FOB-CERT-TEST");
+        let test_cert = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+
+        fob.certificate = Some(test_cert.clone());
+
+        let retrieved = fob.get_certificate().expect("Get cert failed");
+        assert_eq!(retrieved, test_cert, "Certificate should persist");
+    }
+
+    #[test]
+    fn test_wrong_public_key_fails_verification() {
+        let fob1 = create_fob_with_keys("FOB-001");
+        let fob2 = create_fob_with_keys("FOB-002");
+
+        let nonce = b"test-message";
+        let response = fob1.sign_challenge(nonce).expect("Sign failed");
+        let wrong_pub_key = fob2.get_public_key().expect("Get key failed");
+
+        let is_valid = CryptoEngine::verify_signature(&wrong_pub_key, nonce, &response.signature)
+            .expect("Verify failed");
+
+        assert!(
+            !is_valid,
+            "Signature from FOB-001 should fail with FOB-002's public key"
+        );
+    }
+
+    #[test]
+    fn test_auth_proof_timestamp_format() {
+        let mut fob = create_fob_with_keys("FOB-001");
+        fob.certificate = Some(vec![1, 2, 3]);
+
+        let nonce = b"test";
+        let proof = fob.create_auth_proof(nonce).expect("Proof failed");
+
+        // Verify timestamp is RFC3339 format (contains T and Z or +/-)
+        assert!(
+            proof.timestamp.contains('T'),
+            "Timestamp should be RFC3339 format"
+        );
+        assert!(
+            proof.timestamp.contains('Z') || proof.timestamp.contains('+'),
+            "Timestamp should include timezone"
+        );
+    }
+
+    #[test]
+    fn test_auth_proof_serialization() {
+        let mut fob = create_fob_with_keys("FOB-SERIAL");
+        fob.certificate = Some(vec![10, 20, 30, 40]);
+
+        let nonce = b"serialization-test";
+        let proof = fob.create_auth_proof(nonce).expect("Proof failed");
+
+        let serialized = serde_json::to_string(&proof).expect("Serialize failed");
+        let deserialized: crate::keyfob::AuthenticationProof =
+            serde_json::from_str(&serialized).expect("Deserialize failed");
+
+        assert_eq!(deserialized.subject_id, proof.subject_id);
+        assert_eq!(deserialized.certificate, proof.certificate);
+        assert_eq!(deserialized.nonce, proof.nonce);
+        assert_eq!(deserialized.signature, proof.signature);
+        assert_eq!(deserialized.timestamp, proof.timestamp);
+    }
+
+    #[test]
+    fn test_no_private_key_in_public_key_output() {
+        let fob = create_fob_with_keys("FOB-PRIV-CHECK");
+        let priv_key = fob.private_key.clone().expect("Has private key");
+        let pub_key = fob.get_public_key().expect("Get pub key failed");
+
+        assert_ne!(
+            pub_key, priv_key,
+            "Public key should differ from private key"
+        );
+        // Both are 32 bytes for Ed25519, so just verify they're different data
+        assert_eq!(pub_key.len(), 32, "Public key should be 32 bytes");
+        assert_eq!(priv_key.len(), 32, "Private key should be 32 bytes");
+    }
+
+    #[test]
+    fn test_error_handling_no_panics_on_invalid_nonce_size() {
+        let fob = create_fob_with_keys("FOB-ERR");
+        let empty_nonce = b"";
+        let very_large_nonce = vec![0u8; 10000];
+
+        let result1 = fob.sign_challenge(empty_nonce);
+        assert!(result1.is_ok(), "Should handle empty nonce gracefully");
+
+        let result2 = fob.sign_challenge(&very_large_nonce);
+        assert!(result2.is_ok(), "Should handle large nonce gracefully");
+    }
+
+    #[test]
+    fn test_multiple_fobs_independent() {
+        let mut fob1 = DigitalKeyFob::new("FOB-A".to_string());
+        let mut fob2 = DigitalKeyFob::new("FOB-B".to_string());
+
+        fob1.initialize().expect("Init fob1");
+        fob2.initialize().expect("Init fob2");
+
+        let nonce = b"shared-nonce";
+        let sig1 = fob1.sign_challenge(nonce).expect("Sign fob1");
+        let sig2 = fob2.sign_challenge(nonce).expect("Sign fob2");
+
+        assert_ne!(
+            sig1.signature, sig2.signature,
+            "Different fobs should produce different signatures"
+        );
+
+        let pub1 = fob1.get_public_key().expect("Get pub1");
+        let pub2 = fob2.get_public_key().expect("Get pub2");
+
+        assert_ne!(pub1, pub2, "Fobs should have different public keys");
+    }
+
+    #[test]
+    fn test_timestamp_differs_across_calls() {
+        let fob = create_fob_with_keys("FOB-TIME");
+        let nonce = b"time-test";
+
+        let response1 = fob.sign_challenge(nonce).expect("Sign 1");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let response2 = fob.sign_challenge(nonce).expect("Sign 2");
+
+        assert_ne!(
+            response1.timestamp, response2.timestamp,
+            "Timestamps should be different for separate calls"
+        );
     }
 }
-
