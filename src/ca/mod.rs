@@ -68,8 +68,7 @@ impl CertificateAuthority {
         fs::create_dir_all("keys").map_err(|e| CAError::FileIOError(e.to_string()))?;
 
         // Generate keypair
-        let keypair =
-            CryptoEngine::generate_ed25519_keypair().map_err(|e| CAError::KeygenFailed(e))?;
+        let keypair = CryptoEngine::generate_ed25519_keypair().map_err(CAError::KeygenFailed)?;
 
         // Save public key
         let public_key_path = "keys/ca_public.json";
@@ -149,7 +148,7 @@ impl CertificateAuthority {
 
         // Sign the certificate
         let signature = CryptoEngine::sign_data(root_private_key, &signable_data)
-            .map_err(|e| CAError::SigningFailed(e))?;
+            .map_err(CAError::SigningFailed)?;
 
         Ok(Certificate {
             subject_id,
@@ -194,7 +193,7 @@ impl CertificateAuthority {
 
         // Verify signature
         CryptoEngine::verify_signature(root_public_key, &signable_data, &cert.signature)
-            .map_err(|e| CAError::VerificationFailed(e))
+            .map_err(CAError::VerificationFailed)
     }
 
     /// Save a certificate to JSON file
@@ -334,7 +333,7 @@ mod tests {
 
     #[test]
     fn test_certificate_validity_period() {
-        let mut ca = create_ca_with_keys("Test-CA");
+        let ca = create_ca_with_keys("Test-CA");
 
         let fob_keypair = crate::crypto::CryptoEngine::generate_ed25519_keypair()
             .expect("Failed to generate FOB keypair");
@@ -360,7 +359,7 @@ mod tests {
 
     #[test]
     fn test_valid_certificate_verification() {
-        let mut ca = create_ca_with_keys("Test-CA");
+        let ca = create_ca_with_keys("Test-CA");
 
         let fob_keypair = crate::crypto::CryptoEngine::generate_ed25519_keypair()
             .expect("Failed to generate FOB keypair");
@@ -376,7 +375,7 @@ mod tests {
 
     #[test]
     fn test_tampered_certificate_verification_fails() {
-        let mut ca = create_ca_with_keys("Test-CA");
+        let ca = create_ca_with_keys("Test-CA");
 
         let fob_keypair = crate::crypto::CryptoEngine::generate_ed25519_keypair()
             .expect("Failed to generate FOB keypair");
@@ -399,7 +398,7 @@ mod tests {
     #[test]
     fn test_wrong_ca_verification_fails() {
         // Create first CA and issue certificate
-        let mut ca1 = create_ca_with_keys("CA-1");
+        let ca1 = create_ca_with_keys("CA-1");
 
         let fob_keypair = crate::crypto::CryptoEngine::generate_ed25519_keypair()
             .expect("Failed to generate FOB keypair");
@@ -422,7 +421,7 @@ mod tests {
 
     #[test]
     fn test_certificate_save_and_load() {
-        let mut ca = create_ca_with_keys("Test-CA");
+        let ca = create_ca_with_keys("Test-CA");
 
         let fob_keypair = crate::crypto::CryptoEngine::generate_ed25519_keypair()
             .expect("Failed to generate FOB keypair");
@@ -445,7 +444,7 @@ mod tests {
 
     #[test]
     fn test_expired_certificate_rejection() {
-        let mut ca = create_ca_with_keys("Test-CA");
+        let ca = create_ca_with_keys("Test-CA");
 
         let fob_keypair = crate::crypto::CryptoEngine::generate_ed25519_keypair()
             .expect("Failed to generate FOB keypair");

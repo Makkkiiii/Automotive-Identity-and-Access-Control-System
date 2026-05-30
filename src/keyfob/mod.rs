@@ -7,6 +7,7 @@
 /// - Provide authentication proof
 use crate::ca::CertificateAuthority;
 use crate::crypto::CryptoEngine;
+use base64::{engine::general_purpose, Engine as _};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -40,6 +41,7 @@ impl std::error::Error for KeyFobError {}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthenticationProof {
     pub subject_id: String,
+    pub vehicle_id: String,
     pub certificate: Vec<u8>,
     pub nonce: Vec<u8>,
     pub signature: Vec<u8>,
@@ -75,7 +77,7 @@ impl DigitalKeyFob {
     pub fn initialize(&mut self) -> Result<(), KeyFobError> {
         // Generate keypair
         let keypair =
-            CryptoEngine::generate_ed25519_keypair().map_err(|e| KeyFobError::KeygenFailed(e))?;
+            CryptoEngine::generate_ed25519_keypair().map_err(KeyFobError::KeygenFailed)?;
 
         self.public_key = Some(keypair.public_key);
         self.private_key = Some(keypair.private_key);
@@ -184,24 +186,39 @@ impl DigitalKeyFob {
     }
 
     /// Sign a vehicle nonce challenge
-    pub fn sign_challenge(&self, nonce: &[u8]) -> Result<ChallengeResponse, KeyFobError> {
+    pub fn sign_challenge(
+        &self,
+        vehicle_id: &str,
+        nonce: &[u8],
+    ) -> Result<ChallengeResponse, KeyFobError> {
         let private_key = self
             .private_key
             .as_ref()
             .ok_or(KeyFobError::NotInitialized)?;
+        // Build canonical payload: AIACS_AUTH_V1|vehicle_id|subject_id|<base64_nonce>|<rfc3339_timestamp>
+        let timestamp = Utc::now().to_rfc3339();
+        let b64 = general_purpose::STANDARD.encode(nonce);
+        let payload = format!(
+            "AIACS_AUTH_V1|{}|{}|{}|{}",
+            vehicle_id, self.subject_id, b64, timestamp
+        );
 
-        // Sign the nonce
-        let signature = CryptoEngine::sign_data(private_key, nonce)
-            .map_err(|e| KeyFobError::SigningFailed(e))?;
+        // Sign canonical payload
+        let signature = CryptoEngine::sign_data(private_key, payload.as_bytes())
+            .map_err(KeyFobError::SigningFailed)?;
 
         Ok(ChallengeResponse {
             signature: signature.data,
-            timestamp: Utc::now().to_rfc3339(),
+            timestamp,
         })
     }
 
     /// Create complete authentication proof for vehicle
-    pub fn create_auth_proof(&self, nonce: &[u8]) -> Result<AuthenticationProof, KeyFobError> {
+    pub fn create_auth_proof(
+        &self,
+        vehicle_id: &str,
+        nonce: &[u8],
+    ) -> Result<AuthenticationProof, KeyFobError> {
         let certificate = self
             .certificate
             .as_ref()
@@ -213,16 +230,25 @@ impl DigitalKeyFob {
             .as_ref()
             .ok_or(KeyFobError::NotInitialized)?;
 
-        // Sign the nonce
-        let signature = CryptoEngine::sign_data(private_key, nonce)
-            .map_err(|e| KeyFobError::SigningFailed(e))?;
+        // Build canonical payload: AIACS_AUTH_V1|vehicle_id|subject_id|<base64_nonce>|<rfc3339_timestamp>
+        let timestamp = Utc::now().to_rfc3339();
+        let b64 = general_purpose::STANDARD.encode(nonce);
+        let payload = format!(
+            "AIACS_AUTH_V1|{}|{}|{}|{}",
+            vehicle_id, self.subject_id, b64, timestamp
+        );
+
+        // Sign canonical payload
+        let signature = CryptoEngine::sign_data(private_key, payload.as_bytes())
+            .map_err(KeyFobError::SigningFailed)?;
 
         Ok(AuthenticationProof {
             subject_id: self.subject_id.clone(),
+            vehicle_id: vehicle_id.to_string(),
             certificate,
             nonce: nonce.to_vec(),
             signature: signature.data,
-            timestamp: Utc::now().to_rfc3339(),
+            timestamp,
         })
     }
 
@@ -304,8 +330,7 @@ mod tests {
     fn test_sign_challenge() {
         let fob = create_fob_with_keys("FOB-001");
         let nonce = b"test-nonce-12345";
-
-        let response = fob.sign_challenge(nonce);
+        let response = fob.sign_challenge("VEH-UNIT", nonce);
         assert!(response.is_ok(), "Signing should succeed");
 
         let response = response.unwrap();
@@ -322,7 +347,7 @@ mod tests {
         let fob = DigitalKeyFob::new("FOB-001".to_string());
         let nonce = b"test-nonce";
 
-        let result = fob.sign_challenge(nonce);
+        let result = fob.sign_challenge("VEH-UNIT", nonce);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), KeyFobError::NotInitialized));
     }
@@ -331,13 +356,21 @@ mod tests {
     fn test_signature_verifiable_by_public_key() {
         let fob = create_fob_with_keys("FOB-001");
         let nonce = b"test message";
-
-        let response = fob.sign_challenge(nonce).expect("Signing failed");
+        let vehicle_id = "VEH-TEST";
+        let response = fob
+            .sign_challenge(vehicle_id, nonce)
+            .expect("Signing failed");
         let pub_key = fob.get_public_key().expect("Get pub key failed");
 
-        // Verify signature with crypto engine
-        let is_valid = CryptoEngine::verify_signature(&pub_key, nonce, &response.signature)
-            .expect("Verify failed");
+        // Reconstruct canonical payload and verify signature
+        let b64 = general_purpose::STANDARD.encode(nonce);
+        let payload = format!(
+            "AIACS_AUTH_V1|{}|{}|{}|{}",
+            vehicle_id, fob.subject_id, b64, response.timestamp
+        );
+        let is_valid =
+            CryptoEngine::verify_signature(&pub_key, payload.as_bytes(), &response.signature)
+                .expect("Verify failed");
         assert!(is_valid, "Signature should be valid with fob's public key");
     }
 
@@ -346,13 +379,23 @@ mod tests {
         let fob = create_fob_with_keys("FOB-001");
         let nonce = b"original nonce";
         let tampered = b"tampered nonce";
-
-        let response = fob.sign_challenge(nonce).expect("Signing failed");
+        let vehicle_id = "VEH-TEST";
+        let response = fob
+            .sign_challenge(vehicle_id, nonce)
+            .expect("Signing failed");
         let pub_key = fob.get_public_key().expect("Get pub key failed");
-
-        // Verify with tampered nonce
-        let is_valid = CryptoEngine::verify_signature(&pub_key, tampered, &response.signature)
-            .expect("Verify failed");
+        // Reconstruct payload with tampered nonce and verify should fail
+        let b64 = general_purpose::STANDARD.encode(tampered);
+        let tampered_payload = format!(
+            "AIACS_AUTH_V1|{}|{}|{}|{}",
+            vehicle_id, fob.subject_id, b64, response.timestamp
+        );
+        let is_valid = CryptoEngine::verify_signature(
+            &pub_key,
+            tampered_payload.as_bytes(),
+            &response.signature,
+        )
+        .expect("Verify failed");
         assert!(!is_valid, "Tampered nonce should fail verification");
     }
 
@@ -361,7 +404,8 @@ mod tests {
         let fob = create_fob_with_keys("FOB-001");
         let nonce = b"test-nonce";
 
-        let result = fob.create_auth_proof(nonce);
+        let vehicle_id = "VEH-UNIT";
+        let result = fob.create_auth_proof(vehicle_id, nonce);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), KeyFobError::NoCertificate));
     }
@@ -373,7 +417,8 @@ mod tests {
         fob.certificate = Some(vec![1, 2, 3, 4, 5]); // Mock certificate
 
         let nonce = b"test-nonce";
-        let proof = fob.create_auth_proof(nonce);
+        let vehicle_id = "VEH-UNIT";
+        let proof = fob.create_auth_proof(vehicle_id, nonce);
 
         assert!(proof.is_ok(), "Auth proof creation should succeed");
         let proof = proof.unwrap();
@@ -391,8 +436,8 @@ mod tests {
         let nonce1 = b"nonce-one";
         let nonce2 = b"nonce-two";
 
-        let sig1 = fob.sign_challenge(nonce1).expect("Sign failed");
-        let sig2 = fob.sign_challenge(nonce2).expect("Sign failed");
+        let sig1 = fob.sign_challenge("VEH-UNIT", nonce1).expect("Sign failed");
+        let sig2 = fob.sign_challenge("VEH-UNIT", nonce2).expect("Sign failed");
 
         assert_ne!(
             sig1.signature, sig2.signature,
@@ -405,12 +450,12 @@ mod tests {
         let fob = create_fob_with_keys("FOB-001");
         let nonce = b"same-nonce";
 
-        let sig1 = fob.sign_challenge(nonce).expect("Sign failed");
-        let sig2 = fob.sign_challenge(nonce).expect("Sign failed");
+        let sig1 = fob.sign_challenge("VEH-UNIT", nonce).expect("Sign failed");
+        let sig2 = fob.sign_challenge("VEH-UNIT", nonce).expect("Sign failed");
 
-        assert_eq!(
+        assert_ne!(
             sig1.signature, sig2.signature,
-            "Same nonce should produce same signature"
+            "Signatures should differ because payload includes timestamp"
         );
     }
 
@@ -443,18 +488,44 @@ mod tests {
         fob1.initialize().expect("Init failed");
 
         let nonce = b"test-nonce-verify";
-        let sig1 = fob1.sign_challenge(nonce).expect("Sign failed");
+        let sig1 = fob1.sign_challenge("VEH-UNIT", nonce).expect("Sign failed");
 
         fob1.save_keys().expect("Save failed");
 
         let mut fob2 = DigitalKeyFob::new("FOB-ROUNDTRIP".to_string());
         fob2.load_keys().expect("Load failed");
 
-        let sig2 = fob2.sign_challenge(nonce).expect("Sign failed");
+        let sig2 = fob2.sign_challenge("VEH-UNIT", nonce).expect("Sign failed");
 
-        assert_eq!(
-            sig1.signature, sig2.signature,
-            "Signatures should match after roundtrip"
+        // Verify signatures using the public key to confirm signing capability preserved
+        let pub_key = fob2.public_key.expect("Public key missing");
+        // Reconstruct payloads for verification using recorded timestamps
+        let b64 = base64::engine::general_purpose::STANDARD.encode(nonce);
+        let payload1 = format!(
+            "AIACS_AUTH_V1|{}|{}|{}|{}",
+            "VEH-UNIT", fob1.subject_id, b64, sig1.timestamp
+        );
+        let payload2 = format!(
+            "AIACS_AUTH_V1|{}|{}|{}|{}",
+            "VEH-UNIT", fob2.subject_id, b64, sig2.timestamp
+        );
+
+        let valid1 = crate::crypto::CryptoEngine::verify_signature(
+            &pub_key,
+            payload1.as_bytes(),
+            &sig1.signature,
+        )
+        .expect("Verification failed");
+        let valid2 = crate::crypto::CryptoEngine::verify_signature(
+            &pub_key,
+            payload2.as_bytes(),
+            &sig2.signature,
+        )
+        .expect("Verification failed");
+
+        assert!(
+            valid1 && valid2,
+            "Signatures should verify after key roundtrip"
         );
     }
 
@@ -475,7 +546,7 @@ mod tests {
         let fob2 = create_fob_with_keys("FOB-002");
 
         let nonce = b"test-message";
-        let response = fob1.sign_challenge(nonce).expect("Sign failed");
+        let response = fob1.sign_challenge("VEH-UNIT", nonce).expect("Sign failed");
         let wrong_pub_key = fob2.get_public_key().expect("Get key failed");
 
         let is_valid = CryptoEngine::verify_signature(&wrong_pub_key, nonce, &response.signature)
@@ -493,7 +564,10 @@ mod tests {
         fob.certificate = Some(vec![1, 2, 3]);
 
         let nonce = b"test";
-        let proof = fob.create_auth_proof(nonce).expect("Proof failed");
+        let vehicle_id = "VEH-UNIT";
+        let proof = fob
+            .create_auth_proof(vehicle_id, nonce)
+            .expect("Proof failed");
 
         // Verify timestamp is RFC3339 format (contains T and Z or +/-)
         assert!(
@@ -512,7 +586,10 @@ mod tests {
         fob.certificate = Some(vec![10, 20, 30, 40]);
 
         let nonce = b"serialization-test";
-        let proof = fob.create_auth_proof(nonce).expect("Proof failed");
+        let vehicle_id = "VEH-UNIT";
+        let proof = fob
+            .create_auth_proof(vehicle_id, nonce)
+            .expect("Proof failed");
 
         let serialized = serde_json::to_string(&proof).expect("Serialize failed");
         let deserialized: crate::keyfob::AuthenticationProof =
@@ -546,10 +623,10 @@ mod tests {
         let empty_nonce = b"";
         let very_large_nonce = vec![0u8; 10000];
 
-        let result1 = fob.sign_challenge(empty_nonce);
+        let result1 = fob.sign_challenge("VEH-UNIT", empty_nonce);
         assert!(result1.is_ok(), "Should handle empty nonce gracefully");
 
-        let result2 = fob.sign_challenge(&very_large_nonce);
+        let result2 = fob.sign_challenge("VEH-UNIT", &very_large_nonce);
         assert!(result2.is_ok(), "Should handle large nonce gracefully");
     }
 
@@ -562,8 +639,8 @@ mod tests {
         fob2.initialize().expect("Init fob2");
 
         let nonce = b"shared-nonce";
-        let sig1 = fob1.sign_challenge(nonce).expect("Sign fob1");
-        let sig2 = fob2.sign_challenge(nonce).expect("Sign fob2");
+        let sig1 = fob1.sign_challenge("VEH-A", nonce).expect("Sign fob1");
+        let sig2 = fob2.sign_challenge("VEH-B", nonce).expect("Sign fob2");
 
         assert_ne!(
             sig1.signature, sig2.signature,
@@ -581,9 +658,9 @@ mod tests {
         let fob = create_fob_with_keys("FOB-TIME");
         let nonce = b"time-test";
 
-        let response1 = fob.sign_challenge(nonce).expect("Sign 1");
+        let response1 = fob.sign_challenge("VEH-UNIT", nonce).expect("Sign 1");
         std::thread::sleep(std::time::Duration::from_millis(10));
-        let response2 = fob.sign_challenge(nonce).expect("Sign 2");
+        let response2 = fob.sign_challenge("VEH-UNIT", nonce).expect("Sign 2");
 
         assert_ne!(
             response1.timestamp, response2.timestamp,

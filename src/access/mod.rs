@@ -2,7 +2,6 @@
 /// Responsibilities:
 /// - Make access grant/reject decisions
 /// - Log access outcomes
-
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

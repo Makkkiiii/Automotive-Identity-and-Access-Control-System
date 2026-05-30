@@ -63,8 +63,8 @@ impl VehicleControlModule {
     /// Generate a cryptographically secure random nonce and track it
     pub fn generate_challenge(&mut self) -> Result<Vec<u8>, VehicleError> {
         // Generate 32-byte random nonce
-        let nonce = CryptoEngine::generate_random_nonce(32)
-            .map_err(|e| VehicleError::NonceGenerationFailed(e))?;
+        let nonce =
+            CryptoEngine::generate_random_nonce(32).map_err(VehicleError::NonceGenerationFailed)?;
 
         // Track the nonce with current timestamp
         self.active_nonces.insert(

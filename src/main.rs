@@ -1,4 +1,4 @@
-use aiacs::{access, attacks, auth, ca, crypto, keyfob, session, vehicle};
+// GUI wiring imports are intentionally disabled until Phase 6
 use iced::widget::{button, column, container, text};
 use iced::{Element, Length, Sandbox, Settings};
 

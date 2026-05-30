@@ -9,6 +9,7 @@ use crate::ca::{Certificate, CertificateAuthority};
 use crate::crypto::CryptoEngine;
 use crate::keyfob::AuthenticationProof;
 use crate::vehicle::VehicleControlModule;
+use base64::{engine::general_purpose, Engine as _};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -144,6 +145,11 @@ impl AuthenticationEngine {
             return Ok(AuthResult::IdentityMismatch);
         }
 
+        // Ensure proof is for the same vehicle
+        if proof.vehicle_id != vehicle.vehicle_id {
+            return Ok(AuthResult::UnknownNonce);
+        }
+
         // Step 4: Confirm nonce exists and check if already used
         match vehicle.is_nonce_valid(&proof.nonce, timeout_secs) {
             Ok(true) => {
@@ -182,8 +188,16 @@ impl AuthenticationEngine {
             return Ok(AuthResult::FreshnessTimeout);
         }
 
-        // Step 6: Verify Ed25519 signature using certified public key
-        match CryptoEngine::verify_signature(&cert.public_key, &proof.nonce, &proof.signature) {
+        // Step 6: Verify Ed25519 signature using certified public key over canonical payload
+        // Canonical payload: AIACS_AUTH_V1|vehicle_id|subject_id|<base64_nonce>|<rfc3339_timestamp>
+        let b64 = general_purpose::STANDARD.encode(&proof.nonce);
+        let payload = format!(
+            "AIACS_AUTH_V1|{}|{}|{}|{}",
+            proof.vehicle_id, proof.subject_id, b64, proof.timestamp
+        );
+
+        match CryptoEngine::verify_signature(&cert.public_key, payload.as_bytes(), &proof.signature)
+        {
             Ok(true) => {}
             _ => {
                 let _ = vehicle.mark_nonce_used(&proof.nonce);
@@ -275,7 +289,7 @@ mod tests {
         let mut vehicle = VehicleControlModule::new("VEH-VALID".to_string());
         vehicle.initialize().expect("Vehicle init failed");
 
-        let (ca, mut fob, _cert) = setup_ca_and_fob("FOB-VALID");
+        let (ca, fob, _cert) = setup_ca_and_fob("FOB-VALID");
 
         // Generate challenge
         let challenge = AuthenticationEngine::generate_challenge(&mut vehicle, "VEH-VALID")
@@ -283,7 +297,7 @@ mod tests {
 
         // Create auth proof
         let proof = fob
-            .create_auth_proof(&challenge.nonce)
+            .create_auth_proof(&challenge.vehicle_id, &challenge.nonce)
             .expect("Proof creation failed");
 
         // Verify proof through auth engine
@@ -297,7 +311,7 @@ mod tests {
         let mut vehicle = VehicleControlModule::new("VEH-REUSE".to_string());
         vehicle.initialize().expect("Vehicle init failed");
 
-        let (ca, mut fob, _cert) = setup_ca_and_fob("FOB-REUSE");
+        let (ca, fob, _cert) = setup_ca_and_fob("FOB-REUSE");
 
         // Generate challenge
         let challenge = AuthenticationEngine::generate_challenge(&mut vehicle, "VEH-REUSE")
@@ -305,7 +319,7 @@ mod tests {
 
         // Create auth proof
         let proof1 = fob
-            .create_auth_proof(&challenge.nonce)
+            .create_auth_proof(&challenge.vehicle_id, &challenge.nonce)
             .expect("Proof1 creation failed");
 
         // First use should succeed
@@ -314,7 +328,7 @@ mod tests {
 
         // Create second proof with same nonce
         let proof2 = fob
-            .create_auth_proof(&challenge.nonce)
+            .create_auth_proof(&challenge.vehicle_id, &challenge.nonce)
             .expect("Proof2 creation failed");
 
         // Second use should fail (nonce already used)
@@ -335,6 +349,7 @@ mod tests {
         // Manually create proof with fake nonce
         let proof = AuthenticationProof {
             subject_id: "FOB-UNKNOWN".to_string(),
+            vehicle_id: vehicle.vehicle_id.clone(),
             certificate: serde_json::to_vec(&cert).expect("Cert serialization failed"),
             nonce: fake_nonce,
             signature: vec![0u8; 64],
@@ -350,22 +365,29 @@ mod tests {
         let mut vehicle = VehicleControlModule::new("VEH-STALE".to_string());
         vehicle.initialize().expect("Vehicle init failed");
 
-        let (ca, mut fob, cert) = setup_ca_and_fob("FOB-STALE");
+        let (ca, fob, cert) = setup_ca_and_fob("FOB-STALE");
 
         // Generate challenge
         let challenge = AuthenticationEngine::generate_challenge(&mut vehicle, "VEH-STALE")
             .expect("Challenge generation failed");
 
-        // Create auth proof but with old timestamp
+        // Create auth proof but with old timestamp (signed over canonical payload)
         let old_time = (Utc::now() - chrono::Duration::seconds(120)).to_rfc3339();
+        let b64 = general_purpose::STANDARD.encode(&challenge.nonce);
+        let payload = format!(
+            "AIACS_AUTH_V1|{}|{}|{}|{}",
+            challenge.vehicle_id, fob.subject_id, b64, old_time
+        );
+
         let signature = CryptoEngine::sign_data(
             &fob.private_key.clone().expect("No priv key"),
-            &challenge.nonce,
+            payload.as_bytes(),
         )
         .expect("Signing failed");
 
         let proof = AuthenticationProof {
             subject_id: fob.subject_id.clone(),
+            vehicle_id: challenge.vehicle_id.clone(),
             certificate: serde_json::to_vec(&cert).expect("Cert serialization failed"),
             nonce: challenge.nonce,
             signature: signature.data,
@@ -382,7 +404,7 @@ mod tests {
         let mut vehicle = VehicleControlModule::new("VEH-BADSIG".to_string());
         vehicle.initialize().expect("Vehicle init failed");
 
-        let (ca, mut fob, cert) = setup_ca_and_fob("FOB-BADSIG");
+        let (ca, fob, _cert) = setup_ca_and_fob("FOB-BADSIG");
 
         // Generate challenge
         let challenge = AuthenticationEngine::generate_challenge(&mut vehicle, "VEH-BADSIG")
@@ -390,7 +412,7 @@ mod tests {
 
         // Create valid proof
         let mut proof = fob
-            .create_auth_proof(&challenge.nonce)
+            .create_auth_proof(&challenge.vehicle_id, &challenge.nonce)
             .expect("Proof creation failed");
 
         // Tamper with signature
@@ -408,7 +430,7 @@ mod tests {
         let mut vehicle = VehicleControlModule::new("VEH-EXPIRED".to_string());
         vehicle.initialize().expect("Vehicle init failed");
 
-        let (ca, mut fob, _cert_good) = setup_ca_and_fob("FOB-EXPIRED");
+        let (ca, _fob, _cert_good) = setup_ca_and_fob("FOB-EXPIRED");
 
         // Generate challenge
         let challenge = AuthenticationEngine::generate_challenge(&mut vehicle, "VEH-EXPIRED")
@@ -417,6 +439,7 @@ mod tests {
         // Create a proof with mismatched certificate (not actually expired, but demonstrates the flow)
         let proof = AuthenticationProof {
             subject_id: "FOB-EXPIRED".to_string(),
+            vehicle_id: challenge.vehicle_id.clone(),
             certificate: vec![], // Empty certificate will cause parse error
             nonce: challenge.nonce,
             signature: CryptoEngine::generate_random_nonce(64).expect("Sig gen"),
@@ -433,7 +456,7 @@ mod tests {
         let mut vehicle = VehicleControlModule::new("VEH-IDENTITY".to_string());
         vehicle.initialize().expect("Vehicle init failed");
 
-        let (ca, mut fob, cert) = setup_ca_and_fob("FOB-IDENTITY");
+        let (ca, fob, _cert) = setup_ca_and_fob("FOB-IDENTITY");
 
         // Generate challenge
         let challenge = AuthenticationEngine::generate_challenge(&mut vehicle, "VEH-IDENTITY")
@@ -441,7 +464,7 @@ mod tests {
 
         // Create valid proof
         let mut proof = fob
-            .create_auth_proof(&challenge.nonce)
+            .create_auth_proof(&challenge.vehicle_id, &challenge.nonce)
             .expect("Proof creation failed");
 
         // Change subject_id to mismatch
@@ -456,7 +479,7 @@ mod tests {
         let mut vehicle = VehicleControlModule::new("VEH-TAMPER".to_string());
         vehicle.initialize().expect("Vehicle init failed");
 
-        let (ca, mut fob, _cert) = setup_ca_and_fob("FOB-TAMPER");
+        let (ca, fob, _cert) = setup_ca_and_fob("FOB-TAMPER");
 
         // Generate challenge
         let challenge = AuthenticationEngine::generate_challenge(&mut vehicle, "VEH-TAMPER")
@@ -464,7 +487,7 @@ mod tests {
 
         // Create valid proof
         let proof = fob
-            .create_auth_proof(&challenge.nonce)
+            .create_auth_proof(&challenge.vehicle_id, &challenge.nonce)
             .expect("Proof creation failed");
 
         // Tamper with nonce
@@ -486,6 +509,7 @@ mod tests {
         // Bad proof with empty fields
         let bad_proof = AuthenticationProof {
             subject_id: "BAD".to_string(),
+            vehicle_id: vehicle.vehicle_id.clone(),
             certificate: vec![],
             nonce: vec![],
             signature: vec![],

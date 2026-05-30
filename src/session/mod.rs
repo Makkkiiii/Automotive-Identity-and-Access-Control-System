@@ -3,7 +3,6 @@
 /// - Timestamp validation
 /// - Freshness enforcement
 /// - Timeout rejection
-
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,15 +17,18 @@ pub struct SessionState {
 pub struct SessionValidationEngine;
 
 impl SessionValidationEngine {
-    pub fn create_session(session_id: String, timeout_seconds: u64) -> Result<SessionState, String> {
+    pub fn create_session(
+        _session_id: String,
+        _timeout_seconds: u64,
+    ) -> Result<SessionState, String> {
         Err("Not implemented".to_string())
     }
 
-    pub fn validate_freshness(session: &SessionState) -> Result<bool, String> {
+    pub fn validate_freshness(_session: &SessionState) -> Result<bool, String> {
         Err("Not implemented".to_string())
     }
 
-    pub fn check_timeout(session: &SessionState) -> Result<bool, String> {
+    pub fn check_timeout(_session: &SessionState) -> Result<bool, String> {
         Err("Not implemented".to_string())
     }
 
