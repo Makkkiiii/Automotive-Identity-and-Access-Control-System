@@ -16,6 +16,8 @@ base64 = "0.22"
 chrono = "0.4"
 thiserror = "1.0"
 iced = { version = "0.12", features = ["debug"] }
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+hkdf = "0.12"
 
 [profile.release]
 opt-level = 3
