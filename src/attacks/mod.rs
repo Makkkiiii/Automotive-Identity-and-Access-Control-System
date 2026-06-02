@@ -9,6 +9,7 @@ use crate::session::SessionState;
 use crate::vehicle::VehicleControlModule;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AttackType {
@@ -21,6 +22,24 @@ pub enum AttackType {
     UnauthorizedKeyFob,
     TamperedSessionCiphertext,
     WrongSessionKey,
+}
+
+impl fmt::Display for AttackType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            AttackType::ReplayAttack => "Replay Attack",
+            AttackType::ForgedSignature => "Forged Signature",
+            AttackType::FakeCertificate => "Fake Certificate",
+            AttackType::IdentityMismatch => "Identity Mismatch",
+            AttackType::DelayedRelay => "Delayed Relay",
+            AttackType::PacketTampering => "Packet Tampering",
+            AttackType::UnauthorizedKeyFob => "Unauthorized Key Fob",
+            AttackType::TamperedSessionCiphertext => "Tampered Session Ciphertext",
+            AttackType::WrongSessionKey => "Wrong Session Key",
+        };
+
+        f.write_str(label)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -515,7 +534,7 @@ mod tests {
         assert_eq!(result.attack_type, AttackType::FakeCertificate);
         assert!(result.success);
         assert!(result.expected_rejection);
-        assert_eq!(result.access_decision, "Access denied: InvalidCertificate");
+        assert_eq!(result.access_decision, "Access denied: Invalid certificate");
     }
 
     #[test]
@@ -524,7 +543,14 @@ mod tests {
         assert_eq!(result.attack_type, AttackType::IdentityMismatch);
         assert!(result.success);
         assert!(result.expected_rejection);
-        assert_eq!(result.access_decision, "Access denied: IdentityMismatch");
+        assert_eq!(result.access_decision, "Access denied: Identity mismatch");
+    }
+
+    #[test]
+    fn test_attack_type_display_is_user_friendly() {
+        assert_eq!(AttackType::ReplayAttack.to_string(), "Replay Attack");
+        assert_eq!(AttackType::FakeCertificate.to_string(), "Fake Certificate");
+        assert_eq!(AttackType::WrongSessionKey.to_string(), "Wrong Session Key");
     }
 
     #[test]

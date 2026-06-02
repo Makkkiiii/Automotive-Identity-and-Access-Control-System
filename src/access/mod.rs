@@ -1,11 +1,21 @@
 use crate::auth::AuthResult;
 use crate::session::{SessionState, SessionValidationEngine};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AccessDecision {
     GrantAccess,
     RejectAccess(AccessDenialReason),
+}
+
+impl fmt::Display for AccessDecision {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AccessDecision::GrantAccess => f.write_str("Access granted"),
+            AccessDecision::RejectAccess(reason) => write!(f, "Access denied: {}", reason),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,6 +34,29 @@ pub enum AccessDenialReason {
     SessionIntegrityFailed,
     UnauthorizedIdentity,
     InternalError,
+}
+
+impl fmt::Display for AccessDenialReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            AccessDenialReason::InvalidCertificate => "Invalid certificate",
+            AccessDenialReason::ExpiredCertificate => "Expired certificate",
+            AccessDenialReason::IdentityMismatch => "Identity mismatch",
+            AccessDenialReason::UnknownNonce => "Unknown nonce",
+            AccessDenialReason::ReusedNonce => "Reused nonce",
+            AccessDenialReason::FreshnessTimeout => "Freshness timeout",
+            AccessDenialReason::InvalidSignature => "Invalid signature",
+            AccessDenialReason::InvalidTimestamp => "Invalid timestamp",
+            AccessDenialReason::SessionNotEstablished => "Session not established",
+            AccessDenialReason::SessionExpired => "Session expired",
+            AccessDenialReason::SessionEncryptionFailed => "Session encryption failed",
+            AccessDenialReason::SessionIntegrityFailed => "Session integrity failed",
+            AccessDenialReason::UnauthorizedIdentity => "Unauthorized identity",
+            AccessDenialReason::InternalError => "Internal error",
+        };
+
+        f.write_str(message)
+    }
 }
 
 pub struct AccessDecisionEngine;
@@ -88,10 +121,7 @@ impl AccessDecisionEngine {
     }
 
     pub fn decision_message(decision: &AccessDecision) -> String {
-        match decision {
-            AccessDecision::GrantAccess => "Access granted".to_string(),
-            AccessDecision::RejectAccess(reason) => format!("Access denied: {:?}", reason),
-        }
+        decision.to_string()
     }
 }
 
@@ -229,6 +259,19 @@ mod tests {
         ));
 
         assert_eq!(grant, "Access granted");
-        assert_eq!(deny, "Access denied: InvalidSignature");
+        assert_eq!(deny, "Access denied: Invalid signature");
+    }
+
+    #[test]
+    fn test_access_display_is_user_friendly() {
+        assert_eq!(AccessDecision::GrantAccess.to_string(), "Access granted");
+        assert_eq!(
+            AccessDecision::RejectAccess(AccessDenialReason::InvalidCertificate).to_string(),
+            "Access denied: Invalid certificate"
+        );
+        assert_eq!(
+            AccessDenialReason::IdentityMismatch.to_string(),
+            "Identity mismatch"
+        );
     }
 }

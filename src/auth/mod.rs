@@ -12,6 +12,7 @@ use crate::vehicle::VehicleControlModule;
 use base64::{engine::general_purpose, Engine as _};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 #[derive(Debug)]
 pub enum AuthenticationEngineError {
@@ -88,6 +89,24 @@ pub enum AuthResult {
     FreshnessTimeout,
     InvalidSignature,
     InvalidTimestamp,
+}
+
+impl fmt::Display for AuthResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            AuthResult::Success => "Authentication successful",
+            AuthResult::InvalidCertificate => "Invalid certificate",
+            AuthResult::ExpiredCertificate => "Expired certificate",
+            AuthResult::IdentityMismatch => "Identity mismatch",
+            AuthResult::UnknownNonce => "Unknown nonce",
+            AuthResult::ReusedNonce => "Reused nonce",
+            AuthResult::FreshnessTimeout => "Freshness timeout",
+            AuthResult::InvalidSignature => "Invalid signature",
+            AuthResult::InvalidTimestamp => "Invalid timestamp",
+        };
+
+        f.write_str(message)
+    }
 }
 
 pub struct AuthenticationEngine;
@@ -288,6 +307,19 @@ mod tests {
 
         assert_eq!(challenge.vehicle_id, "VEH-001");
         assert_eq!(challenge.nonce.len(), 32);
+    }
+
+    #[test]
+    fn test_auth_result_display_is_user_friendly() {
+        assert_eq!(AuthResult::Success.to_string(), "Authentication successful");
+        assert_eq!(
+            AuthResult::InvalidCertificate.to_string(),
+            "Invalid certificate"
+        );
+        assert_eq!(
+            AuthResult::IdentityMismatch.to_string(),
+            "Identity mismatch"
+        );
     }
 
     #[test]

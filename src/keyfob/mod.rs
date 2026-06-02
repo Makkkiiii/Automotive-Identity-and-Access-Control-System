@@ -10,6 +10,7 @@ use crate::crypto::CryptoEngine;
 use base64::{engine::general_purpose, Engine as _};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::fs;
 use std::path::Path;
 
@@ -54,12 +55,30 @@ pub struct ChallengeResponse {
     pub timestamp: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct DigitalKeyFob {
     pub subject_id: String,
     pub public_key: Option<Vec<u8>>,
     pub private_key: Option<Vec<u8>>,
     pub certificate: Option<Vec<u8>>,
+}
+
+impl fmt::Debug for DigitalKeyFob {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DigitalKeyFob")
+            .field("subject_id", &self.subject_id)
+            .field("public_key", &describe_optional_bytes(&self.public_key))
+            .field("private_key", &"[REDACTED]")
+            .field("certificate", &describe_optional_bytes(&self.certificate))
+            .finish()
+    }
+}
+
+fn describe_optional_bytes(bytes: &Option<Vec<u8>>) -> String {
+    match bytes {
+        Some(bytes) => format!("{} bytes", bytes.len()),
+        None => "None".to_string(),
+    }
 }
 
 impl DigitalKeyFob {
@@ -293,6 +312,17 @@ mod tests {
         assert!(fob.private_key.is_some(), "Should have private key");
         assert_eq!(fob.public_key.as_ref().unwrap().len(), 32);
         assert_eq!(fob.private_key.as_ref().unwrap().len(), 32);
+    }
+
+    #[test]
+    fn test_key_fob_debug_redacts_private_key() {
+        let fob = create_fob_with_keys("FOB-DEBUG");
+        let private_key_debug = format!("{:?}", fob.private_key.as_ref().unwrap());
+        let debug_output = format!("{:?}", fob);
+
+        assert!(debug_output.contains("private_key"));
+        assert!(debug_output.contains("[REDACTED]"));
+        assert!(!debug_output.contains(&private_key_debug));
     }
 
     #[test]

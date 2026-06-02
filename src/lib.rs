@@ -1,4 +1,5 @@
 pub mod access;
+pub mod app_controller;
 pub mod attacks;
 pub mod auth;
 /// AIACS Library - Public modules for testing

@@ -6,6 +6,7 @@ use chrono::Utc;
 /// - Issue certificates to key fobs
 /// - Validate certificate chains
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::fs;
 use std::path::Path;
 
@@ -46,11 +47,31 @@ pub struct Certificate {
     pub signature: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CertificateAuthority {
     pub name: String,
     pub root_public_key: Option<Vec<u8>>,
     pub root_private_key: Option<Vec<u8>>,
+}
+
+impl fmt::Debug for CertificateAuthority {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CertificateAuthority")
+            .field("name", &self.name)
+            .field(
+                "root_public_key",
+                &describe_optional_bytes(&self.root_public_key),
+            )
+            .field("root_private_key", &"[REDACTED]")
+            .finish()
+    }
+}
+
+fn describe_optional_bytes(bytes: &Option<Vec<u8>>) -> String {
+    match bytes {
+        Some(bytes) => format!("{} bytes", bytes.len()),
+        None => "None".to_string(),
+    }
 }
 
 impl CertificateAuthority {
@@ -278,6 +299,17 @@ mod tests {
             32,
             "Ed25519 private key should be 32 bytes"
         );
+    }
+
+    #[test]
+    fn test_ca_debug_redacts_root_private_key() {
+        let ca = create_ca_with_keys("Debug-CA");
+        let private_key_debug = format!("{:?}", ca.root_private_key.as_ref().unwrap());
+        let debug_output = format!("{:?}", ca);
+
+        assert!(debug_output.contains("root_private_key"));
+        assert!(debug_output.contains("[REDACTED]"));
+        assert!(!debug_output.contains(&private_key_debug));
     }
 
     #[test]

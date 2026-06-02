@@ -6,6 +6,7 @@ use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::fmt;
 
 /// Cryptographic Engine Module
 /// Responsibilities:
@@ -13,10 +14,19 @@ use sha2::{Digest, Sha256};
 /// - AES-GCM encryption/decryption
 /// - Key generation
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct KeyPair {
     pub public_key: Vec<u8>,
     pub private_key: Vec<u8>,
+}
+
+impl fmt::Debug for KeyPair {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("KeyPair")
+            .field("public_key", &format!("{} bytes", self.public_key.len()))
+            .field("private_key", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +220,17 @@ mod tests {
             kp1.private_key, kp2.private_key,
             "Generated private keys should be different"
         );
+    }
+
+    #[test]
+    fn test_keypair_debug_redacts_private_key() {
+        let keypair = CryptoEngine::generate_ed25519_keypair().expect("Keypair gen failed");
+        let private_key_debug = format!("{:?}", keypair.private_key);
+        let debug_output = format!("{:?}", keypair);
+
+        assert!(debug_output.contains("private_key"));
+        assert!(debug_output.contains("[REDACTED]"));
+        assert!(!debug_output.contains(&private_key_debug));
     }
 
     #[test]
