@@ -129,7 +129,13 @@ impl AuthenticationEngine {
             .map_err(|e| AuthenticationEngineError::SerializationError(e.to_string()))?;
 
         match ca.validate_chain(&cert) {
-            Ok(_) => {}
+            Ok(true) => {
+                // Certificate is valid, continue
+            }
+            Ok(false) => {
+                // Certificate signature does not validate against trusted CA
+                return Ok(AuthResult::InvalidCertificate);
+            }
             Err(e) => {
                 let error_msg = e.to_string();
                 if error_msg.contains("expired") {
@@ -472,6 +478,44 @@ mod tests {
 
         let result = AuthenticationEngine::verify_response(&proof, &ca, &mut vehicle, 60);
         assert_eq!(result.unwrap(), AuthResult::IdentityMismatch);
+    }
+
+    #[test]
+    fn test_auth_validate_chain_false_rejected_as_invalid_certificate() {
+        let mut vehicle = VehicleControlModule::new("VEH-FAKE-CERT".to_string());
+        vehicle.initialize().expect("Vehicle init failed");
+
+        let (ca_real, _trusted_fob, _trusted_cert) = setup_ca_and_fob("FOB-TRUSTED");
+
+        let mut ca_fake = CertificateAuthority::new("Fake-CA".to_string());
+        ca_fake.initialize().expect("Fake CA init failed");
+
+        let mut fake_fob = DigitalKeyFob::new("FOB-FAKE-CERT".to_string());
+        fake_fob.initialize().expect("Fake fob init failed");
+
+        let fake_cert = ca_fake
+            .issue_certificate(
+                fake_fob.subject_id.clone(),
+                fake_fob.public_key.clone().expect("Fake fob public key"),
+            )
+            .expect("Fake cert issuance failed");
+
+        assert!(!ca_real
+            .validate_chain(&fake_cert)
+            .expect("Fake cert should produce a validation boolean"));
+
+        fake_fob.certificate =
+            Some(serde_json::to_vec(&fake_cert).expect("Fake cert serialization failed"));
+
+        let challenge = AuthenticationEngine::generate_challenge(&mut vehicle, "VEH-FAKE-CERT")
+            .expect("Challenge generation failed");
+
+        let proof = fake_fob
+            .create_auth_proof(&challenge.vehicle_id, &challenge.nonce)
+            .expect("Proof creation failed");
+
+        let result = AuthenticationEngine::verify_response(&proof, &ca_real, &mut vehicle, 60);
+        assert_eq!(result.unwrap(), AuthResult::InvalidCertificate);
     }
 
     #[test]
