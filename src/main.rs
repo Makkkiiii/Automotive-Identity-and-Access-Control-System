@@ -3,13 +3,30 @@ use chrono::Local;
 use iced::alignment;
 use iced::theme;
 use iced::widget::{button, column, container, row, scrollable, text};
-use iced::{Alignment, Color, Element, Font, Length, Sandbox, Settings, Theme};
+use iced::{
+    application, Background, Border, Color, Element, Font, Length, Sandbox, Settings, Theme,
+};
 
 const VEHICLE_ID: &str = "VEHICLE_001";
 const KEY_FOB_ID: &str = "FOB_001";
-const ACCENT_PINK: Color = Color::from_rgb(0.88, 0.55, 0.64);
-const ACCENT_BLUE: Color = Color::from_rgb(0.44, 0.63, 0.78);
-const TEXT_MUTED: Color = Color::from_rgb(0.64, 0.60, 0.58);
+
+const WINDOW_BG: Color = Color::from_rgb(0.105, 0.09, 0.11);
+const STATUS_PANEL_BG: Color = Color::from_rgb(0.13, 0.112, 0.14);
+const PANEL_BG: Color = Color::from_rgb(0.142, 0.126, 0.153);
+const ELEVATED_BG: Color = Color::from_rgb(0.184, 0.16, 0.192);
+const LOG_BG: Color = Color::from_rgb(0.102, 0.09, 0.106);
+const BUTTON_BG: Color = Color::from_rgb(0.2, 0.17, 0.204);
+const BUTTON_HOVER_BG: Color = Color::from_rgb(0.25, 0.212, 0.25);
+const BORDER: Color = Color::from_rgb(0.294, 0.255, 0.298);
+const BUTTON_BORDER: Color = Color::from_rgb(0.353, 0.294, 0.337);
+const PRIMARY_TEXT: Color = Color::from_rgb(0.91, 0.847, 0.831);
+const SECONDARY_TEXT: Color = Color::from_rgb(0.725, 0.659, 0.651);
+const MUTED_TEXT: Color = Color::from_rgb(0.561, 0.498, 0.51);
+const ACCENT_PINK: Color = Color::from_rgb(0.827, 0.525, 0.608);
+const ACCENT_BLUE: Color = Color::from_rgb(0.49, 0.663, 0.847);
+const SUCCESS_GREEN: Color = Color::from_rgb(0.655, 0.824, 0.553);
+const WARNING_YELLOW: Color = Color::from_rgb(0.902, 0.765, 0.518);
+const DANGER_RED: Color = Color::from_rgb(0.878, 0.424, 0.459);
 
 pub fn main() -> iced::Result {
     AIACSApp::run(Settings::default())
@@ -17,9 +34,16 @@ pub fn main() -> iced::Result {
 
 struct AIACSApp {
     controller: AppController,
+    screen: Screen,
     status: SystemStatus,
     selected_detail: String,
     event_log: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Screen {
+    CoreSystem,
+    ValidationLab,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +69,8 @@ impl Default for SystemStatus {
 
 #[derive(Debug, Clone)]
 enum Message {
+    OpenValidationLab,
+    BackToCoreSystem,
     InitializeCa,
     IssueCertificate,
     RunLegitimateAuthentication,
@@ -59,8 +85,9 @@ impl Sandbox for AIACSApp {
     fn new() -> Self {
         Self {
             controller: AppController::new(),
+            screen: Screen::CoreSystem,
             status: SystemStatus::default(),
-            selected_detail: "Select a workflow or validation action.".to_string(),
+            selected_detail: "Select a core workflow action.".to_string(),
             event_log: vec![
                 timestamped("[INFO]", "AIACS GUI initialized"),
                 timestamped("[INFO]", "Awaiting CA initialization"),
@@ -74,11 +101,39 @@ impl Sandbox for AIACSApp {
     }
 
     fn theme(&self) -> Theme {
-        Theme::Dark
+        Theme::custom(
+            "AIACS Dark".to_string(),
+            theme::Palette {
+                background: WINDOW_BG,
+                text: PRIMARY_TEXT,
+                primary: ACCENT_PINK,
+                success: SUCCESS_GREEN,
+                danger: DANGER_RED,
+            },
+        )
+    }
+
+    fn style(&self) -> theme::Application {
+        theme::Application::custom(|_: &Theme| application::Appearance {
+            background_color: WINDOW_BG,
+            text_color: PRIMARY_TEXT,
+        })
     }
 
     fn update(&mut self, message: Message) {
         match message {
+            Message::OpenValidationLab => {
+                self.screen = Screen::ValidationLab;
+                self.selected_detail =
+                    "Security Validation Lab opened. Attack execution is placeholder-only."
+                        .to_string();
+                self.push_log("[INFO]", "Security Validation Lab opened");
+            }
+            Message::BackToCoreSystem => {
+                self.screen = Screen::CoreSystem;
+                self.selected_detail = "Returned to Core System operation.".to_string();
+                self.push_log("[INFO]", "Returned to Core System");
+            }
             Message::InitializeCa => {
                 self.status.ca_status = "Pending".to_string();
                 self.selected_detail =
@@ -111,7 +166,7 @@ impl Sandbox for AIACSApp {
             Message::RunAttack(label) => {
                 self.status.last_decision = format!("{} queued", label);
                 self.selected_detail = format!(
-                    "{} queued in the Security Validation Lab. Execution is deferred.",
+                    "{} queued in testing mode. Execution is deferred for this phase.",
                     label
                 );
                 self.push_log("[ATTACK]", format!("{} selected", label));
@@ -126,43 +181,112 @@ impl Sandbox for AIACSApp {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let layout = column![row![
-            self.view_left_panel(),
-            column![self.view_workflow_panel(), self.view_event_log()]
-                .spacing(10)
-                .width(Length::FillPortion(5))
-                .height(Length::Fill),
-            self.view_validation_panel(),
-        ]
-        .spacing(10)
-        .height(Length::Fill),]
-        .padding(12)
-        .spacing(10)
-        .width(Length::Fill)
-        .height(Length::Fill);
+        let content = match self.screen {
+            Screen::CoreSystem => self.view_core_system(),
+            Screen::ValidationLab => self.view_validation_lab(),
+        };
 
-        container(layout)
+        container(content)
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(theme::Container::Box)
+            .padding(12)
+            .style(container_style(PanelKind::Window))
             .into()
     }
 }
 
 impl AIACSApp {
-    fn view_left_panel(&self) -> Element<'_, Message> {
+    fn view_core_system(&self) -> Element<'_, Message> {
+        row![
+            self.view_status_panel(),
+            column![
+                self.view_core_header(),
+                self.view_workflow_panel(),
+                self.view_event_log(),
+            ]
+            .spacing(10)
+            .width(Length::FillPortion(5))
+            .height(Length::Fill),
+        ]
+        .spacing(10)
+        .height(Length::Fill)
+        .into()
+    }
+
+    fn view_validation_lab(&self) -> Element<'_, Message> {
+        column![
+            self.view_validation_header(),
+            row![self.view_attack_panel(), self.view_result_panel()]
+                .spacing(10)
+                .height(Length::FillPortion(4)),
+            self.view_event_log(),
+        ]
+        .spacing(10)
+        .height(Length::Fill)
+        .into()
+    }
+
+    fn view_core_header(&self) -> Element<'_, Message> {
+        container(
+            row![
+                column![
+                    text("AIACS")
+                        .size(30)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(ACCENT_PINK)),
+                    text("Automotive Identity and Access Control System")
+                        .size(13)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(SECONDARY_TEXT)),
+                ]
+                .spacing(2)
+                .width(Length::Fill),
+                status_badge("Core System"),
+            ]
+            .spacing(12),
+        )
+        .width(Length::Fill)
+        .padding(12)
+        .style(container_style(PanelKind::Elevated))
+        .into()
+    }
+
+    fn view_validation_header(&self) -> Element<'_, Message> {
+        container(
+            row![
+                column![
+                    text("Security Validation Lab")
+                        .size(26)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(ACCENT_PINK)),
+                    text("Controlled adversarial validation against AIACS protocol")
+                        .size(13)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(ACCENT_BLUE)),
+                ]
+                .spacing(3)
+                .width(Length::Fill),
+                self.nav_button("Back to Core System", Message::BackToCoreSystem),
+            ]
+            .spacing(12),
+        )
+        .width(Length::Fill)
+        .padding(12)
+        .style(container_style(PanelKind::Elevated))
+        .into()
+    }
+
+    fn view_status_panel(&self) -> Element<'_, Message> {
         let logo = column![
             text("AIACS")
                 .size(30)
                 .font(Font::MONOSPACE)
                 .style(theme::Text::Color(ACCENT_PINK)),
-            text("AUTOMOTIVE IDENTITY ACCESS")
+            text("CRYPTOGRAPHIC ACCESS CONTROL")
                 .size(11)
                 .font(Font::MONOSPACE)
-                .style(theme::Text::Color(TEXT_MUTED)),
-            container(text("Not Initialized").size(12).font(Font::MONOSPACE))
-                .padding([5, 8])
-                .style(theme::Container::Box),
+                .style(theme::Text::Color(MUTED_TEXT)),
+            status_badge("Not Initialized"),
         ]
         .spacing(6);
 
@@ -181,6 +305,7 @@ impl AIACSApp {
             ]
             .spacing(9),
             Length::FillPortion(2),
+            PanelKind::Status,
         )
     }
 
@@ -189,7 +314,7 @@ impl AIACSApp {
             Some("Core Authentication Workflow"),
             column![
                 row![
-                    self.action_button("Initialize CA", Message::InitializeCa),
+                    self.primary_button("Initialize CA", Message::InitializeCa),
                     self.action_button("Issue Key Fob Certificate", Message::IssueCertificate),
                 ]
                 .spacing(8),
@@ -204,40 +329,65 @@ impl AIACSApp {
                     ),
                 ]
                 .spacing(8),
-                self.detail_box(),
+                self.nav_button("Open Security Validation Lab", Message::OpenValidationLab),
+                self.detail_box("Selected Action / Result"),
             ]
             .spacing(10),
             Length::Fill,
+            PanelKind::Elevated,
         )
     }
 
-    fn view_validation_panel(&self) -> Element<'_, Message> {
+    fn view_attack_panel(&self) -> Element<'_, Message> {
         self.panel(
-            Some("Security Validation Lab"),
+            Some("Attack Scenarios"),
             column![
-                text("Testing / adversarial validation")
+                text("Testing mode only")
                     .size(12)
                     .font(Font::MONOSPACE)
                     .style(theme::Text::Color(ACCENT_BLUE)),
-                self.action_button("Replay Attack", Message::RunAttack("Replay Attack")),
-                self.action_button("Forged Signature", Message::RunAttack("Forged Signature")),
-                self.action_button("Fake Certificate", Message::RunAttack("Fake Certificate")),
-                self.action_button("Identity Mismatch", Message::RunAttack("Identity Mismatch")),
-                self.action_button("Delayed Relay", Message::RunAttack("Delayed Relay")),
-                self.action_button("Packet Tampering", Message::RunAttack("Packet Tampering")),
-                self.action_button(
+                self.validation_button("Replay Attack", Message::RunAttack("Replay Attack")),
+                self.validation_button("Forged Signature", Message::RunAttack("Forged Signature")),
+                self.validation_button("Fake Certificate", Message::RunAttack("Fake Certificate")),
+                self.validation_button(
+                    "Identity Mismatch",
+                    Message::RunAttack("Identity Mismatch"),
+                ),
+                self.validation_button("Delayed Relay", Message::RunAttack("Delayed Relay")),
+                self.validation_button("Packet Tampering", Message::RunAttack("Packet Tampering"),),
+                self.validation_button(
                     "Unauthorized Key Fob",
                     Message::RunAttack("Unauthorized Key Fob"),
                 ),
-                self.action_button(
+                self.validation_button(
                     "Tampered Ciphertext",
                     Message::RunAttack("Tampered Ciphertext"),
                 ),
-                self.action_button("Wrong Session Key", Message::RunAttack("Wrong Session Key")),
-                self.action_button("Run All Attacks", Message::RunAllAttacks),
+                self.validation_button(
+                    "Wrong Session Key",
+                    Message::RunAttack("Wrong Session Key"),
+                ),
+                self.validation_button("Run All Attacks", Message::RunAllAttacks),
             ]
             .spacing(7),
+            Length::FillPortion(2),
+            PanelKind::Elevated,
+        )
+    }
+
+    fn view_result_panel(&self) -> Element<'_, Message> {
+        self.panel(
+            Some("Validation Result / Details"),
+            column![
+                text("Adversarial validation is isolated from Core System operation.")
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(ACCENT_BLUE)),
+                self.detail_box("Selected Attack / Result"),
+            ]
+            .spacing(10),
             Length::FillPortion(3),
+            PanelKind::Panel,
         )
     }
 
@@ -253,16 +403,16 @@ impl AIACSApp {
                     text(entry.as_str())
                         .size(12)
                         .font(Font::MONOSPACE)
-                        .style(theme::Text::Color(Color::from_rgb(0.78, 0.75, 0.71))),
+                        .style(theme::Text::Color(PRIMARY_TEXT)),
                 )
             },
         );
 
         container(scrollable(entries).height(Length::Fill))
             .width(Length::Fill)
-            .height(Length::FillPortion(3))
+            .height(Length::FillPortion(2))
             .padding(10)
-            .style(theme::Container::Box)
+            .style(container_style(PanelKind::Log))
             .into()
     }
 
@@ -271,6 +421,7 @@ impl AIACSApp {
         title: Option<&'a str>,
         content: iced::widget::Column<'a, Message>,
         width: Length,
+        kind: PanelKind,
     ) -> Element<'a, Message> {
         let panel_content = if let Some(title) = title {
             column![
@@ -289,7 +440,7 @@ impl AIACSApp {
             .width(width)
             .height(Length::Fill)
             .padding(12)
-            .style(theme::Container::Box)
+            .style(container_style(kind))
             .into()
     }
 
@@ -298,45 +449,53 @@ impl AIACSApp {
             text(label)
                 .size(12)
                 .font(Font::MONOSPACE)
-                .style(theme::Text::Color(TEXT_MUTED))
+                .style(theme::Text::Color(MUTED_TEXT))
                 .width(Length::FillPortion(2)),
             text(value)
                 .size(12)
                 .font(Font::MONOSPACE)
+                .style(theme::Text::Color(PRIMARY_TEXT))
                 .width(Length::FillPortion(3))
                 .horizontal_alignment(alignment::Horizontal::Right),
         ]
         .spacing(8)
-        .align_items(Alignment::Center)
         .into()
     }
 
     fn action_button<'a>(&self, label: &'a str, message: Message) -> Element<'a, Message> {
-        button(text(label).size(12).font(Font::MONOSPACE))
-            .width(Length::Fill)
-            .padding([7, 9])
-            .style(theme::Button::Secondary)
-            .on_press(message)
-            .into()
+        styled_button(label, message, ButtonKind::Normal)
     }
 
-    fn detail_box(&self) -> Element<'_, Message> {
+    fn primary_button<'a>(&self, label: &'a str, message: Message) -> Element<'a, Message> {
+        styled_button(label, message, ButtonKind::Primary)
+    }
+
+    fn validation_button<'a>(&self, label: &'a str, message: Message) -> Element<'a, Message> {
+        styled_button(label, message, ButtonKind::Validation)
+    }
+
+    fn nav_button<'a>(&self, label: &'a str, message: Message) -> Element<'a, Message> {
+        styled_button(label, message, ButtonKind::Nav)
+    }
+
+    fn detail_box<'a>(&'a self, title: &'a str) -> Element<'a, Message> {
         container(
             column![
-                text("Selected Action / Result")
+                text(title)
                     .size(12)
                     .font(Font::MONOSPACE)
                     .style(theme::Text::Color(ACCENT_BLUE)),
                 text(self.selected_detail.as_str())
                     .size(13)
-                    .font(Font::MONOSPACE),
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(PRIMARY_TEXT)),
             ]
             .spacing(6),
         )
         .width(Length::Fill)
         .height(Length::Fill)
         .padding(10)
-        .style(theme::Container::Box)
+        .style(container_style(PanelKind::Detail))
         .into()
     }
 
@@ -351,6 +510,133 @@ impl AIACSApp {
             "Ready"
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum PanelKind {
+    Window,
+    Status,
+    Panel,
+    Elevated,
+    Log,
+    Detail,
+    Badge,
+}
+
+#[derive(Clone, Copy)]
+struct PanelStyle {
+    kind: PanelKind,
+}
+
+impl iced::widget::container::StyleSheet for PanelStyle {
+    type Style = Theme;
+
+    fn appearance(&self, _style: &Self::Style) -> iced::widget::container::Appearance {
+        let (background, border_color, radius) = match self.kind {
+            PanelKind::Window => (WINDOW_BG, WINDOW_BG, 0.0),
+            PanelKind::Status => (STATUS_PANEL_BG, BORDER, 7.0),
+            PanelKind::Panel => (PANEL_BG, BORDER, 7.0),
+            PanelKind::Elevated => (ELEVATED_BG, BORDER, 7.0),
+            PanelKind::Log => (LOG_BG, BORDER, 7.0),
+            PanelKind::Detail => (PANEL_BG, BORDER, 6.0),
+            PanelKind::Badge => (BUTTON_BG, BUTTON_BORDER, 5.0),
+        };
+
+        iced::widget::container::Appearance {
+            text_color: Some(PRIMARY_TEXT),
+            background: Some(Background::Color(background)),
+            border: Border {
+                color: border_color,
+                width: if matches!(self.kind, PanelKind::Window) {
+                    0.0
+                } else {
+                    1.0
+                },
+                radius: radius.into(),
+            },
+            ..Default::default()
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ButtonKind {
+    Normal,
+    Primary,
+    Validation,
+    Nav,
+}
+
+#[derive(Clone, Copy)]
+struct ButtonStyle {
+    kind: ButtonKind,
+}
+
+impl iced::widget::button::StyleSheet for ButtonStyle {
+    type Style = Theme;
+
+    fn active(&self, _style: &Self::Style) -> iced::widget::button::Appearance {
+        let (text_color, border_color) = match self.kind {
+            ButtonKind::Normal => (PRIMARY_TEXT, BUTTON_BORDER),
+            ButtonKind::Primary => (ACCENT_PINK, ACCENT_PINK),
+            ButtonKind::Validation => (PRIMARY_TEXT, DANGER_RED),
+            ButtonKind::Nav => (ACCENT_BLUE, ACCENT_BLUE),
+        };
+
+        iced::widget::button::Appearance {
+            background: Some(Background::Color(BUTTON_BG)),
+            text_color,
+            border: Border {
+                color: border_color,
+                width: 1.0,
+                radius: 5.0.into(),
+            },
+            ..Default::default()
+        }
+    }
+
+    fn hovered(&self, style: &Self::Style) -> iced::widget::button::Appearance {
+        iced::widget::button::Appearance {
+            background: Some(Background::Color(BUTTON_HOVER_BG)),
+            ..self.active(style)
+        }
+    }
+
+    fn pressed(&self, style: &Self::Style) -> iced::widget::button::Appearance {
+        iced::widget::button::Appearance {
+            background: Some(Background::Color(ELEVATED_BG)),
+            ..self.active(style)
+        }
+    }
+}
+
+fn container_style(kind: PanelKind) -> theme::Container {
+    theme::Container::Custom(Box::new(PanelStyle { kind }))
+}
+
+fn button_style(kind: ButtonKind) -> theme::Button {
+    theme::Button::custom(ButtonStyle { kind })
+}
+
+fn styled_button<'a>(label: &'a str, message: Message, kind: ButtonKind) -> Element<'a, Message> {
+    button(text(label).size(12).font(Font::MONOSPACE))
+        .width(Length::Fill)
+        .padding([7, 9])
+        .style(button_style(kind))
+        .on_press(message)
+        .into()
+}
+
+fn status_badge(label: &str) -> Element<'_, Message> {
+    container(
+        text(label)
+            .size(12)
+            .font(Font::MONOSPACE)
+            .style(theme::Text::Color(WARNING_YELLOW)),
+    )
+    .padding([5, 8])
+    .style(container_style(PanelKind::Badge))
+    .into()
 }
 
 fn timestamped(tag: &str, message: &str) -> String {
