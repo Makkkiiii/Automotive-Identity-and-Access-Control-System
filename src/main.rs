@@ -2,13 +2,14 @@ use aiacs::app_controller::AppController;
 use chrono::Local;
 use iced::alignment;
 use iced::theme;
-use iced::widget::{button, column, container, row, scrollable, text};
+use iced::widget::{button, column, container, row, scrollable, text, Svg};
 use iced::{
     application, Background, Border, Color, Element, Font, Length, Sandbox, Settings, Theme,
 };
 
 const VEHICLE_ID: &str = "VEHICLE_001";
 const KEY_FOB_ID: &str = "FOB_001";
+const ICON_DIR: &str = "assets/icons";
 
 const WINDOW_BG: Color = Color::from_rgb(0.105, 0.09, 0.11);
 const STATUS_PANEL_BG: Color = Color::from_rgb(0.13, 0.112, 0.14);
@@ -49,22 +50,24 @@ enum Screen {
 #[derive(Debug, Clone)]
 struct SystemStatus {
     top_badge: String,
-    ca_status: String,
+    trust_status: String,
+    key_fob_status: String,
     certificate_status: String,
     authentication_status: String,
     session_status: String,
-    last_decision: String,
+    access_decision: String,
 }
 
 impl Default for SystemStatus {
     fn default() -> Self {
         Self {
             top_badge: "Not Initialized".to_string(),
-            ca_status: "Not Initialized".to_string(),
+            trust_status: "Not Initialized".to_string(),
+            key_fob_status: "Not Registered".to_string(),
             certificate_status: "Not Issued".to_string(),
             authentication_status: "Not Run".to_string(),
             session_status: "Not Established".to_string(),
-            last_decision: "N/A".to_string(),
+            access_decision: "N/A".to_string(),
         }
     }
 }
@@ -73,10 +76,11 @@ impl Default for SystemStatus {
 enum Message {
     OpenValidationLab,
     BackToCoreSystem,
-    InitializeCa,
+    InitializeVehicleTrust,
+    RegisterDigitalKeyFob,
     IssueCertificate,
-    RunLegitimateAuthentication,
-    EstablishSecureSession,
+    VerifyKeyAuthentication,
+    ActivateSecureSession,
     RunAttack(&'static str),
     RunAllAttacks,
 }
@@ -89,17 +93,19 @@ impl Sandbox for AIACSApp {
             controller: AppController::new(),
             screen: Screen::CoreSystem,
             status: SystemStatus::default(),
-            selected_detail: "Select a core workflow action.".to_string(),
+            selected_detail: "Provisioning console ready. Initialize vehicle trust to begin."
+                .to_string(),
             event_log: vec![
-                timestamped("[INFO]", "AIACS GUI initialized"),
-                timestamped("[INFO]", "Awaiting CA initialization"),
+                timestamped("[INFO]", "AIACS provisioning console initialized"),
+                timestamped("[INFO]", "Vehicle Access Provisioning Console ready"),
+                timestamped("[INFO]", "Awaiting vehicle trust initialization"),
                 timestamped("[INFO]", "Backend controller ready"),
             ],
         }
     }
 
     fn title(&self) -> String {
-        "AIACS - Automotive Identity and Access Control System".to_string()
+        "AIACS - Vehicle Access Provisioning Console".to_string()
     }
 
     fn theme(&self) -> Theme {
@@ -127,80 +133,111 @@ impl Sandbox for AIACSApp {
             Message::OpenValidationLab => {
                 self.screen = Screen::ValidationLab;
                 self.selected_detail =
-                    "Security Validation Lab opened. Attack execution is placeholder-only."
+                    "Diagnostics / Security Validation opened. Attack execution is placeholder-only."
                         .to_string();
-                self.push_log("[INFO]", "Security Validation Lab opened");
+                self.push_log("[INFO]", "Diagnostics / Security Validation opened");
             }
             Message::BackToCoreSystem => {
                 self.screen = Screen::CoreSystem;
                 self.selected_detail = "Returned to Core System operation.".to_string();
                 self.push_log("[INFO]", "Returned to Core System");
             }
-            Message::InitializeCa => match self.controller.initialize_ca() {
+            Message::InitializeVehicleTrust => match self.controller.initialize_ca() {
                 Ok(message) => {
-                    self.status.ca_status = "Initialized".to_string();
-                    self.status.top_badge = "CA Ready".to_string();
+                    self.status.trust_status = "Initialized".to_string();
+                    self.status.top_badge = "Trust Ready".to_string();
                     self.selected_detail = message.clone();
-                    self.push_log("[INFO]", format!("CA initialized: {}", message));
+                    self.push_log("[INFO]", format!("Vehicle trust initialized: {}", message));
                 }
                 Err(error) => {
-                    self.status.ca_status = "Error".to_string();
-                    self.selected_detail = format!("CA initialization failed: {}", error);
-                    self.push_log("[WARN]", format!("CA initialization failed: {}", error));
+                    self.status.trust_status = "Error".to_string();
+                    self.selected_detail =
+                        format!("Vehicle trust initialization failed: {}", error);
+                    self.push_log(
+                        "[WARN]",
+                        format!("Vehicle trust initialization failed: {}", error),
+                    );
                 }
             },
+            Message::RegisterDigitalKeyFob => {
+                self.status.key_fob_status = "Registered".to_string();
+                self.status.top_badge = "Key Fob Registered".to_string();
+                self.selected_detail = format!(
+                    "Digital key fob {} registered for vehicle {}. Certificate issuance is next.",
+                    KEY_FOB_ID, VEHICLE_ID
+                );
+                self.push_log("[INFO]", "Digital key fob registration staged");
+            }
             Message::IssueCertificate => match self.controller.issue_keyfob_certificate() {
                 Ok(message) => {
-                    self.status.ca_status = "Initialized".to_string();
+                    self.status.trust_status = "Initialized".to_string();
+                    self.status.key_fob_status = "Registered".to_string();
                     self.status.certificate_status = "Issued".to_string();
-                    self.status.top_badge = "Certificate Issued".to_string();
+                    self.status.top_badge = "Access Certificate Issued".to_string();
                     self.selected_detail = message.clone();
-                    self.push_log("[INFO]", format!("Certificate issued: {}", message));
+                    self.push_log("[INFO]", format!("Access certificate issued: {}", message));
                 }
                 Err(error) => {
                     self.status.certificate_status = "Error".to_string();
-                    self.selected_detail = format!("Certificate issuance failed: {}", error);
-                    self.push_log("[WARN]", format!("Certificate issuance failed: {}", error));
+                    self.selected_detail = format!("Access certificate issuance failed: {}", error);
+                    self.push_log(
+                        "[WARN]",
+                        format!("Access certificate issuance failed: {}", error),
+                    );
                 }
             },
-            Message::RunLegitimateAuthentication => {
+            Message::VerifyKeyAuthentication => {
                 match self.controller.run_legitimate_authentication_demo() {
                     Ok(message) => {
-                        self.status.ca_status = "Initialized".to_string();
+                        self.status.trust_status = "Initialized".to_string();
+                        self.status.key_fob_status = "Registered".to_string();
                         self.status.certificate_status = "Issued".to_string();
-                        self.status.authentication_status = "Success".to_string();
-                        self.status.last_decision = "Access Granted".to_string();
-                        self.status.top_badge = "Authenticated".to_string();
+                        self.status.authentication_status = "Verified".to_string();
+                        self.status.access_decision = "Access Granted".to_string();
+                        self.status.top_badge = "Key Verified".to_string();
                         self.selected_detail = message.clone();
-                        self.push_log("[AUTH]", format!("Authentication succeeded: {}", message));
+                        self.push_log(
+                            "[AUTH]",
+                            format!("Key authentication verified: {}", message),
+                        );
                     }
                     Err(error) => {
                         self.status.authentication_status = "Failed".to_string();
-                        self.status.last_decision = "Error".to_string();
-                        self.selected_detail = format!("Authentication failed: {}", error);
-                        self.push_log("[WARN]", format!("Authentication failed: {}", error));
+                        self.status.access_decision = "Error".to_string();
+                        self.selected_detail = format!("Key authentication failed: {}", error);
+                        self.push_log("[WARN]", format!("Key authentication failed: {}", error));
                     }
                 }
             }
-            Message::EstablishSecureSession => {
+            Message::ActivateSecureSession => {
                 match self.controller.establish_secure_session_demo() {
-                    Ok(message) => {
-                        self.status.ca_status = "Initialized".to_string();
+                    Ok(_message) => {
+                        self.status.trust_status = "Initialized".to_string();
+                        self.status.key_fob_status = "Registered".to_string();
                         self.status.certificate_status = "Issued".to_string();
                         self.status.session_status = "Active".to_string();
                         self.status.top_badge = "Session Active".to_string();
-                        self.selected_detail = message.clone();
-                        self.push_log("[SESSION]", format!("Session established: {}", message));
+                        self.selected_detail =
+                            "Secure access session activated for the provisioned key fob."
+                                .to_string();
+                        self.push_log(
+                            "[SESSION]",
+                            "Secure access session activated for provisioned key fob",
+                        );
                     }
                     Err(error) => {
                         self.status.session_status = "Error".to_string();
-                        self.selected_detail = format!("Session establishment failed: {}", error);
-                        self.push_log("[WARN]", format!("Session establishment failed: {}", error));
+                        self.selected_detail =
+                            format!("Secure session activation failed: {}", error);
+                        self.push_log(
+                            "[WARN]",
+                            format!("Secure session activation failed: {}", error),
+                        );
                     }
                 }
             }
             Message::RunAttack(label) => {
-                self.status.last_decision = format!("{} queued", label);
+                self.status.access_decision = format!("{} queued", label);
                 self.selected_detail = format!(
                     "{} queued in testing mode. Execution is deferred for this phase.",
                     label
@@ -208,7 +245,7 @@ impl Sandbox for AIACSApp {
                 self.push_log("[ATTACK]", format!("{} selected", label));
             }
             Message::RunAllAttacks => {
-                self.status.last_decision = "Attack suite queued".to_string();
+                self.status.access_decision = "Attack suite queued".to_string();
                 self.selected_detail =
                     "Full adversarial validation suite queued. Execution is deferred.".to_string();
                 self.push_log("[ATTACK]", "Run All Attacks selected");
@@ -233,16 +270,18 @@ impl Sandbox for AIACSApp {
 
 impl AIACSApp {
     fn view_core_system(&self) -> Element<'_, Message> {
-        row![
-            self.view_status_panel(),
-            column![
-                self.view_core_header(),
-                self.view_workflow_panel(),
-                self.view_event_log(),
+        column![
+            row![
+                self.view_status_panel(),
+                column![self.view_core_header(), self.view_workflow_panel(),]
+                    .spacing(10)
+                    .width(Length::FillPortion(5))
+                    .height(Length::Fill),
+                self.view_provisioning_side_panel(),
             ]
             .spacing(10)
-            .width(Length::FillPortion(5))
-            .height(Length::Fill),
+            .height(Length::FillPortion(4)),
+            self.view_event_log(),
         ]
         .spacing(10)
         .height(Length::Fill)
@@ -270,7 +309,7 @@ impl AIACSApp {
                         .size(30)
                         .font(Font::MONOSPACE)
                         .style(theme::Text::Color(ACCENT_PINK)),
-                    text("Automotive Identity and Access Control System")
+                    text("Vehicle Access Provisioning Console")
                         .size(13)
                         .font(Font::MONOSPACE)
                         .style(theme::Text::Color(SECONDARY_TEXT)),
@@ -291,18 +330,22 @@ impl AIACSApp {
         container(
             row![
                 column![
-                    text("Security Validation Lab")
+                    text("Diagnostics / Security Validation")
                         .size(26)
                         .font(Font::MONOSPACE)
                         .style(theme::Text::Color(ACCENT_PINK)),
-                    text("Controlled adversarial validation against AIACS protocol")
+                    text("Controlled adversarial validation for technician testing")
                         .size(13)
                         .font(Font::MONOSPACE)
                         .style(theme::Text::Color(ACCENT_BLUE)),
                 ]
                 .spacing(3)
                 .width(Length::Fill),
-                self.nav_button("Back to Core System", Message::BackToCoreSystem),
+                self.nav_button(
+                    "diagnostics",
+                    "Back to Core System",
+                    Message::BackToCoreSystem
+                ),
             ]
             .spacing(12),
         )
@@ -318,7 +361,7 @@ impl AIACSApp {
                 .size(30)
                 .font(Font::MONOSPACE)
                 .style(theme::Text::Color(ACCENT_PINK)),
-            text("CRYPTOGRAPHIC ACCESS CONTROL")
+            text("VEHICLE ACCESS PROVISIONING")
                 .size(11)
                 .font(Font::MONOSPACE)
                 .style(theme::Text::Color(MUTED_TEXT)),
@@ -330,14 +373,22 @@ impl AIACSApp {
             None,
             column![
                 logo,
-                self.status_row("Vehicle ID", VEHICLE_ID),
-                self.status_row("Key Fob ID", KEY_FOB_ID),
-                self.status_row("CA Status", &self.status.ca_status),
-                self.status_row("Certificate", &self.status.certificate_status),
-                self.status_row("Authentication", &self.status.authentication_status),
-                self.status_row("Session", &self.status.session_status),
-                self.status_row("Last Decision", &self.status.last_decision),
-                self.status_row("Controller", self.controller_label()),
+                self.status_row("vehicle", "Vehicle ID", VEHICLE_ID),
+                self.status_row("key", "Key Fob ID", KEY_FOB_ID),
+                self.status_row("shield", "Trust Status", &self.status.trust_status),
+                self.status_row(
+                    "certificate",
+                    "Certificate Status",
+                    &self.status.certificate_status
+                ),
+                self.status_row(
+                    "auth",
+                    "Authentication Status",
+                    &self.status.authentication_status
+                ),
+                self.status_row("lock", "Secure Session Status", &self.status.session_status),
+                self.status_row("decision", "Access Decision", &self.status.access_decision),
+                self.status_row("gear", "Controller", self.controller_label()),
             ]
             .spacing(9),
             Length::FillPortion(2),
@@ -347,26 +398,40 @@ impl AIACSApp {
 
     fn view_workflow_panel(&self) -> Element<'_, Message> {
         self.panel(
-            Some("Core Authentication Workflow"),
+            Some("Vehicle Access Provisioning"),
             column![
                 row![
-                    self.primary_button("Initialize CA", Message::InitializeCa),
-                    self.action_button("Issue Key Fob Certificate", Message::IssueCertificate),
+                    self.primary_button(
+                        "trust",
+                        "Initialize Vehicle Trust",
+                        Message::InitializeVehicleTrust,
+                    ),
+                    self.action_button(
+                        "register-key",
+                        "Register Digital Key Fob",
+                        Message::RegisterDigitalKeyFob,
+                    ),
                 ]
                 .spacing(8),
                 row![
                     self.action_button(
-                        "Run Legitimate Authentication",
-                        Message::RunLegitimateAuthentication,
+                        "issue-cert",
+                        "Issue Access Certificate",
+                        Message::IssueCertificate,
                     ),
                     self.action_button(
-                        "Establish Secure Session",
-                        Message::EstablishSecureSession,
+                        "verify-auth",
+                        "Verify Key Authentication",
+                        Message::VerifyKeyAuthentication
                     ),
                 ]
                 .spacing(8),
-                self.nav_button("Open Security Validation Lab", Message::OpenValidationLab),
-                self.detail_box("Selected Action / Result"),
+                self.action_button(
+                    "secure-session",
+                    "Activate Secure Session",
+                    Message::ActivateSecureSession,
+                ),
+                self.detail_box("Core Result / Details"),
             ]
             .spacing(10),
             Length::Fill,
@@ -374,36 +439,116 @@ impl AIACSApp {
         )
     }
 
+    fn view_provisioning_side_panel(&self) -> Element<'_, Message> {
+        column![
+            self.panel(
+                Some("Provisioning Summary"),
+                column![
+                    self.summary_row("shield", "Trust", &self.status.trust_status),
+                    self.summary_row("key", "Key Fob", &self.status.key_fob_status),
+                    self.summary_row(
+                        "certificate",
+                        "Certificate",
+                        &self.status.certificate_status
+                    ),
+                    self.summary_row("auth", "Authentication", &self.status.authentication_status),
+                    self.summary_row("lock", "Session", &self.status.session_status),
+                    self.summary_row("decision", "Access", &self.status.access_decision),
+                ]
+                .spacing(8),
+                Length::Fill,
+                PanelKind::Panel,
+            ),
+            self.panel(
+                Some("Diagnostics & Testing"),
+                column![
+                    row![
+                        icon("diagnostics", 20),
+                        text("Diagnostics are isolated from normal vehicle access provisioning.")
+                            .size(12)
+                            .font(Font::MONOSPACE)
+                            .style(theme::Text::Color(ACCENT_BLUE)),
+                    ]
+                    .spacing(8),
+                    self.nav_button(
+                        "warning-shield",
+                        "Open Diagnostics / Security Validation",
+                        Message::OpenValidationLab,
+                    ),
+                ]
+                .spacing(10),
+                Length::Fill,
+                PanelKind::Elevated,
+            ),
+        ]
+        .spacing(10)
+        .width(Length::FillPortion(3))
+        .height(Length::Fill)
+        .into()
+    }
+
     fn view_attack_panel(&self) -> Element<'_, Message> {
         self.panel(
             Some("Attack Scenarios"),
             column![
-                text("Testing mode only")
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(ACCENT_BLUE)),
-                self.validation_button("Replay Attack", Message::RunAttack("Replay Attack")),
-                self.validation_button("Forged Signature", Message::RunAttack("Forged Signature")),
-                self.validation_button("Fake Certificate", Message::RunAttack("Fake Certificate")),
+                row![
+                    icon("warning-shield", 20),
+                    text("Testing mode only")
+                        .size(12)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(ACCENT_BLUE)),
+                ]
+                .spacing(8),
                 self.validation_button(
+                    "warning-shield",
+                    "Replay Attack",
+                    Message::RunAttack("Replay Attack")
+                ),
+                self.validation_button(
+                    "warning-shield",
+                    "Forged Signature",
+                    Message::RunAttack("Forged Signature")
+                ),
+                self.validation_button(
+                    "warning-shield",
+                    "Fake Certificate",
+                    Message::RunAttack("Fake Certificate")
+                ),
+                self.validation_button(
+                    "warning-shield",
                     "Identity Mismatch",
                     Message::RunAttack("Identity Mismatch"),
                 ),
-                self.validation_button("Delayed Relay", Message::RunAttack("Delayed Relay")),
-                self.validation_button("Packet Tampering", Message::RunAttack("Packet Tampering"),),
                 self.validation_button(
+                    "warning-shield",
+                    "Delayed Relay",
+                    Message::RunAttack("Delayed Relay")
+                ),
+                self.validation_button(
+                    "warning-shield",
+                    "Packet Tampering",
+                    Message::RunAttack("Packet Tampering"),
+                ),
+                self.validation_button(
+                    "warning-shield",
                     "Unauthorized Key Fob",
                     Message::RunAttack("Unauthorized Key Fob"),
                 ),
                 self.validation_button(
+                    "warning-shield",
                     "Tampered Ciphertext",
                     Message::RunAttack("Tampered Ciphertext"),
                 ),
                 self.validation_button(
+                    "warning-shield",
                     "Wrong Session Key",
                     Message::RunAttack("Wrong Session Key"),
                 ),
-                self.validation_suite_button("Run All Attacks", Message::RunAllAttacks),
+                self.validation_suite_button(
+                    "diagnostics",
+                    "Run All Attacks",
+                    Message::RunAllAttacks
+                ),
             ]
             .spacing(7),
             Length::FillPortion(2),
@@ -415,10 +560,14 @@ impl AIACSApp {
         self.panel(
             Some("Validation Result / Details"),
             column![
-                text("Adversarial validation is isolated from Core System operation.")
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(ACCENT_BLUE)),
+                row![
+                    icon("diagnostics", 20),
+                    text("Adversarial validation is isolated from Core System operation.")
+                        .size(12)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(ACCENT_BLUE)),
+                ]
+                .spacing(8),
                 self.detail_box("Selected Attack / Result"),
             ]
             .spacing(10),
@@ -429,10 +578,14 @@ impl AIACSApp {
 
     fn view_event_log(&self) -> Element<'_, Message> {
         let entries = self.event_log.iter().fold(
-            column![text("Event Log")
-                .size(16)
-                .font(Font::MONOSPACE)
-                .style(theme::Text::Color(ACCENT_PINK))]
+            column![row![
+                icon("terminal", 20),
+                text("Event Log")
+                    .size(16)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(ACCENT_PINK))
+            ]
+            .spacing(8)]
             .spacing(5),
             |log, entry| {
                 log.push(
@@ -480,8 +633,14 @@ impl AIACSApp {
             .into()
     }
 
-    fn status_row<'a>(&self, label: &'a str, value: &'a str) -> Element<'a, Message> {
+    fn status_row<'a>(
+        &self,
+        icon_name: &'static str,
+        label: &'a str,
+        value: &'a str,
+    ) -> Element<'a, Message> {
         row![
+            icon(icon_name, 18),
             text(label)
                 .size(12)
                 .font(Font::MONOSPACE)
@@ -490,7 +649,7 @@ impl AIACSApp {
             text(value)
                 .size(12)
                 .font(Font::MONOSPACE)
-                .style(theme::Text::Color(PRIMARY_TEXT))
+                .style(theme::Text::Color(status_color(value)))
                 .width(Length::FillPortion(3))
                 .horizontal_alignment(alignment::Horizontal::Right),
         ]
@@ -498,28 +657,76 @@ impl AIACSApp {
         .into()
     }
 
-    fn action_button<'a>(&self, label: &'a str, message: Message) -> Element<'a, Message> {
-        styled_button(label, message, ButtonKind::Normal)
+    fn summary_row<'a>(
+        &self,
+        icon_name: &'static str,
+        label: &'a str,
+        value: &'a str,
+    ) -> Element<'a, Message> {
+        container(
+            row![
+                icon(icon_name, 18),
+                text(label)
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(MUTED_TEXT))
+                    .width(Length::FillPortion(2)),
+                text(value)
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(status_color(value)))
+                    .width(Length::FillPortion(3))
+                    .horizontal_alignment(alignment::Horizontal::Right),
+            ]
+            .spacing(8),
+        )
+        .padding([4, 0])
+        .into()
     }
 
-    fn primary_button<'a>(&self, label: &'a str, message: Message) -> Element<'a, Message> {
-        styled_button(label, message, ButtonKind::Primary)
+    fn action_button<'a>(
+        &self,
+        icon_name: &'static str,
+        label: &'a str,
+        message: Message,
+    ) -> Element<'a, Message> {
+        styled_button(icon_name, label, message, ButtonKind::Normal)
     }
 
-    fn validation_button<'a>(&self, label: &'a str, message: Message) -> Element<'a, Message> {
-        styled_button(label, message, ButtonKind::Validation)
+    fn primary_button<'a>(
+        &self,
+        icon_name: &'static str,
+        label: &'a str,
+        message: Message,
+    ) -> Element<'a, Message> {
+        styled_button(icon_name, label, message, ButtonKind::Primary)
+    }
+
+    fn validation_button<'a>(
+        &self,
+        icon_name: &'static str,
+        label: &'a str,
+        message: Message,
+    ) -> Element<'a, Message> {
+        styled_button(icon_name, label, message, ButtonKind::Validation)
     }
 
     fn validation_suite_button<'a>(
         &self,
+        icon_name: &'static str,
         label: &'a str,
         message: Message,
     ) -> Element<'a, Message> {
-        styled_button(label, message, ButtonKind::ValidationSuite)
+        styled_button(icon_name, label, message, ButtonKind::ValidationSuite)
     }
 
-    fn nav_button<'a>(&self, label: &'a str, message: Message) -> Element<'a, Message> {
-        styled_button(label, message, ButtonKind::Nav)
+    fn nav_button<'a>(
+        &self,
+        icon_name: &'static str,
+        label: &'a str,
+        message: Message,
+    ) -> Element<'a, Message> {
+        styled_button(icon_name, label, message, ButtonKind::Nav)
     }
 
     fn detail_box<'a>(&'a self, title: &'a str) -> Element<'a, Message> {
@@ -537,7 +744,7 @@ impl AIACSApp {
             .spacing(6),
         )
         .width(Length::Fill)
-        .height(Length::Fill)
+        .height(Length::Fixed(96.0))
         .padding(10)
         .style(container_style(PanelKind::Detail))
         .into()
@@ -664,12 +871,32 @@ fn button_style(kind: ButtonKind) -> theme::Button {
     theme::Button::custom(ButtonStyle { kind })
 }
 
-fn styled_button<'a>(label: &'a str, message: Message, kind: ButtonKind) -> Element<'a, Message> {
-    button(text(label).size(12).font(Font::MONOSPACE))
-        .width(Length::Fill)
-        .padding([7, 9])
-        .style(button_style(kind))
-        .on_press(message)
+fn styled_button<'a>(
+    icon_name: &'static str,
+    label: &'a str,
+    message: Message,
+    kind: ButtonKind,
+) -> Element<'a, Message> {
+    button(
+        row![
+            icon(icon_name, 18),
+            text(label).size(12).font(Font::MONOSPACE)
+        ]
+        .spacing(8),
+    )
+    .width(Length::Fill)
+    .padding([7, 9])
+    .style(button_style(kind))
+    .on_press(message)
+    .into()
+}
+
+fn icon(name: &'static str, size: u16) -> Element<'static, Message> {
+    let path = format!("{}/{}.svg", ICON_DIR, name);
+
+    Svg::from_path(path)
+        .width(Length::Fixed(f32::from(size)))
+        .height(Length::Fixed(f32::from(size)))
         .into()
 }
 
@@ -683,6 +910,17 @@ fn status_badge(label: &str) -> Element<'_, Message> {
     .padding([5, 8])
     .style(container_style(PanelKind::Badge))
     .into()
+}
+
+fn status_color(value: &str) -> Color {
+    match value {
+        "Initialized" | "Registered" | "Issued" | "Verified" | "Active" | "Access Granted" => {
+            SUCCESS_GREEN
+        }
+        "Pending" => WARNING_YELLOW,
+        "Error" | "Failed" => DANGER_RED,
+        _ => PRIMARY_TEXT,
+    }
 }
 
 fn timestamped(tag: &str, message: &str) -> String {
