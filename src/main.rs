@@ -4,7 +4,8 @@ use iced::alignment;
 use iced::theme;
 use iced::widget::{button, column, container, row, scrollable, text, Svg};
 use iced::{
-    application, Background, Border, Color, Element, Font, Length, Sandbox, Settings, Theme,
+    application, Alignment, Background, Border, Color, Element, Font, Length, Sandbox, Settings,
+    Theme,
 };
 
 const VEHICLE_ID: &str = "VEHICLE_001";
@@ -28,6 +29,10 @@ const ACCENT_BLUE: Color = Color::from_rgb(0.49, 0.663, 0.847);
 const SUCCESS_GREEN: Color = Color::from_rgb(0.655, 0.824, 0.553);
 const WARNING_YELLOW: Color = Color::from_rgb(0.902, 0.765, 0.518);
 const DANGER_RED: Color = Color::from_rgb(0.878, 0.424, 0.459);
+const PENDING_BG: Color = Color::from_rgb(0.165, 0.153, 0.176);
+const PENDING_BORDER: Color = Color::from_rgb(0.353, 0.325, 0.361);
+const PENDING_TEXT: Color = Color::from_rgb(0.725, 0.659, 0.651);
+const PENDING_DOT: Color = Color::from_rgb(0.561, 0.522, 0.533);
 
 pub fn main() -> iced::Result {
     AIACSApp::run(Settings::default())
@@ -280,7 +285,7 @@ impl AIACSApp {
                 self.view_provisioning_side_panel(),
             ]
             .spacing(10)
-            .height(Length::FillPortion(3)),
+            .height(Length::FillPortion(5)),
             self.view_event_log(),
         ]
         .spacing(10)
@@ -341,11 +346,12 @@ impl AIACSApp {
                 ]
                 .spacing(3)
                 .width(Length::Fill),
-                self.nav_button(
+                container(self.nav_button(
                     "diagnostics",
                     "Back to Core System",
-                    Message::BackToCoreSystem
-                ),
+                    Message::BackToCoreSystem,
+                ))
+                .width(Length::Fixed(240.0)),
             ]
             .spacing(12),
         )
@@ -400,43 +406,192 @@ impl AIACSApp {
         self.panel(
             Some("Vehicle Access Provisioning"),
             column![
-                row![
-                    self.primary_button(
-                        "trust",
-                        "Initialize Vehicle Trust",
-                        Message::InitializeVehicleTrust,
-                    ),
-                    self.action_button(
-                        "register-key",
-                        "Register Digital Key Fob",
-                        Message::RegisterDigitalKeyFob,
-                    ),
-                ]
-                .spacing(8),
-                row![
-                    self.action_button(
-                        "issue-cert",
-                        "Issue Access Certificate",
-                        Message::IssueCertificate,
-                    ),
-                    self.action_button(
-                        "verify-auth",
-                        "Verify Key Authentication",
-                        Message::VerifyKeyAuthentication
-                    ),
-                ]
-                .spacing(8),
-                self.action_button(
-                    "secure-session",
-                    "Activate Secure Session",
-                    Message::ActivateSecureSession,
-                ),
-                self.detail_box("Core Result / Details"),
+                text("Step-by-step workflow to provision and activate a digital key fob for this vehicle.")
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(SECONDARY_TEXT)),
+                self.workflow_step_card(WorkflowStep {
+                    icon_name: "trust",
+                    title: "Initialize Vehicle Trust",
+                    description: "Initialize vehicle trust root and certificate authority.",
+                    status: self.step_status_for("trust"),
+                    button_label: "Initialize Trust",
+                    message: Message::InitializeVehicleTrust,
+                }),
+                self.workflow_step_card(WorkflowStep {
+                    icon_name: "register-key",
+                    title: "Register Digital Key Fob",
+                    description: "Register and prepare the buyer's key fob identity.",
+                    status: self.step_status_for("key_fob"),
+                    button_label: "Register Fob",
+                    message: Message::RegisterDigitalKeyFob,
+                }),
+                self.workflow_step_card(WorkflowStep {
+                    icon_name: "issue-cert",
+                    title: "Issue Access Certificate",
+                    description: "Issue CA-signed access certificate to the key fob.",
+                    status: self.step_status_for("certificate"),
+                    button_label: "Issue Certificate",
+                    message: Message::IssueCertificate,
+                }),
+                self.workflow_step_card(WorkflowStep {
+                    icon_name: "verify-auth",
+                    title: "Verify Key Authentication",
+                    description: "Perform challenge-response authentication.",
+                    status: self.step_status_for("authentication"),
+                    button_label: "Verify Authentication",
+                    message: Message::VerifyKeyAuthentication,
+                }),
+                self.workflow_step_card(WorkflowStep {
+                    icon_name: "secure-session",
+                    title: "Activate Secure Session",
+                    description: "Establish encrypted access session.",
+                    status: self.step_status_for("session"),
+                    button_label: "Activate Session",
+                    message: Message::ActivateSecureSession,
+                }),
+                self.provisioning_completion_card(),
+                self.core_detail_box(),
             ]
-            .spacing(10),
+            .spacing(8),
             Length::Fill,
             PanelKind::Elevated,
         )
+    }
+
+    fn workflow_step_card<'a>(&self, step: WorkflowStep<'a>) -> Element<'a, Message> {
+        container(
+            row![
+                icon(step.icon_name, 22),
+                column![
+                    text(step.title)
+                        .size(13)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(PRIMARY_TEXT)),
+                    text(step.description)
+                        .size(11)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(SECONDARY_TEXT)),
+                ]
+                .spacing(3)
+                .width(Length::Fill),
+                status_chip(step.status),
+                compact_button(
+                    step.icon_name,
+                    step.button_label,
+                    step.message,
+                    ButtonKind::StepAction,
+                ),
+            ]
+            .spacing(12)
+            .align_items(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .padding([8, 10])
+        .style(container_style(PanelKind::StepCard))
+        .into()
+    }
+
+    fn provisioning_completion_card(&self) -> Element<'_, Message> {
+        let complete = self.setup_complete();
+        let (title, message, color, kind) = if complete {
+            (
+                "Vehicle Access Setup Complete",
+                "The key fob is authorized and ready for secure vehicle access.",
+                SUCCESS_GREEN,
+                PanelKind::SuccessCard,
+            )
+        } else {
+            (
+                "Provisioning In Progress",
+                "Complete the provisioning steps to authorize the digital key fob.",
+                PENDING_TEXT,
+                PanelKind::ProgressCard,
+            )
+        };
+
+        container(
+            column![
+                text(title)
+                    .size(14)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(color)),
+                text(message)
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(PRIMARY_TEXT)),
+            ]
+            .spacing(4)
+            .width(Length::Fill),
+        )
+        .width(Length::Fill)
+        .padding(12)
+        .style(container_style(kind))
+        .into()
+    }
+
+    fn core_detail_box(&self) -> Element<'_, Message> {
+        container(
+            column![
+                text("Core Result / Details")
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(ACCENT_BLUE)),
+                self.detail_row("Last Result", self.selected_detail.as_str()),
+                self.detail_row("Auth Method", "Ed25519 + PKI"),
+                self.detail_row("Session Method", "X25519 + HKDF + AES-GCM"),
+                self.detail_row("Certificate Trust", self.certificate_trust_label()),
+                self.detail_row("Access Decision", &self.status.access_decision),
+            ]
+            .spacing(6),
+        )
+        .width(Length::Fill)
+        .padding(10)
+        .style(container_style(PanelKind::Detail))
+        .into()
+    }
+
+    fn summary_status_card(&self) -> Element<'_, Message> {
+        let complete = self.setup_complete();
+        let color = if complete {
+            SUCCESS_GREEN
+        } else {
+            PENDING_TEXT
+        };
+        let title = if complete {
+            "Setup Complete"
+        } else {
+            "In Progress"
+        };
+        let message = if complete {
+            "The vehicle and key fob are successfully provisioned."
+        } else {
+            "Provisioning steps are still pending."
+        };
+
+        container(
+            column![
+                row![
+                    status_dot(if complete { SUCCESS_GREEN } else { PENDING_DOT }),
+                    text(title)
+                        .size(15)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(color)),
+                ]
+                .spacing(8)
+                .align_items(Alignment::Center),
+                text(message)
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(PRIMARY_TEXT)),
+            ]
+            .spacing(7)
+            .align_items(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .padding(14)
+        .style(container_style(PanelKind::SummaryHero))
+        .into()
     }
 
     fn view_provisioning_side_panel(&self) -> Element<'_, Message> {
@@ -444,18 +599,19 @@ impl AIACSApp {
             self.panel(
                 Some("Provisioning Summary"),
                 column![
-                    self.summary_row("shield", "Trust", &self.status.trust_status),
-                    self.summary_row("key", "Key Fob", &self.status.key_fob_status),
+                    self.summary_status_card(),
+                    self.summary_row("vehicle", "Vehicle", VEHICLE_ID),
+                    self.summary_row("key", "Key Fob", KEY_FOB_ID),
                     self.summary_row(
                         "certificate",
                         "Certificate",
                         &self.status.certificate_status
                     ),
                     self.summary_row("auth", "Authentication", &self.status.authentication_status),
-                    self.summary_row("lock", "Session", &self.status.session_status),
-                    self.summary_row("decision", "Access", &self.status.access_decision),
+                    self.summary_row("lock", "Secure Session", &self.status.session_status),
+                    self.summary_row("decision", "Access Decision", &self.status.access_decision),
                 ]
-                .spacing(8),
+                .spacing(10),
                 Length::Fill,
                 PanelKind::Panel,
             ),
@@ -589,12 +745,28 @@ impl AIACSApp {
             .spacing(5)
             .width(Length::Fill),
             |log, entry| {
+                let (timestamp, tag, message) = log_parts(entry);
+
                 log.push(
-                    text(entry.as_str())
-                        .size(12)
-                        .font(Font::MONOSPACE)
-                        .style(theme::Text::Color(PRIMARY_TEXT))
-                        .width(Length::Fill),
+                    row![
+                        text(timestamp)
+                            .size(12)
+                            .font(Font::MONOSPACE)
+                            .style(theme::Text::Color(MUTED_TEXT))
+                            .width(Length::Fixed(70.0)),
+                        text(tag)
+                            .size(12)
+                            .font(Font::MONOSPACE)
+                            .style(theme::Text::Color(log_tag_color(tag)))
+                            .width(Length::Fixed(78.0)),
+                        text(message)
+                            .size(12)
+                            .font(Font::MONOSPACE)
+                            .style(theme::Text::Color(PRIMARY_TEXT))
+                            .width(Length::Fill),
+                    ]
+                    .spacing(8)
+                    .align_items(Alignment::Center),
                 )
             },
         );
@@ -680,8 +852,10 @@ impl AIACSApp {
                     .style(theme::Text::Color(status_color(value)))
                     .width(Length::Fill)
                     .horizontal_alignment(alignment::Horizontal::Right),
+                status_dot(status_color(value)),
             ]
             .spacing(8)
+            .align_items(Alignment::Center)
             .width(Length::Fill),
         )
         .width(Length::Fill)
@@ -689,22 +863,69 @@ impl AIACSApp {
         .into()
     }
 
-    fn action_button<'a>(
-        &self,
-        icon_name: &'static str,
-        label: &'a str,
-        message: Message,
-    ) -> Element<'a, Message> {
-        styled_button(icon_name, label, message, ButtonKind::Normal)
+    fn detail_row<'a>(&self, label: &'a str, value: &'a str) -> Element<'a, Message> {
+        row![
+            text(label)
+                .size(11)
+                .font(Font::MONOSPACE)
+                .style(theme::Text::Color(MUTED_TEXT))
+                .width(Length::Fixed(132.0)),
+            text(value)
+                .size(11)
+                .font(Font::MONOSPACE)
+                .style(theme::Text::Color(status_color(value)))
+                .width(Length::Fill),
+        ]
+        .spacing(8)
+        .width(Length::Fill)
+        .into()
     }
 
-    fn primary_button<'a>(
-        &self,
-        icon_name: &'static str,
-        label: &'a str,
-        message: Message,
-    ) -> Element<'a, Message> {
-        styled_button(icon_name, label, message, ButtonKind::Primary)
+    fn setup_complete(&self) -> bool {
+        self.status.session_status == "Active" && self.status.access_decision == "Access Granted"
+    }
+
+    fn certificate_trust_label(&self) -> &str {
+        if self.status.certificate_status == "Issued" {
+            "CA-signed certificate issued"
+        } else if self.status.trust_status == "Initialized" {
+            "Trust root initialized"
+        } else if self.status.certificate_status == "Error" || self.status.trust_status == "Error" {
+            "Certificate trust error"
+        } else {
+            "Pending"
+        }
+    }
+
+    fn step_status_for(&self, step: &str) -> StepStatus {
+        match step {
+            "trust" => match self.status.trust_status.as_str() {
+                "Initialized" => StepStatus::Completed,
+                "Error" => StepStatus::Error,
+                _ => StepStatus::Pending,
+            },
+            "key_fob" => match self.status.key_fob_status.as_str() {
+                "Registered" => StepStatus::Completed,
+                "Error" => StepStatus::Error,
+                _ => StepStatus::Pending,
+            },
+            "certificate" => match self.status.certificate_status.as_str() {
+                "Issued" => StepStatus::Completed,
+                "Error" => StepStatus::Error,
+                _ => StepStatus::Pending,
+            },
+            "authentication" => match self.status.authentication_status.as_str() {
+                "Verified" => StepStatus::Success,
+                "Failed" | "Error" => StepStatus::Error,
+                _ => StepStatus::Pending,
+            },
+            "session" => match self.status.session_status.as_str() {
+                "Active" => StepStatus::Active,
+                "Error" => StepStatus::Error,
+                _ => StepStatus::Pending,
+            },
+            _ => StepStatus::Pending,
+        }
     }
 
     fn validation_button<'a>(
@@ -768,6 +989,24 @@ impl AIACSApp {
     }
 }
 
+struct WorkflowStep<'a> {
+    icon_name: &'static str,
+    title: &'a str,
+    description: &'a str,
+    status: StepStatus,
+    button_label: &'a str,
+    message: Message,
+}
+
+#[derive(Clone, Copy)]
+enum StepStatus {
+    Pending,
+    Completed,
+    Success,
+    Active,
+    Error,
+}
+
 #[derive(Clone, Copy)]
 enum PanelKind {
     Window,
@@ -776,6 +1015,12 @@ enum PanelKind {
     Elevated,
     Log,
     Detail,
+    StepCard,
+    SuccessCard,
+    ProgressCard,
+    SummaryHero,
+    StatusChip(StepStatus),
+    StatusDot(Color),
     Badge,
 }
 
@@ -795,6 +1040,22 @@ impl iced::widget::container::StyleSheet for PanelStyle {
             PanelKind::Elevated => (ELEVATED_BG, BORDER, 7.0),
             PanelKind::Log => (LOG_BG, BORDER, 7.0),
             PanelKind::Detail => (PANEL_BG, BORDER, 6.0),
+            PanelKind::StepCard => (PANEL_BG, BUTTON_BORDER, 6.0),
+            PanelKind::SuccessCard => (
+                Color::from_rgb(0.095, 0.16, 0.13),
+                Color::from_rgb(0.24, 0.42, 0.28),
+                7.0,
+            ),
+            PanelKind::ProgressCard => (PENDING_BG, PENDING_BORDER, 7.0),
+            PanelKind::SummaryHero => (LOG_BG, BUTTON_BORDER, 7.0),
+            PanelKind::StatusChip(status) => match status {
+                StepStatus::Pending => (PENDING_BG, PENDING_BORDER, 5.0),
+                StepStatus::Completed | StepStatus::Success | StepStatus::Active => {
+                    (Color::from_rgb(0.11, 0.14, 0.12), SUCCESS_GREEN, 5.0)
+                }
+                StepStatus::Error => (Color::from_rgb(0.18, 0.105, 0.115), DANGER_RED, 5.0),
+            },
+            PanelKind::StatusDot(color) => (color, color, 999.0),
             PanelKind::Badge => (BUTTON_BG, BUTTON_BORDER, 5.0),
         };
 
@@ -817,8 +1078,7 @@ impl iced::widget::container::StyleSheet for PanelStyle {
 
 #[derive(Clone, Copy)]
 enum ButtonKind {
-    Normal,
-    Primary,
+    StepAction,
     Validation,
     ValidationSuite,
     Nav,
@@ -834,8 +1094,7 @@ impl iced::widget::button::StyleSheet for ButtonStyle {
 
     fn active(&self, _style: &Self::Style) -> iced::widget::button::Appearance {
         let (text_color, border_color) = match self.kind {
-            ButtonKind::Normal => (PRIMARY_TEXT, BUTTON_BORDER),
-            ButtonKind::Primary => (ACCENT_PINK, ACCENT_PINK),
+            ButtonKind::StepAction => (PRIMARY_TEXT, ACCENT_PINK),
             ButtonKind::Validation => (PRIMARY_TEXT, BUTTON_BORDER),
             ButtonKind::ValidationSuite => (ACCENT_PINK, ACCENT_PINK),
             ButtonKind::Nav => (ACCENT_BLUE, ACCENT_BLUE),
@@ -896,6 +1155,57 @@ fn styled_button<'a>(
     .into()
 }
 
+fn compact_button<'a>(
+    icon_name: &'static str,
+    label: &'a str,
+    message: Message,
+    kind: ButtonKind,
+) -> Element<'a, Message> {
+    button(
+        row![
+            icon(icon_name, 16),
+            text(label).size(11).font(Font::MONOSPACE)
+        ]
+        .spacing(7)
+        .align_items(Alignment::Center),
+    )
+    .width(Length::Fixed(168.0))
+    .padding([7, 9])
+    .style(button_style(kind))
+    .on_press(message)
+    .into()
+}
+
+fn status_chip(status: StepStatus) -> Element<'static, Message> {
+    let label = step_status_label(status);
+    let text_color = step_status_color(status);
+    let dot_color = step_status_dot_color(status);
+
+    container(
+        row![
+            status_dot(dot_color),
+            text(label)
+                .size(11)
+                .font(Font::MONOSPACE)
+                .style(theme::Text::Color(text_color)),
+        ]
+        .spacing(6)
+        .align_items(Alignment::Center),
+    )
+    .width(Length::Fixed(112.0))
+    .padding([6, 8])
+    .style(container_style(PanelKind::StatusChip(status)))
+    .into()
+}
+
+fn status_dot(color: Color) -> Element<'static, Message> {
+    container(text(""))
+        .width(Length::Fixed(7.0))
+        .height(Length::Fixed(7.0))
+        .style(container_style(PanelKind::StatusDot(color)))
+        .into()
+}
+
 fn icon(name: &'static str, size: u16) -> Element<'static, Message> {
     let path = format!("{}/{}.svg", ICON_DIR, name);
 
@@ -910,22 +1220,91 @@ fn status_badge(label: &str) -> Element<'_, Message> {
         text(label)
             .size(12)
             .font(Font::MONOSPACE)
-            .style(theme::Text::Color(WARNING_YELLOW)),
+            .style(theme::Text::Color(badge_color(label))),
     )
     .padding([5, 8])
     .style(container_style(PanelKind::Badge))
     .into()
 }
 
-fn status_color(value: &str) -> Color {
+fn badge_color(value: &str) -> Color {
     match value {
-        "Initialized" | "Registered" | "Issued" | "Verified" | "Active" | "Access Granted" => {
-            SUCCESS_GREEN
-        }
-        "Pending" => WARNING_YELLOW,
+        "Not Initialized" => PENDING_TEXT,
+        "Trust Ready"
+        | "Key Fob Registered"
+        | "Access Certificate Issued"
+        | "Key Verified"
+        | "Session Active" => SUCCESS_GREEN,
         "Error" | "Failed" => DANGER_RED,
         _ => PRIMARY_TEXT,
     }
+}
+
+fn status_color(value: &str) -> Color {
+    match value {
+        "Initialized"
+        | "Registered"
+        | "Issued"
+        | "Verified"
+        | "Active"
+        | "Access Granted"
+        | "Granted"
+        | "Complete"
+        | "CA-signed certificate issued"
+        | "Trust root initialized" => SUCCESS_GREEN,
+        "Pending" | "Not Initialized" | "Not Registered" | "Not Issued" | "Not Run"
+        | "Not Established" | "N/A" => PENDING_TEXT,
+        "Error" | "Failed" | "Rejected" | "Access Rejected" | "Certificate trust error" => {
+            DANGER_RED
+        }
+        _ => PRIMARY_TEXT,
+    }
+}
+
+fn step_status_label(status: StepStatus) -> &'static str {
+    match status {
+        StepStatus::Pending => "Pending",
+        StepStatus::Completed => "Completed",
+        StepStatus::Success => "Success",
+        StepStatus::Active => "Active",
+        StepStatus::Error => "Error",
+    }
+}
+
+fn step_status_color(status: StepStatus) -> Color {
+    match status {
+        StepStatus::Pending => PENDING_TEXT,
+        StepStatus::Completed | StepStatus::Success | StepStatus::Active => SUCCESS_GREEN,
+        StepStatus::Error => DANGER_RED,
+    }
+}
+
+fn step_status_dot_color(status: StepStatus) -> Color {
+    match status {
+        StepStatus::Pending => PENDING_DOT,
+        StepStatus::Completed | StepStatus::Success | StepStatus::Active => SUCCESS_GREEN,
+        StepStatus::Error => DANGER_RED,
+    }
+}
+
+fn log_tag_color(tag: &str) -> Color {
+    match tag {
+        "[INFO]" => ACCENT_BLUE,
+        "[AUTH]" => ACCENT_PINK,
+        "[SESSION]" => SUCCESS_GREEN,
+        "[ATTACK]" | "[ERROR]" => DANGER_RED,
+        "[WARN]" => WARNING_YELLOW,
+        _ => SECONDARY_TEXT,
+    }
+}
+
+fn log_parts(entry: &str) -> (&str, &str, &str) {
+    let mut parts = entry.splitn(3, ' ');
+    let timestamp = parts.next().unwrap_or("");
+    let tag = parts.next().unwrap_or("");
+    let message = parts.next().unwrap_or("");
+
+    (timestamp, tag, message)
 }
 
 fn timestamped(tag: &str, message: &str) -> String {
