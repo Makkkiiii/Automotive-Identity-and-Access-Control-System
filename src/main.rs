@@ -280,7 +280,7 @@ impl AIACSApp {
                 self.view_provisioning_side_panel(),
             ]
             .spacing(10)
-            .height(Length::FillPortion(5)),
+            .height(Length::FillPortion(3)),
             self.view_event_log(),
         ]
         .spacing(10)
@@ -293,7 +293,7 @@ impl AIACSApp {
             self.view_validation_header(),
             row![self.view_attack_panel(), self.view_result_panel()]
                 .spacing(10)
-                .height(Length::FillPortion(5)),
+                .height(Length::FillPortion(3)),
             self.view_event_log(),
         ]
         .spacing(10)
@@ -601,7 +601,7 @@ impl AIACSApp {
 
         container(scrollable(entries).width(Length::Fill).height(Length::Fill))
             .width(Length::Fill)
-            .height(Length::FillPortion(1))
+            .height(Length::FillPortion(2))
             .padding(10)
             .style(container_style(PanelKind::Log))
             .into()
