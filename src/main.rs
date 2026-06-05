@@ -371,7 +371,6 @@ impl AIACSApp {
                 .size(11)
                 .font(Font::MONOSPACE)
                 .style(theme::Text::Color(MUTED_TEXT)),
-            status_badge(&self.status.top_badge),
         ]
         .spacing(6);
 
@@ -566,80 +565,110 @@ impl AIACSApp {
         let message = if complete {
             "The vehicle and key fob are successfully provisioned."
         } else {
-            "Provisioning steps are still pending."
+            "Complete the provisioning steps to authorize the key fob."
         };
 
         container(
             column![
-                row![
-                    status_dot(if complete { SUCCESS_GREEN } else { PENDING_DOT }),
-                    text(title)
-                        .size(15)
-                        .font(Font::MONOSPACE)
-                        .style(theme::Text::Color(color)),
-                ]
-                .spacing(8)
-                .align_items(Alignment::Center),
+                summary_indicator(complete),
+                text(title)
+                    .size(15)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(color))
+                    .horizontal_alignment(alignment::Horizontal::Center),
                 text(message)
                     .size(12)
                     .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(PRIMARY_TEXT)),
+                    .style(theme::Text::Color(SECONDARY_TEXT))
+                    .horizontal_alignment(alignment::Horizontal::Center),
             ]
-            .spacing(7)
+            .spacing(5)
             .align_items(Alignment::Center),
         )
         .width(Length::Fill)
-        .padding(14)
+        .padding([10, 12])
         .style(container_style(PanelKind::SummaryHero))
         .into()
     }
 
     fn view_provisioning_side_panel(&self) -> Element<'_, Message> {
         column![
-            self.panel(
-                Some("Provisioning Summary"),
+            self.view_provisioning_summary_panel(),
+            self.view_diagnostics_card(),
+        ]
+        .spacing(10)
+        .width(Length::FillPortion(3))
+        .height(Length::Fill)
+        .into()
+    }
+
+    fn view_provisioning_summary_panel(&self) -> Element<'_, Message> {
+        container(
+            column![
+                text("Provisioning Summary")
+                    .size(16)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(ACCENT_PINK)),
+                self.summary_status_card(),
                 column![
-                    self.summary_status_card(),
                     self.summary_row("vehicle", "Vehicle", VEHICLE_ID),
                     self.summary_row("key", "Key Fob", KEY_FOB_ID),
                     self.summary_row(
                         "certificate",
                         "Certificate",
-                        &self.status.certificate_status
+                        self.summary_certificate_value()
                     ),
-                    self.summary_row("auth", "Authentication", &self.status.authentication_status),
-                    self.summary_row("lock", "Secure Session", &self.status.session_status),
-                    self.summary_row("decision", "Access Decision", &self.status.access_decision),
-                ]
-                .spacing(10),
-                Length::Fill,
-                PanelKind::Panel,
-            ),
-            self.panel(
-                Some("Diagnostics & Testing"),
-                column![
-                    row![
-                        icon("diagnostics", 20),
-                        text("Diagnostics are isolated from normal vehicle access provisioning.")
-                            .size(12)
-                            .font(Font::MONOSPACE)
-                            .style(theme::Text::Color(ACCENT_BLUE)),
-                    ]
-                    .spacing(8),
-                    self.nav_button(
-                        "warning-shield",
-                        "Open Diagnostics / Security Validation",
-                        Message::OpenValidationLab,
+                    self.summary_row(
+                        "auth",
+                        "Authentication",
+                        self.summary_authentication_value()
                     ),
+                    self.summary_row("lock", "Secure Session", self.summary_session_value()),
+                    self.summary_row("decision", "Access Decision", self.summary_access_value()),
                 ]
-                .spacing(10),
-                Length::Fill,
-                PanelKind::Elevated,
-            ),
-        ]
-        .spacing(10)
-        .width(Length::FillPortion(3))
+                .spacing(6),
+            ]
+            .spacing(10),
+        )
+        .width(Length::Fill)
         .height(Length::Fill)
+        .padding(10)
+        .style(container_style(PanelKind::Panel))
+        .into()
+    }
+
+    fn view_diagnostics_card(&self) -> Element<'_, Message> {
+        container(
+            column![
+                text("Diagnostics & Testing")
+                    .size(16)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(ACCENT_PINK)),
+                text("Run security validations and protocol testing in a separate environment.")
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(PRIMARY_TEXT)),
+                self.nav_button(
+                    "warning-shield",
+                    "Open Diagnostics / Security Validation",
+                    Message::OpenValidationLab,
+                ),
+                row![
+                    icon("diagnostics", 18),
+                    text("Diagnostics are isolated from normal provisioning.")
+                        .size(11)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(ACCENT_BLUE)),
+                ]
+                .spacing(8)
+                .align_items(Alignment::Center),
+            ]
+            .spacing(7),
+        )
+        .width(Length::Fill)
+        .height(Length::Fixed(150.0))
+        .padding(10)
+        .style(container_style(PanelKind::Elevated))
         .into()
     }
 
@@ -840,26 +869,28 @@ impl AIACSApp {
     ) -> Element<'a, Message> {
         container(
             row![
-                icon(icon_name, 18),
+                container(icon(icon_name, 18))
+                    .width(Length::Fixed(24.0))
+                    .center_x(),
                 text(label)
                     .size(12)
                     .font(Font::MONOSPACE)
                     .style(theme::Text::Color(MUTED_TEXT))
-                    .width(Length::Fixed(118.0)),
+                    .width(Length::Fill),
                 text(value)
                     .size(12)
                     .font(Font::MONOSPACE)
                     .style(theme::Text::Color(status_color(value)))
-                    .width(Length::Fill)
+                    .width(Length::Fixed(96.0))
                     .horizontal_alignment(alignment::Horizontal::Right),
-                status_dot(status_color(value)),
             ]
             .spacing(8)
             .align_items(Alignment::Center)
             .width(Length::Fill),
         )
         .width(Length::Fill)
-        .padding([4, 0])
+        .height(Length::Fixed(32.0))
+        .padding([6, 0])
         .into()
     }
 
@@ -883,6 +914,38 @@ impl AIACSApp {
 
     fn setup_complete(&self) -> bool {
         self.status.session_status == "Active" && self.status.access_decision == "Access Granted"
+    }
+
+    fn summary_certificate_value(&self) -> &str {
+        match self.status.certificate_status.as_str() {
+            "Issued" => "Issued",
+            "Error" | "Failed" => "Error",
+            _ => "Not Issued",
+        }
+    }
+
+    fn summary_authentication_value(&self) -> &str {
+        match self.status.authentication_status.as_str() {
+            "Verified" => "Verified",
+            "Failed" | "Error" => "Failed",
+            _ => "Pending",
+        }
+    }
+
+    fn summary_session_value(&self) -> &str {
+        match self.status.session_status.as_str() {
+            "Active" => "Active",
+            "Error" | "Failed" => "Error",
+            _ => "Pending",
+        }
+    }
+
+    fn summary_access_value(&self) -> &str {
+        match self.status.access_decision.as_str() {
+            "Access Granted" | "Granted" => "Granted",
+            "Access Rejected" | "Rejected" | "Error" => "Rejected",
+            _ => "Pending",
+        }
     }
 
     fn certificate_trust_label(&self) -> &str {
@@ -1019,6 +1082,7 @@ enum PanelKind {
     SuccessCard,
     ProgressCard,
     SummaryHero,
+    SummaryIndicator(bool),
     StatusChip(StepStatus),
     StatusDot(Color),
     Badge,
@@ -1048,6 +1112,13 @@ impl iced::widget::container::StyleSheet for PanelStyle {
             ),
             PanelKind::ProgressCard => (PENDING_BG, PENDING_BORDER, 7.0),
             PanelKind::SummaryHero => (LOG_BG, BUTTON_BORDER, 7.0),
+            PanelKind::SummaryIndicator(complete) => {
+                if complete {
+                    (Color::from_rgb(0.10, 0.17, 0.13), SUCCESS_GREEN, 999.0)
+                } else {
+                    (PENDING_BG, PENDING_BORDER, 999.0)
+                }
+            }
             PanelKind::StatusChip(status) => match status {
                 StepStatus::Pending => (PENDING_BG, PENDING_BORDER, 5.0),
                 StepStatus::Completed | StepStatus::Success | StepStatus::Active => {
@@ -1206,6 +1277,24 @@ fn status_dot(color: Color) -> Element<'static, Message> {
         .into()
 }
 
+fn summary_indicator(complete: bool) -> Element<'static, Message> {
+    let label = if complete { "✓" } else { "" };
+    let color = if complete { SUCCESS_GREEN } else { PENDING_DOT };
+
+    container(
+        text(label)
+            .size(20)
+            .font(Font::MONOSPACE)
+            .style(theme::Text::Color(color)),
+    )
+    .width(Length::Fixed(36.0))
+    .height(Length::Fixed(36.0))
+    .center_x()
+    .center_y()
+    .style(container_style(PanelKind::SummaryIndicator(complete)))
+    .into()
+}
+
 fn icon(name: &'static str, size: u16) -> Element<'static, Message> {
     let path = format!("{}/{}.svg", ICON_DIR, name);
 
@@ -1249,6 +1338,7 @@ fn status_color(value: &str) -> Color {
         | "Active"
         | "Access Granted"
         | "Granted"
+        | "Valid"
         | "Complete"
         | "CA-signed certificate issued"
         | "Trust root initialized" => SUCCESS_GREEN,
