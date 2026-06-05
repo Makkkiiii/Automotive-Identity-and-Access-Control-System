@@ -48,6 +48,7 @@ enum Screen {
 
 #[derive(Debug, Clone)]
 struct SystemStatus {
+    top_badge: String,
     ca_status: String,
     certificate_status: String,
     authentication_status: String,
@@ -58,6 +59,7 @@ struct SystemStatus {
 impl Default for SystemStatus {
     fn default() -> Self {
         Self {
+            top_badge: "Not Initialized".to_string(),
             ca_status: "Not Initialized".to_string(),
             certificate_status: "Not Issued".to_string(),
             authentication_status: "Not Run".to_string(),
@@ -134,34 +136,68 @@ impl Sandbox for AIACSApp {
                 self.selected_detail = "Returned to Core System operation.".to_string();
                 self.push_log("[INFO]", "Returned to Core System");
             }
-            Message::InitializeCa => {
-                self.status.ca_status = "Pending".to_string();
-                self.selected_detail =
-                    "Initialize CA requested. Backend wiring is deferred for this GUI phase."
-                        .to_string();
-                self.push_log("[INFO]", "Initialize CA selected");
-            }
-            Message::IssueCertificate => {
-                self.status.certificate_status = "Pending".to_string();
-                self.selected_detail =
-                    "Key fob certificate issuance requested. No certificate material is displayed."
-                        .to_string();
-                self.push_log("[INFO]", "Issue Key Fob Certificate selected");
-            }
+            Message::InitializeCa => match self.controller.initialize_ca() {
+                Ok(message) => {
+                    self.status.ca_status = "Initialized".to_string();
+                    self.status.top_badge = "CA Ready".to_string();
+                    self.selected_detail = message.clone();
+                    self.push_log("[INFO]", format!("CA initialized: {}", message));
+                }
+                Err(error) => {
+                    self.status.ca_status = "Error".to_string();
+                    self.selected_detail = format!("CA initialization failed: {}", error);
+                    self.push_log("[WARN]", format!("CA initialization failed: {}", error));
+                }
+            },
+            Message::IssueCertificate => match self.controller.issue_keyfob_certificate() {
+                Ok(message) => {
+                    self.status.ca_status = "Initialized".to_string();
+                    self.status.certificate_status = "Issued".to_string();
+                    self.status.top_badge = "Certificate Issued".to_string();
+                    self.selected_detail = message.clone();
+                    self.push_log("[INFO]", format!("Certificate issued: {}", message));
+                }
+                Err(error) => {
+                    self.status.certificate_status = "Error".to_string();
+                    self.selected_detail = format!("Certificate issuance failed: {}", error);
+                    self.push_log("[WARN]", format!("Certificate issuance failed: {}", error));
+                }
+            },
             Message::RunLegitimateAuthentication => {
-                self.status.authentication_status = "Pending".to_string();
-                self.status.last_decision = "Pending".to_string();
-                self.selected_detail =
-                    "Legitimate authentication demo selected. No protocol logic runs in main.rs."
-                        .to_string();
-                self.push_log("[AUTH]", "Legitimate authentication selected");
+                match self.controller.run_legitimate_authentication_demo() {
+                    Ok(message) => {
+                        self.status.ca_status = "Initialized".to_string();
+                        self.status.certificate_status = "Issued".to_string();
+                        self.status.authentication_status = "Success".to_string();
+                        self.status.last_decision = "Access Granted".to_string();
+                        self.status.top_badge = "Authenticated".to_string();
+                        self.selected_detail = message.clone();
+                        self.push_log("[AUTH]", format!("Authentication succeeded: {}", message));
+                    }
+                    Err(error) => {
+                        self.status.authentication_status = "Failed".to_string();
+                        self.status.last_decision = "Error".to_string();
+                        self.selected_detail = format!("Authentication failed: {}", error);
+                        self.push_log("[WARN]", format!("Authentication failed: {}", error));
+                    }
+                }
             }
             Message::EstablishSecureSession => {
-                self.status.session_status = "Pending".to_string();
-                self.selected_detail =
-                    "Secure session establishment selected. Session keys remain hidden."
-                        .to_string();
-                self.push_log("[SESSION]", "Secure session establishment selected");
+                match self.controller.establish_secure_session_demo() {
+                    Ok(message) => {
+                        self.status.ca_status = "Initialized".to_string();
+                        self.status.certificate_status = "Issued".to_string();
+                        self.status.session_status = "Active".to_string();
+                        self.status.top_badge = "Session Active".to_string();
+                        self.selected_detail = message.clone();
+                        self.push_log("[SESSION]", format!("Session established: {}", message));
+                    }
+                    Err(error) => {
+                        self.status.session_status = "Error".to_string();
+                        self.selected_detail = format!("Session establishment failed: {}", error);
+                        self.push_log("[WARN]", format!("Session establishment failed: {}", error));
+                    }
+                }
             }
             Message::RunAttack(label) => {
                 self.status.last_decision = format!("{} queued", label);
@@ -241,7 +277,7 @@ impl AIACSApp {
                 ]
                 .spacing(2)
                 .width(Length::Fill),
-                status_badge("Core System"),
+                status_badge(&self.status.top_badge),
             ]
             .spacing(12),
         )
@@ -286,7 +322,7 @@ impl AIACSApp {
                 .size(11)
                 .font(Font::MONOSPACE)
                 .style(theme::Text::Color(MUTED_TEXT)),
-            status_badge("Not Initialized"),
+            status_badge(&self.status.top_badge),
         ]
         .spacing(6);
 
@@ -367,7 +403,7 @@ impl AIACSApp {
                     "Wrong Session Key",
                     Message::RunAttack("Wrong Session Key"),
                 ),
-                self.validation_button("Run All Attacks", Message::RunAllAttacks),
+                self.validation_suite_button("Run All Attacks", Message::RunAllAttacks),
             ]
             .spacing(7),
             Length::FillPortion(2),
@@ -474,6 +510,14 @@ impl AIACSApp {
         styled_button(label, message, ButtonKind::Validation)
     }
 
+    fn validation_suite_button<'a>(
+        &self,
+        label: &'a str,
+        message: Message,
+    ) -> Element<'a, Message> {
+        styled_button(label, message, ButtonKind::ValidationSuite)
+    }
+
     fn nav_button<'a>(&self, label: &'a str, message: Message) -> Element<'a, Message> {
         styled_button(label, message, ButtonKind::Nav)
     }
@@ -564,6 +608,7 @@ enum ButtonKind {
     Normal,
     Primary,
     Validation,
+    ValidationSuite,
     Nav,
 }
 
@@ -579,7 +624,8 @@ impl iced::widget::button::StyleSheet for ButtonStyle {
         let (text_color, border_color) = match self.kind {
             ButtonKind::Normal => (PRIMARY_TEXT, BUTTON_BORDER),
             ButtonKind::Primary => (ACCENT_PINK, ACCENT_PINK),
-            ButtonKind::Validation => (PRIMARY_TEXT, DANGER_RED),
+            ButtonKind::Validation => (PRIMARY_TEXT, BUTTON_BORDER),
+            ButtonKind::ValidationSuite => (ACCENT_PINK, ACCENT_PINK),
             ButtonKind::Nav => (ACCENT_BLUE, ACCENT_BLUE),
         };
 
