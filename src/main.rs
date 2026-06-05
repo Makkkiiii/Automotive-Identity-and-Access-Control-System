@@ -280,7 +280,7 @@ impl AIACSApp {
                 self.view_provisioning_side_panel(),
             ]
             .spacing(10)
-            .height(Length::FillPortion(4)),
+            .height(Length::FillPortion(5)),
             self.view_event_log(),
         ]
         .spacing(10)
@@ -293,7 +293,7 @@ impl AIACSApp {
             self.view_validation_header(),
             row![self.view_attack_panel(), self.view_result_panel()]
                 .spacing(10)
-                .height(Length::FillPortion(4)),
+                .height(Length::FillPortion(5)),
             self.view_event_log(),
         ]
         .spacing(10)
@@ -586,20 +586,22 @@ impl AIACSApp {
                     .style(theme::Text::Color(ACCENT_PINK))
             ]
             .spacing(8)]
-            .spacing(5),
+            .spacing(5)
+            .width(Length::Fill),
             |log, entry| {
                 log.push(
                     text(entry.as_str())
                         .size(12)
                         .font(Font::MONOSPACE)
-                        .style(theme::Text::Color(PRIMARY_TEXT)),
+                        .style(theme::Text::Color(PRIMARY_TEXT))
+                        .width(Length::Fill),
                 )
             },
         );
 
-        container(scrollable(entries).height(Length::Fill))
+        container(scrollable(entries).width(Length::Fill).height(Length::Fill))
             .width(Length::Fill)
-            .height(Length::FillPortion(2))
+            .height(Length::FillPortion(1))
             .padding(10)
             .style(container_style(PanelKind::Log))
             .into()
@@ -645,15 +647,16 @@ impl AIACSApp {
                 .size(12)
                 .font(Font::MONOSPACE)
                 .style(theme::Text::Color(MUTED_TEXT))
-                .width(Length::FillPortion(2)),
+                .width(Length::Fixed(154.0)),
             text(value)
                 .size(12)
                 .font(Font::MONOSPACE)
                 .style(theme::Text::Color(status_color(value)))
-                .width(Length::FillPortion(3))
+                .width(Length::Fill)
                 .horizontal_alignment(alignment::Horizontal::Right),
         ]
         .spacing(8)
+        .width(Length::Fill)
         .into()
     }
 
@@ -670,16 +673,18 @@ impl AIACSApp {
                     .size(12)
                     .font(Font::MONOSPACE)
                     .style(theme::Text::Color(MUTED_TEXT))
-                    .width(Length::FillPortion(2)),
+                    .width(Length::Fixed(118.0)),
                 text(value)
                     .size(12)
                     .font(Font::MONOSPACE)
                     .style(theme::Text::Color(status_color(value)))
-                    .width(Length::FillPortion(3))
+                    .width(Length::Fill)
                     .horizontal_alignment(alignment::Horizontal::Right),
             ]
-            .spacing(8),
+            .spacing(8)
+            .width(Length::Fill),
         )
+        .width(Length::Fill)
         .padding([4, 0])
         .into()
     }
