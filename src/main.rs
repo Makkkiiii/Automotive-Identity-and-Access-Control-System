@@ -89,24 +89,35 @@ enum Message {
     ActivateSecureSession,
     RunAttack(AttackType),
     RunAllAttacks,
+    ClearLog,
+    ExportLogs,
 }
 
 impl Sandbox for AIACSApp {
     type Message = Message;
 
     fn new() -> Self {
+        let mut controller = AppController::new();
+        let initial_messages = [
+            "AIACS provisioning console initialized",
+            "Vehicle Access Provisioning Console ready",
+            "Awaiting vehicle trust initialization",
+            "Backend controller ready",
+        ];
+        for message in initial_messages {
+            let _ = controller.save_log_entry("[INFO]", message);
+        }
+
         Self {
-            controller: AppController::new(),
+            controller,
             screen: Screen::CoreSystem,
             status: SystemStatus::default(),
             selected_detail: "Provisioning console ready. Initialize vehicle trust to begin."
                 .to_string(),
-            event_log: vec![
-                timestamped("[INFO]", "AIACS provisioning console initialized"),
-                timestamped("[INFO]", "Vehicle Access Provisioning Console ready"),
-                timestamped("[INFO]", "Awaiting vehicle trust initialization"),
-                timestamped("[INFO]", "Backend controller ready"),
-            ],
+            event_log: initial_messages
+                .iter()
+                .map(|message| timestamped("[INFO]", message))
+                .collect(),
         }
     }
 
@@ -165,15 +176,23 @@ impl Sandbox for AIACSApp {
                     );
                 }
             },
-            Message::RegisterDigitalKeyFob => {
-                self.status.key_fob_status = "Registered".to_string();
-                self.status.top_badge = "Key Fob Registered".to_string();
-                self.selected_detail = format!(
-                    "Digital key fob {} registered for vehicle {}. Certificate issuance is next.",
-                    KEY_FOB_ID, VEHICLE_ID
-                );
-                self.push_log("[INFO]", "Digital key fob registration staged");
-            }
+            Message::RegisterDigitalKeyFob => match self.controller.register_digital_key_fob() {
+                Ok(message) => {
+                    self.status.key_fob_status = "Registered".to_string();
+                    self.status.top_badge = "Key Fob Registered".to_string();
+                    self.selected_detail = message.clone();
+                    self.push_log("[INFO]", format!("Digital key fob registered: {}", message));
+                }
+                Err(error) => {
+                    self.status.key_fob_status = "Error".to_string();
+                    self.selected_detail =
+                        format!("Digital key fob registration failed: {}", error);
+                    self.push_log(
+                        "[WARN]",
+                        format!("Digital key fob registration failed: {}", error),
+                    );
+                }
+            },
             Message::IssueCertificate => match self.controller.issue_keyfob_certificate() {
                 Ok(message) => {
                     self.status.trust_status = "Initialized".to_string();
@@ -266,7 +285,7 @@ impl Sandbox for AIACSApp {
                 Ok(messages) => {
                     self.selected_detail = format_attack_suite_summary(&messages);
                     for message in messages {
-                        self.push_log("[ATTACK]", message);
+                        self.push_log("[ATTACK]", summarize_log_message(&message));
                     }
                 }
                 Err(error) => {
@@ -275,6 +294,27 @@ impl Sandbox for AIACSApp {
                         error
                     );
                     self.push_log("[ERROR]", format!("Run All Attacks failed: {}", error));
+                }
+            },
+            Message::ClearLog => match self.controller.clear_logs() {
+                Ok(message) => {
+                    self.event_log.clear();
+                    self.event_log.push(timestamped("[INFO]", message.as_str()));
+                    self.selected_detail = message;
+                }
+                Err(error) => {
+                    self.push_log("[ERROR]", format!("Clear Log failed: {}", error));
+                    self.selected_detail = format!("Clear Log failed: {}", error);
+                }
+            },
+            Message::ExportLogs => match self.controller.export_logs() {
+                Ok(message) => {
+                    self.selected_detail = message.clone();
+                    self.push_log("[INFO]", message);
+                }
+                Err(error) => {
+                    self.selected_detail = format!("Save / Export Logs failed: {}", error);
+                    self.push_log("[ERROR]", format!("Save / Export Logs failed: {}", error));
                 }
             },
         }
@@ -308,6 +348,7 @@ impl AIACSApp {
             ]
             .spacing(10)
             .height(Length::FillPortion(5)),
+            self.view_protocol_trace_panel(),
             self.view_event_log(),
         ]
         .spacing(10)
@@ -783,16 +824,82 @@ impl AIACSApp {
         )
     }
 
+    fn view_protocol_trace_panel(&self) -> Element<'_, Message> {
+        let trace_entries = self.controller.get_protocol_trace();
+        let entries = if trace_entries.is_empty() {
+            column![text("Awaiting protocol activity. Run provisioning steps to populate cryptographic evidence.")
+                .size(12)
+                .font(Font::MONOSPACE)
+                .style(theme::Text::Color(SECONDARY_TEXT))]
+        } else {
+            trace_entries
+                .iter()
+                .fold(column![].spacing(4).width(Length::Fill), |column, entry| {
+                    let (tag, message) = trace_parts(entry);
+                    column.push(
+                        row![
+                            text(tag)
+                                .size(12)
+                                .font(Font::MONOSPACE)
+                                .style(theme::Text::Color(log_tag_color(tag)))
+                                .width(Length::Fixed(104.0)),
+                            text(message)
+                                .size(12)
+                                .font(Font::MONOSPACE)
+                                .style(theme::Text::Color(PRIMARY_TEXT))
+                                .width(Length::Fill),
+                        ]
+                        .spacing(8)
+                        .align_items(Alignment::Center),
+                    )
+                })
+        };
+
+        container(
+            column![
+                row![
+                    icon("shield", 20),
+                    text("Protocol Trace / Cryptographic Evidence")
+                        .size(16)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(ACCENT_PINK)),
+                ]
+                .spacing(8)
+                .align_items(Alignment::Center),
+                scrollable(entries).height(Length::Fill),
+            ]
+            .spacing(8),
+        )
+        .width(Length::Fill)
+        .height(Length::FillPortion(2))
+        .padding(10)
+        .style(container_style(PanelKind::Panel))
+        .into()
+    }
+
     fn view_event_log(&self) -> Element<'_, Message> {
         let entries = self.event_log.iter().fold(
             column![row![
-                icon("terminal", 20),
-                text("Event Log")
-                    .size(16)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(ACCENT_PINK))
+                row![
+                    icon("terminal", 20),
+                    text("Event Log")
+                        .size(16)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(ACCENT_PINK))
+                ]
+                .spacing(8)
+                .align_items(Alignment::Center)
+                .width(Length::Fill),
+                compact_button("terminal", "Clear Log", Message::ClearLog, ButtonKind::Nav),
+                compact_button(
+                    "terminal",
+                    "Save / Export Logs",
+                    Message::ExportLogs,
+                    ButtonKind::Nav
+                ),
             ]
-            .spacing(8)]
+            .spacing(8)
+            .align_items(Alignment::Center)]
             .spacing(5)
             .width(Length::Fill),
             |log, entry| {
@@ -1065,7 +1172,14 @@ impl AIACSApp {
     }
 
     fn push_log(&mut self, tag: &str, message: impl AsRef<str>) {
-        self.event_log.push(timestamped(tag, message.as_ref()));
+        let message = message.as_ref();
+        self.event_log.push(timestamped(tag, message));
+        if let Err(error) = self.controller.save_log_entry(tag, message) {
+            self.event_log.push(timestamped(
+                "[ERROR]",
+                &format!("Persistent log write failed: {}", error),
+            ));
+        }
     }
 
     fn controller_label(&self) -> &str {
@@ -1422,11 +1536,8 @@ fn log_parts(entry: &str) -> (&str, &str, &str) {
     (timestamp, tag, message)
 }
 
-fn format_attack_detail(attack_name: &str, message: &str, defense_status: &str) -> String {
-    format!(
-        "Attack name: {}\nExpected outcome: Rejected\nActual result: {}\nDefense status: {}",
-        attack_name, message, defense_status
-    )
+fn format_attack_detail(_attack_name: &str, message: &str, _defense_status: &str) -> String {
+    message.to_string()
 }
 
 fn format_attack_suite_summary(messages: &[String]) -> String {
@@ -1479,7 +1590,21 @@ fn attack_defense_succeeded(message: &str) -> bool {
 }
 
 fn is_baseline_result(message: &str) -> bool {
-    message.contains("(Baseline:")
+    message.contains("Legitimate Baseline")
+}
+
+fn summarize_log_message(message: &str) -> String {
+    message
+        .lines()
+        .find(|line| line.starts_with("Attack:") || line.starts_with("Scenario:"))
+        .map(|line| line.replace("Attack: ", "").replace("Scenario: ", ""))
+        .unwrap_or_else(|| message.replace(['\r', '\n'], " | "))
+}
+
+fn trace_parts(entry: &str) -> (&str, &str) {
+    entry
+        .split_once(' ')
+        .map_or(("", entry), |(tag, message)| (tag, message))
 }
 
 fn timestamped(tag: &str, message: &str) -> String {
