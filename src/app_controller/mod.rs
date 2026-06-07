@@ -21,6 +21,12 @@ const DEFAULT_TIMEOUT_SECONDS: i64 = 60;
 const DEFAULT_LOG_DIR: &str = "logs";
 const GUI_LOG_FILE: &str = "aiacs_gui.log";
 const PROTOCOL_TRACE_LOG_FILE: &str = "aiacs_protocol_trace.log";
+const PROVISIONING_REPORT_FILE: &str = "aiacs_provisioning_report.txt";
+const CA_PRIVATE_KEY_PATH: &str = "keys/ca_private.json";
+const CA_PUBLIC_KEY_PATH: &str = "keys/ca_public.json";
+const KEYFOB_PRIVATE_KEY_PATH: &str = "keys/fob_FOB-GUI-001_private.json";
+const KEYFOB_PUBLIC_KEY_PATH: &str = "keys/fob_FOB-GUI-001_public.json";
+const KEYFOB_CERTIFICATE_PATH: &str = "certs/fob_FOB-GUI-001.json";
 
 #[derive(Debug)]
 pub enum AppControllerError {
@@ -71,6 +77,8 @@ pub struct AppController {
     event_log: Vec<String>,
     protocol_trace: Vec<String>,
     log_dir: PathBuf,
+    vehicle_connected: bool,
+    keyfob_detected: bool,
 }
 
 impl Default for AppController {
@@ -91,6 +99,8 @@ impl fmt::Debug for AppController {
             .field("event_log", &self.event_log)
             .field("protocol_trace", &self.protocol_trace)
             .field("log_dir", &self.log_dir)
+            .field("vehicle_connected", &self.vehicle_connected)
+            .field("keyfob_detected", &self.keyfob_detected)
             .finish()
     }
 }
@@ -116,7 +126,31 @@ impl AppController {
             event_log: Vec::new(),
             protocol_trace: Vec::new(),
             log_dir: log_dir.into(),
+            vehicle_connected: false,
+            keyfob_detected: false,
         }
+    }
+
+    pub fn connect_vehicle(&mut self) -> Result<String, AppControllerError> {
+        self.vehicle_connected = true;
+        let message = format!(
+            "Vehicle connected: {}; protocol AIACS_AUTH_V1",
+            DEFAULT_VEHICLE_ID
+        );
+        self.append_protocol_trace("[VEHICLE]", "Vehicle connection established")?;
+        self.append_protocol_trace("[VEHICLE]", format!("Vehicle ID: {}", DEFAULT_VEHICLE_ID))?;
+        self.append_protocol_trace("[VEHICLE]", "Protocol version: AIACS_AUTH_V1")?;
+        self.log(message.clone());
+        Ok(message)
+    }
+
+    pub fn detect_key_fob(&mut self) -> Result<String, AppControllerError> {
+        self.keyfob_detected = true;
+        let message = format!("Digital key fob detected: {}", DEFAULT_FOB_ID);
+        self.append_protocol_trace("[KEYFOB]", format!("Detected fob ID: {}", DEFAULT_FOB_ID))?;
+        self.append_protocol_trace("[KEYFOB]", "Private key material: [REDACTED]")?;
+        self.log(message.clone());
+        Ok(message)
     }
 
     pub fn initialize_ca(&mut self) -> Result<String, AppControllerError> {
@@ -137,6 +171,7 @@ impl AppController {
             format!("CA public key fingerprint: {}", public_key_fingerprint),
         )?;
         self.append_protocol_trace("[CA]", "Root private key: [REDACTED]")?;
+        self.append_key_storage_trace(None, Some(public_key_fingerprint.as_str()))?;
         self.ca = Some(ca);
         self.log(message.clone());
         Ok(message)
@@ -192,6 +227,7 @@ impl AppController {
     pub fn register_digital_key_fob(&mut self) -> Result<String, AppControllerError> {
         let mut keyfob = DigitalKeyFob::new(DEFAULT_FOB_ID.to_string());
         keyfob.initialize()?;
+        keyfob.save_keys()?;
 
         let public_key_fingerprint = keyfob
             .public_key
@@ -210,6 +246,7 @@ impl AppController {
             format!("Public key fingerprint: {}", public_key_fingerprint),
         )?;
         self.append_protocol_trace("[KEYFOB]", "Private key: [REDACTED]")?;
+        self.append_key_storage_trace(Some(public_key_fingerprint.as_str()), None)?;
 
         self.keyfob = Some(keyfob);
         self.log(message.clone());
@@ -355,6 +392,11 @@ impl AppController {
         Ok(message)
     }
 
+    pub fn run_named_attack(&mut self, attack_key: &str) -> Result<String, AppControllerError> {
+        let attack_type = attack_type_from_key(attack_key)?;
+        self.run_attack(attack_type)
+    }
+
     pub fn run_all_attacks(&mut self) -> Result<Vec<String>, AppControllerError> {
         let results = AdversarialValidationEngine::run_all_attacks();
         let messages: Vec<String> = results.iter().map(Self::format_attack_result).collect();
@@ -406,6 +448,113 @@ impl AppController {
         self.protocol_trace.clone()
     }
 
+    pub fn get_protocol_artifacts(&self) -> Vec<String> {
+        let mut artifacts = Vec::new();
+
+        artifacts.push("[Challenge Message]".to_string());
+        artifacts.push(format!("vehicle_id: {}", DEFAULT_VEHICLE_ID));
+        artifacts.push("nonce_hash: see [AUTH] trace after challenge generation".to_string());
+        artifacts.push("raw_nonce: [REDACTED]".to_string());
+        artifacts.push("protocol_version: AIACS_AUTH_V1".to_string());
+
+        artifacts.push("[Authentication Proof]".to_string());
+        artifacts.push(format!("subject_id: {}", DEFAULT_FOB_ID));
+        artifacts.push(
+            "payload_format: AIACS_AUTH_V1|vehicle_id|subject_id|base64(nonce)|timestamp"
+                .to_string(),
+        );
+        artifacts.push("signature_fingerprint: see [AUTH] trace after signing".to_string());
+        artifacts.push("private_key: [REDACTED]".to_string());
+
+        artifacts.push("[Certificate Details]".to_string());
+        if let Some(cert) = self.current_certificate() {
+            artifacts.push(format!("subject: {}", cert.subject_id));
+            artifacts.push(format!("issuer: {}", cert.issuer));
+            artifacts.push(format!(
+                "validity: {} -> {}",
+                cert.issued_at, cert.expires_at
+            ));
+            artifacts.push(format!("certificate_path: {}", KEYFOB_CERTIFICATE_PATH));
+            artifacts.push("certificate_signature: Verified".to_string());
+            artifacts.push(format!(
+                "public_key_fingerprint: {}",
+                fingerprint(&cert.public_key)
+            ));
+        } else {
+            artifacts.push("subject: Pending".to_string());
+            artifacts.push("issuer: Pending".to_string());
+            artifacts.push("validity: Pending".to_string());
+            artifacts.push("certificate_signature: Pending".to_string());
+        }
+
+        artifacts.push("[Credential Storage]".to_string());
+        artifacts.extend(self.credential_storage_summary());
+
+        artifacts.push("[Session Establishment Summary]".to_string());
+        artifacts.push("key_exchange: X25519".to_string());
+        artifacts.push("kdf: HKDF-SHA256".to_string());
+        artifacts.push("encryption: AES-GCM".to_string());
+        artifacts.push(format!("session_id: {}", DEFAULT_SESSION_ID));
+        artifacts.push("session_key: [REDACTED]".to_string());
+        artifacts.push("shared_secret: [REDACTED]".to_string());
+
+        artifacts.push("[Access Decision]".to_string());
+        artifacts.push(format!(
+            "auth_result: {}",
+            self.last_auth_result
+                .map(|result| result.to_string())
+                .unwrap_or_else(|| "Pending".to_string())
+        ));
+        artifacts.push(format!(
+            "access_decision: {}",
+            self.last_access_decision
+                .map(|decision| decision.to_string())
+                .unwrap_or_else(|| "Pending".to_string())
+        ));
+
+        artifacts
+    }
+
+    pub fn credential_storage_summary(&self) -> Vec<String> {
+        let ca_public = self
+            .ca
+            .as_ref()
+            .and_then(|ca| ca.root_public_key.as_ref())
+            .map(|key| fingerprint(key))
+            .unwrap_or_else(|| "Pending".to_string());
+        let fob_public = self
+            .keyfob
+            .as_ref()
+            .and_then(|fob| fob.public_key.as_ref())
+            .map(|key| fingerprint(key))
+            .unwrap_or_else(|| "Pending".to_string());
+
+        vec![
+            format!("CA private key path: {}", CA_PRIVATE_KEY_PATH),
+            "CA private key material: [REDACTED]".to_string(),
+            format!("CA public key path: {}", CA_PUBLIC_KEY_PATH),
+            format!("CA public key fingerprint: {}", ca_public),
+            format!("Key fob private key path: {}", KEYFOB_PRIVATE_KEY_PATH),
+            "Key fob private key material: [REDACTED]".to_string(),
+            format!("Key fob public key path: {}", KEYFOB_PUBLIC_KEY_PATH),
+            format!("Key fob public key fingerprint: {}", fob_public),
+            "Storage mode: Local prototype key file".to_string(),
+            "Production note: secure element / OS key store / encrypted key storage recommended"
+                .to_string(),
+        ]
+    }
+
+    pub fn diagnostics_attack_steps(
+        &self,
+        attack_key: &str,
+    ) -> Result<Vec<String>, AppControllerError> {
+        let attack_type = attack_type_from_key(attack_key)?;
+        Ok(attack_steps(attack_type)
+            .iter()
+            .map(|step| (*step).to_string())
+            .collect())
+    }
+
     pub fn append_protocol_trace(
         &mut self,
         tag: &str,
@@ -453,6 +602,101 @@ impl AppController {
         Ok(message)
     }
 
+    pub fn export_provisioning_report(&mut self) -> Result<String, AppControllerError> {
+        self.ensure_log_dir()?;
+        let report_path = self.provisioning_report_path();
+        let cert = self.current_certificate();
+        let mut report = String::new();
+        report.push_str("AIACS Provisioning Audit Report\n");
+        report.push_str("================================\n");
+        report.push_str(&format!("generated_at: {}\n", Utc::now().to_rfc3339()));
+        report.push_str(&format!("vehicle_id: {}\n", DEFAULT_VEHICLE_ID));
+        report.push_str(&format!("fob_id: {}\n", DEFAULT_FOB_ID));
+        report.push_str(&format!(
+            "ca_status: {}\n",
+            if self.ca.is_some() {
+                "Initialized"
+            } else {
+                "Pending"
+            }
+        ));
+        if let Some(cert) = cert {
+            report.push_str(&format!("certificate_subject: {}\n", cert.subject_id));
+            report.push_str(&format!("certificate_issuer: {}\n", cert.issuer));
+            report.push_str(&format!("certificate_path: {}\n", KEYFOB_CERTIFICATE_PATH));
+            report.push_str(&format!(
+                "certificate_public_key_fingerprint: {}\n",
+                fingerprint(&cert.public_key)
+            ));
+        } else {
+            report.push_str("certificate_subject: Pending\n");
+            report.push_str("certificate_issuer: Pending\n");
+        }
+        for line in self.credential_storage_summary() {
+            report.push_str(&line);
+            report.push('\n');
+        }
+        report.push_str(&format!(
+            "authentication_result: {}\n",
+            self.last_auth_result
+                .map(|result| result.to_string())
+                .unwrap_or_else(|| "Pending".to_string())
+        ));
+        report.push_str("session_method: X25519 + HKDF-SHA256 + AES-GCM\n");
+        report.push_str("session_key: [REDACTED]\n");
+        report.push_str("shared_secret: [REDACTED]\n");
+        report.push_str(&format!(
+            "access_decision: {}\n",
+            self.last_access_decision
+                .map(|decision| decision.to_string())
+                .unwrap_or_else(|| "Pending".to_string())
+        ));
+        report.push_str("\nProtocol Trace\n");
+        for entry in &self.protocol_trace {
+            report.push_str(entry);
+            report.push('\n');
+        }
+        report.push_str("\nDiagnostics Summary\n");
+        for entry in self
+            .protocol_trace
+            .iter()
+            .filter(|entry| entry.contains("[ATTACK]"))
+        {
+            report.push_str(entry);
+            report.push('\n');
+        }
+        report.push_str("\nSecrets: [REDACTED]\n");
+
+        fs::write(&report_path, redact_sensitive_terms(&report))
+            .map_err(|e| AppControllerError::Backend(e.to_string()))?;
+        let message = format!("Provisioning report exported: {}", report_path.display());
+        self.save_log_entry("[INFO]", message.clone())?;
+        Ok(message)
+    }
+
+    pub fn launch_diagnostics_tool(&mut self) -> Result<String, AppControllerError> {
+        let current_exe =
+            std::env::current_exe().map_err(|e| AppControllerError::Backend(e.to_string()))?;
+        let exe_name = if cfg!(windows) {
+            "aiacs_diagnostics.exe"
+        } else {
+            "aiacs_diagnostics"
+        };
+        let diagnostics_exe = current_exe.with_file_name(exe_name);
+        std::process::Command::new(&diagnostics_exe)
+            .spawn()
+            .map_err(|e| {
+                AppControllerError::Backend(format!(
+                    "Failed to launch {}: {}",
+                    diagnostics_exe.display(),
+                    e
+                ))
+            })?;
+        let message = format!("Diagnostics tool launched: {}", diagnostics_exe.display());
+        self.save_log_entry("[INFO]", message.clone())?;
+        Ok(message)
+    }
+
     pub fn get_safe_crypto_summary(&self) -> String {
         let ca_public = self
             .ca
@@ -477,6 +721,10 @@ impl AppController {
         (self.gui_log_path(), self.protocol_trace_log_path())
     }
 
+    pub fn provisioning_report_file_path(&self) -> PathBuf {
+        self.provisioning_report_path()
+    }
+
     fn ensure_ready_for_authentication(&mut self) -> Result<(), AppControllerError> {
         if self.ca.is_none() {
             self.initialize_ca()?;
@@ -492,6 +740,58 @@ impl AppController {
     fn certificate_from_keyfob(keyfob: &DigitalKeyFob) -> Result<Certificate, AppControllerError> {
         let cert_bytes = keyfob.get_certificate()?;
         serde_json::from_slice(&cert_bytes).map_err(|e| AppControllerError::Backend(e.to_string()))
+    }
+
+    fn current_certificate(&self) -> Option<Certificate> {
+        self.keyfob
+            .as_ref()
+            .and_then(|keyfob| keyfob.get_certificate().ok())
+            .and_then(|cert_bytes| serde_json::from_slice(&cert_bytes).ok())
+    }
+
+    fn append_key_storage_trace(
+        &mut self,
+        fob_public_fingerprint: Option<&str>,
+        ca_public_fingerprint: Option<&str>,
+    ) -> Result<(), AppControllerError> {
+        if let Some(fingerprint) = ca_public_fingerprint {
+            self.append_protocol_trace(
+                "[KEY STORAGE]",
+                format!("CA private key stored: {}", CA_PRIVATE_KEY_PATH),
+            )?;
+            self.append_protocol_trace("[KEY STORAGE]", "CA private key material: [REDACTED]")?;
+            self.append_protocol_trace(
+                "[KEY STORAGE]",
+                format!("CA public key path: {}", CA_PUBLIC_KEY_PATH),
+            )?;
+            self.append_protocol_trace(
+                "[KEY STORAGE]",
+                format!("CA public key fingerprint: {}", fingerprint),
+            )?;
+        }
+        if let Some(fingerprint) = fob_public_fingerprint {
+            self.append_protocol_trace(
+                "[KEY STORAGE]",
+                format!("Key fob private key stored: {}", KEYFOB_PRIVATE_KEY_PATH),
+            )?;
+            self.append_protocol_trace(
+                "[KEY STORAGE]",
+                "Key fob private key material: [REDACTED]",
+            )?;
+            self.append_protocol_trace(
+                "[KEY STORAGE]",
+                format!("Key fob public key path: {}", KEYFOB_PUBLIC_KEY_PATH),
+            )?;
+            self.append_protocol_trace(
+                "[KEY STORAGE]",
+                format!("Key fob public key fingerprint: {}", fingerprint),
+            )?;
+        }
+        self.append_protocol_trace("[KEY STORAGE]", "Storage mode: Local prototype key storage")?;
+        self.append_protocol_trace(
+            "[KEY STORAGE]",
+            "Production note: secure element or encrypted key store recommended",
+        )
     }
 
     fn format_attack_result(result: &AttackResult) -> String {
@@ -560,6 +860,10 @@ impl AppController {
     fn protocol_trace_log_path(&self) -> PathBuf {
         self.log_dir.join(PROTOCOL_TRACE_LOG_FILE)
     }
+
+    fn provisioning_report_path(&self) -> PathBuf {
+        self.log_dir.join(PROVISIONING_REPORT_FILE)
+    }
 }
 
 struct AttackEvidence {
@@ -615,6 +919,92 @@ fn attack_evidence(attack_type: AttackType) -> AttackEvidence {
             failure_point: "session encryption key validation",
             auth_result: "N/A",
         },
+    }
+}
+
+fn attack_type_from_key(attack_key: &str) -> Result<AttackType, AppControllerError> {
+    match attack_key {
+        "replay" => Ok(AttackType::ReplayAttack),
+        "forged_signature" => Ok(AttackType::ForgedSignature),
+        "fake_certificate" => Ok(AttackType::FakeCertificate),
+        "identity_mismatch" => Ok(AttackType::IdentityMismatch),
+        "delayed_relay" => Ok(AttackType::DelayedRelay),
+        "packet_tampering" => Ok(AttackType::PacketTampering),
+        "unauthorized_key_fob" => Ok(AttackType::UnauthorizedKeyFob),
+        "tampered_ciphertext" => Ok(AttackType::TamperedSessionCiphertext),
+        "wrong_session_key" => Ok(AttackType::WrongSessionKey),
+        _ => Err(AppControllerError::Backend(format!(
+            "Unknown diagnostics attack: {}",
+            attack_key
+        ))),
+    }
+}
+
+fn attack_steps(attack_type: AttackType) -> &'static [&'static str] {
+    match attack_type {
+        AttackType::ReplayAttack => &[
+            "Step 1: Capture valid authentication proof",
+            "Step 2: Consume original nonce",
+            "Step 3: Re-submit captured proof",
+            "Step 4: AuthenticationEngine checks nonce lifecycle",
+            "Step 5: Rejected with ReusedNonce",
+        ],
+        AttackType::ForgedSignature => &[
+            "Step 1: Generate valid challenge and proof",
+            "Step 2: Modify Ed25519 signature bytes",
+            "Step 3: Submit forged signature to AuthenticationEngine",
+            "Step 4: Signature verification fails",
+            "Step 5: Rejected with InvalidSignature",
+        ],
+        AttackType::FakeCertificate => &[
+            "Step 1: Generate fake CA",
+            "Step 2: Issue fake certificate",
+            "Step 3: Submit fake certificate to real trusted CA validation path",
+            "Step 4: Certificate validation returns false",
+            "Step 5: Rejected with InvalidCertificate",
+        ],
+        AttackType::IdentityMismatch => &[
+            "Step 1: Issue valid certificate from trusted CA",
+            "Step 2: Build proof with mismatched subject identity",
+            "Step 3: Submit proof to AuthenticationEngine",
+            "Step 4: Certificate subject binding fails",
+            "Step 5: Rejected with IdentityMismatch",
+        ],
+        AttackType::DelayedRelay => &[
+            "Step 1: Capture valid authentication attempt",
+            "Step 2: Delay proof beyond freshness window",
+            "Step 3: Submit stale proof",
+            "Step 4: Freshness timeout validation fails",
+            "Step 5: Rejected with FreshnessTimeout",
+        ],
+        AttackType::PacketTampering => &[
+            "Step 1: Capture signed authentication payload",
+            "Step 2: Modify vehicle or payload binding field",
+            "Step 3: Submit tampered payload",
+            "Step 4: Canonical payload/signature binding fails",
+            "Step 5: Rejected before access is granted",
+        ],
+        AttackType::UnauthorizedKeyFob => &[
+            "Step 1: Present key fob without trusted certificate",
+            "Step 2: Attempt authentication proof creation",
+            "Step 3: Certificate presence validation fails",
+            "Step 4: Access decision rejects request",
+            "Step 5: Rejected as unauthorized key fob",
+        ],
+        AttackType::TamperedSessionCiphertext => &[
+            "Step 1: Establish AES-GCM session",
+            "Step 2: Modify ciphertext",
+            "Step 3: Attempt decryption",
+            "Step 4: AEAD tag verification fails",
+            "Step 5: Rejected as session integrity failure",
+        ],
+        AttackType::WrongSessionKey => &[
+            "Step 1: Establish AES-GCM session",
+            "Step 2: Derive a mismatched session key",
+            "Step 3: Attempt decryption with wrong key",
+            "Step 4: AES-GCM authentication fails",
+            "Step 5: Rejected as session key mismatch",
+        ],
     }
 }
 
@@ -926,5 +1316,104 @@ mod tests {
         assert!(protocol_log.exists());
 
         let _ = fs::remove_dir_all(log_dir);
+    }
+
+    #[test]
+    fn test_ca_key_files_are_created_after_vehicle_trust_initialization() {
+        let mut controller = AppController::new();
+        controller.initialize_ca().expect("CA init failed");
+
+        assert!(PathBuf::from(CA_PRIVATE_KEY_PATH).exists());
+        assert!(PathBuf::from(CA_PUBLIC_KEY_PATH).exists());
+    }
+
+    #[test]
+    fn test_key_fob_key_files_are_created_after_registration() {
+        let mut controller = AppController::new();
+        controller
+            .register_digital_key_fob()
+            .expect("fob registration failed");
+
+        assert!(PathBuf::from(KEYFOB_PRIVATE_KEY_PATH).exists());
+        assert!(PathBuf::from(KEYFOB_PUBLIC_KEY_PATH).exists());
+    }
+
+    #[test]
+    fn test_certificate_file_is_created_after_certificate_issuance() {
+        let mut controller = AppController::new();
+        controller
+            .issue_keyfob_certificate()
+            .expect("certificate issuance failed");
+
+        assert!(PathBuf::from(KEYFOB_CERTIFICATE_PATH).exists());
+    }
+
+    #[test]
+    fn test_exported_provisioning_report_redacts_private_key_material() {
+        let log_dir = temp_log_dir("report_redaction");
+        let mut controller = AppController::new_with_log_dir(&log_dir);
+        controller.initialize_ca().expect("CA init failed");
+        controller
+            .issue_keyfob_certificate()
+            .expect("certificate issuance failed");
+
+        let ca_private_key_debug = format!(
+            "{:?}",
+            controller
+                .ca
+                .as_ref()
+                .unwrap()
+                .root_private_key
+                .as_ref()
+                .unwrap()
+        );
+        let fob_private_key_debug = format!(
+            "{:?}",
+            controller
+                .keyfob
+                .as_ref()
+                .unwrap()
+                .private_key
+                .as_ref()
+                .unwrap()
+        );
+
+        controller
+            .run_legitimate_authentication_demo()
+            .expect("auth demo failed");
+        controller
+            .establish_secure_session_demo()
+            .expect("session demo failed");
+        controller
+            .export_provisioning_report()
+            .expect("report export failed");
+
+        let report = fs::read_to_string(controller.provisioning_report_file_path())
+            .expect("report read failed");
+        assert!(report.contains("[REDACTED]"));
+        assert!(report.contains(CA_PRIVATE_KEY_PATH));
+        assert!(report.contains(KEYFOB_PRIVATE_KEY_PATH));
+        assert!(report.contains("SHA256:"));
+        assert!(!report.contains(&ca_private_key_debug));
+        assert!(!report.contains(&fob_private_key_debug));
+        assert!(!report.contains("derived_aes_key"));
+        assert!(!report.contains("root_private_key: ["));
+        assert!(!report.contains("private_key: ["));
+
+        let _ = fs::remove_dir_all(log_dir);
+    }
+
+    #[test]
+    fn test_diagnostics_binary_uses_app_controller_boundary() {
+        let source = fs::read_to_string("src/bin/aiacs_diagnostics.rs")
+            .expect("diagnostics binary source should exist");
+
+        assert!(source.contains("use aiacs::app_controller::AppController;"));
+        assert!(!source.contains("AdversarialValidationEngine"));
+        assert!(!source.contains("CryptoEngine"));
+        assert!(!source.contains("CertificateAuthority"));
+        assert!(!source.contains("AuthenticationEngine"));
+        assert!(!source.contains("SessionValidationEngine"));
+        assert!(!source.contains("AccessDecisionEngine"));
     }
 }

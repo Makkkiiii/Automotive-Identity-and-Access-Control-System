@@ -1,5 +1,4 @@
 use aiacs::app_controller::AppController;
-use aiacs::attacks::AttackType;
 use chrono::Local;
 use iced::alignment;
 use iced::theme;
@@ -41,16 +40,10 @@ pub fn main() -> iced::Result {
 
 struct AIACSApp {
     controller: AppController,
-    screen: Screen,
     status: SystemStatus,
+    workflow_state: WorkflowState,
     selected_detail: String,
     event_log: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Screen {
-    CoreSystem,
-    ValidationLab,
 }
 
 #[derive(Debug, Clone)]
@@ -78,19 +71,37 @@ impl Default for SystemStatus {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct WorkflowState {
+    vehicle_connected: bool,
+    keyfob_detected: bool,
+    keyfob_registered: bool,
+    trust_initialized: bool,
+    certificate_issued: bool,
+    certificate_viewed: bool,
+    challenge_generated: bool,
+    payload_signed: bool,
+    authentication_verified: bool,
+    session_active: bool,
+    report_exported: bool,
+}
+
 #[derive(Debug, Clone)]
 enum Message {
-    OpenValidationLab,
-    BackToCoreSystem,
+    ConnectVehicle,
+    DetectKeyFob,
     InitializeVehicleTrust,
     RegisterDigitalKeyFob,
     IssueCertificate,
-    VerifyKeyAuthentication,
-    ActivateSecureSession,
-    RunAttack(AttackType),
-    RunAllAttacks,
+    ViewCertificateDetails,
+    GenerateChallenge,
+    SignCanonicalPayload,
+    VerifyAuthentication,
+    ActivateSecureChannel,
+    LaunchDiagnosticsTool,
     ClearLog,
     ExportLogs,
+    ExportProvisioningReport,
 }
 
 impl Sandbox for AIACSApp {
@@ -110,8 +121,8 @@ impl Sandbox for AIACSApp {
 
         Self {
             controller,
-            screen: Screen::CoreSystem,
             status: SystemStatus::default(),
+            workflow_state: WorkflowState::default(),
             selected_detail: "Provisioning console ready. Initialize vehicle trust to begin."
                 .to_string(),
             event_log: initial_messages
@@ -147,20 +158,32 @@ impl Sandbox for AIACSApp {
 
     fn update(&mut self, message: Message) {
         match message {
-            Message::OpenValidationLab => {
-                self.screen = Screen::ValidationLab;
-                self.selected_detail =
-                    "Diagnostics / Security Validation opened. Select an attack scenario to run."
-                        .to_string();
-                self.push_log("[INFO]", "Diagnostics / Security Validation opened");
-            }
-            Message::BackToCoreSystem => {
-                self.screen = Screen::CoreSystem;
-                self.selected_detail = "Returned to Core System operation.".to_string();
-                self.push_log("[INFO]", "Returned to Core System");
-            }
+            Message::ConnectVehicle => match self.controller.connect_vehicle() {
+                Ok(message) => {
+                    self.workflow_state.vehicle_connected = true;
+                    self.status.top_badge = "Vehicle Connected".to_string();
+                    self.selected_detail = message.clone();
+                    self.push_log("[INFO]", message);
+                }
+                Err(error) => {
+                    self.selected_detail = format!("Vehicle connection failed: {}", error);
+                    self.push_log("[ERROR]", format!("Vehicle connection failed: {}", error));
+                }
+            },
+            Message::DetectKeyFob => match self.controller.detect_key_fob() {
+                Ok(message) => {
+                    self.workflow_state.keyfob_detected = true;
+                    self.selected_detail = message.clone();
+                    self.push_log("[INFO]", message);
+                }
+                Err(error) => {
+                    self.selected_detail = format!("Key fob detection failed: {}", error);
+                    self.push_log("[ERROR]", format!("Key fob detection failed: {}", error));
+                }
+            },
             Message::InitializeVehicleTrust => match self.controller.initialize_ca() {
                 Ok(message) => {
+                    self.workflow_state.trust_initialized = true;
                     self.status.trust_status = "Initialized".to_string();
                     self.status.top_badge = "Trust Ready".to_string();
                     self.selected_detail = message.clone();
@@ -178,6 +201,7 @@ impl Sandbox for AIACSApp {
             },
             Message::RegisterDigitalKeyFob => match self.controller.register_digital_key_fob() {
                 Ok(message) => {
+                    self.workflow_state.keyfob_registered = true;
                     self.status.key_fob_status = "Registered".to_string();
                     self.status.top_badge = "Key Fob Registered".to_string();
                     self.selected_detail = message.clone();
@@ -195,6 +219,9 @@ impl Sandbox for AIACSApp {
             },
             Message::IssueCertificate => match self.controller.issue_keyfob_certificate() {
                 Ok(message) => {
+                    self.workflow_state.trust_initialized = true;
+                    self.workflow_state.keyfob_registered = true;
+                    self.workflow_state.certificate_issued = true;
                     self.status.trust_status = "Initialized".to_string();
                     self.status.key_fob_status = "Registered".to_string();
                     self.status.certificate_status = "Issued".to_string();
@@ -211,9 +238,40 @@ impl Sandbox for AIACSApp {
                     );
                 }
             },
-            Message::VerifyKeyAuthentication => {
+            Message::ViewCertificateDetails => {
+                self.workflow_state.certificate_viewed = true;
+                self.selected_detail =
+                    "Certificate details are shown in the Protocol Artifact Viewer.".to_string();
+                self.push_log("[INFO]", "Certificate details viewed");
+            }
+            Message::GenerateChallenge => {
+                self.workflow_state.challenge_generated = true;
+                self.selected_detail =
+                    "Challenge generation staged. Nonce material is redacted; safe hash appears after authentication verification."
+                        .to_string();
+                let _ = self
+                    .controller
+                    .append_protocol_trace("[AUTH]", "Operator staged: Generate Challenge");
+                self.push_log("[AUTH]", "Generate Challenge staged");
+            }
+            Message::SignCanonicalPayload => {
+                self.workflow_state.payload_signed = true;
+                self.selected_detail =
+                    "Canonical payload signing staged with Ed25519; private key remains [REDACTED]."
+                        .to_string();
+                let _ = self.controller.append_protocol_trace(
+                    "[AUTH]",
+                    "Operator staged: Sign Canonical Payload using Ed25519",
+                );
+                self.push_log("[AUTH]", "Canonical payload signing staged");
+            }
+            Message::VerifyAuthentication => {
                 match self.controller.run_legitimate_authentication_demo() {
                     Ok(message) => {
+                        self.workflow_state.trust_initialized = true;
+                        self.workflow_state.keyfob_registered = true;
+                        self.workflow_state.certificate_issued = true;
+                        self.workflow_state.authentication_verified = true;
                         self.status.trust_status = "Initialized".to_string();
                         self.status.key_fob_status = "Registered".to_string();
                         self.status.certificate_status = "Issued".to_string();
@@ -234,9 +292,13 @@ impl Sandbox for AIACSApp {
                     }
                 }
             }
-            Message::ActivateSecureSession => {
+            Message::ActivateSecureChannel => {
                 match self.controller.establish_secure_session_demo() {
                     Ok(_message) => {
+                        self.workflow_state.trust_initialized = true;
+                        self.workflow_state.keyfob_registered = true;
+                        self.workflow_state.certificate_issued = true;
+                        self.workflow_state.session_active = true;
                         self.status.trust_status = "Initialized".to_string();
                         self.status.key_fob_status = "Registered".to_string();
                         self.status.certificate_status = "Issued".to_string();
@@ -261,39 +323,14 @@ impl Sandbox for AIACSApp {
                     }
                 }
             }
-            Message::RunAttack(attack_type) => match self.controller.run_attack(attack_type) {
+            Message::LaunchDiagnosticsTool => match self.controller.launch_diagnostics_tool() {
                 Ok(message) => {
-                    let attack_name = attack_type.to_string();
-                    let defense_status = defense_status_for_attack(&message);
-                    self.selected_detail =
-                        format_attack_detail(&attack_name, &message, defense_status);
-                    self.push_log(
-                        "[ATTACK]",
-                        format!("{} completed: defense {}", attack_name, defense_status),
-                    );
+                    self.selected_detail = message.clone();
+                    self.push_log("[INFO]", message);
                 }
                 Err(error) => {
-                    let attack_name = attack_type.to_string();
-                    self.selected_detail = format!(
-                        "Attack name: {}\nExpected outcome: Rejected\nActual result: {}\nDefense status: Failed",
-                        attack_name, error
-                    );
-                    self.push_log("[ERROR]", format!("{} failed: {}", attack_name, error));
-                }
-            },
-            Message::RunAllAttacks => match self.controller.run_all_attacks() {
-                Ok(messages) => {
-                    self.selected_detail = format_attack_suite_summary(&messages);
-                    for message in messages {
-                        self.push_log("[ATTACK]", summarize_log_message(&message));
-                    }
-                }
-                Err(error) => {
-                    self.selected_detail = format!(
-                        "Attack suite: Run All Attacks\nExpected outcome: Rejected\nActual result: {}\nDefense status: Failed",
-                        error
-                    );
-                    self.push_log("[ERROR]", format!("Run All Attacks failed: {}", error));
+                    self.selected_detail = format!("Diagnostics launch failed: {}", error);
+                    self.push_log("[ERROR]", format!("Diagnostics launch failed: {}", error));
                 }
             },
             Message::ClearLog => match self.controller.clear_logs() {
@@ -317,16 +354,26 @@ impl Sandbox for AIACSApp {
                     self.push_log("[ERROR]", format!("Save / Export Logs failed: {}", error));
                 }
             },
+            Message::ExportProvisioningReport => match self.controller.export_provisioning_report()
+            {
+                Ok(message) => {
+                    self.workflow_state.report_exported = true;
+                    self.selected_detail = message.clone();
+                    self.push_log("[INFO]", message);
+                }
+                Err(error) => {
+                    self.selected_detail = format!("Provisioning report export failed: {}", error);
+                    self.push_log(
+                        "[ERROR]",
+                        format!("Provisioning report export failed: {}", error),
+                    );
+                }
+            },
         }
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let content = match self.screen {
-            Screen::CoreSystem => self.view_core_system(),
-            Screen::ValidationLab => self.view_validation_lab(),
-        };
-
-        container(content)
+        container(self.view_core_system())
             .width(Length::Fill)
             .height(Length::Fill)
             .padding(12)
@@ -347,21 +394,8 @@ impl AIACSApp {
                 self.view_provisioning_side_panel(),
             ]
             .spacing(10)
-            .height(Length::FillPortion(5)),
+            .height(Length::FillPortion(7)),
             self.view_protocol_trace_panel(),
-            self.view_event_log(),
-        ]
-        .spacing(10)
-        .height(Length::Fill)
-        .into()
-    }
-
-    fn view_validation_lab(&self) -> Element<'_, Message> {
-        column![
-            self.view_validation_header(),
-            row![self.view_attack_panel(), self.view_result_panel()]
-                .spacing(10)
-                .height(Length::FillPortion(3)),
             self.view_event_log(),
         ]
         .spacing(10)
@@ -394,36 +428,6 @@ impl AIACSApp {
         .into()
     }
 
-    fn view_validation_header(&self) -> Element<'_, Message> {
-        container(
-            row![
-                column![
-                    text("Diagnostics / Security Validation")
-                        .size(26)
-                        .font(Font::MONOSPACE)
-                        .style(theme::Text::Color(ACCENT_PINK)),
-                    text("Controlled adversarial validation for technician testing")
-                        .size(13)
-                        .font(Font::MONOSPACE)
-                        .style(theme::Text::Color(ACCENT_BLUE)),
-                ]
-                .spacing(3)
-                .width(Length::Fill),
-                container(self.nav_button(
-                    "diagnostics",
-                    "Back to Core System",
-                    Message::BackToCoreSystem,
-                ))
-                .width(Length::Fixed(240.0)),
-            ]
-            .spacing(12),
-        )
-        .width(Length::Fill)
-        .padding(12)
-        .style(container_style(PanelKind::Elevated))
-        .into()
-    }
-
     fn view_status_panel(&self) -> Element<'_, Message> {
         let logo = column![
             text("AIACS")
@@ -436,6 +440,21 @@ impl AIACSApp {
                 .style(theme::Text::Color(MUTED_TEXT)),
         ]
         .spacing(6);
+        let storage_rows = self.controller.credential_storage_summary().iter().fold(
+            column![text("Credential Storage")
+                .size(12)
+                .font(Font::MONOSPACE)
+                .style(theme::Text::Color(ACCENT_BLUE))]
+            .spacing(5),
+            |column, line| {
+                column.push(
+                    text(line.as_str())
+                        .size(10)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(SECONDARY_TEXT)),
+                )
+            },
+        );
 
         self.panel(
             None,
@@ -457,6 +476,7 @@ impl AIACSApp {
                 self.status_row("lock", "Secure Session Status", &self.status.session_status),
                 self.status_row("decision", "Access Decision", &self.status.access_decision),
                 self.status_row("gear", "Controller", self.controller_label()),
+                storage_rows,
             ]
             .spacing(9),
             Length::FillPortion(2),
@@ -465,60 +485,232 @@ impl AIACSApp {
     }
 
     fn view_workflow_panel(&self) -> Element<'_, Message> {
-        self.panel(
-            Some("Vehicle Access Provisioning"),
-            column![
-                text("Step-by-step workflow to provision and activate a digital key fob for this vehicle.")
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(SECONDARY_TEXT)),
-                self.workflow_step_card(WorkflowStep {
-                    icon_name: "trust",
-                    title: "Initialize Vehicle Trust",
-                    description: "Initialize vehicle trust root and certificate authority.",
-                    status: self.step_status_for("trust"),
-                    button_label: "Initialize Trust",
-                    message: Message::InitializeVehicleTrust,
-                }),
-                self.workflow_step_card(WorkflowStep {
-                    icon_name: "register-key",
-                    title: "Register Digital Key Fob",
-                    description: "Register and prepare the buyer's key fob identity.",
-                    status: self.step_status_for("key_fob"),
-                    button_label: "Register Fob",
-                    message: Message::RegisterDigitalKeyFob,
-                }),
-                self.workflow_step_card(WorkflowStep {
-                    icon_name: "issue-cert",
-                    title: "Issue Access Certificate",
-                    description: "Issue CA-signed access certificate to the key fob.",
-                    status: self.step_status_for("certificate"),
-                    button_label: "Issue Certificate",
-                    message: Message::IssueCertificate,
-                }),
-                self.workflow_step_card(WorkflowStep {
-                    icon_name: "verify-auth",
-                    title: "Verify Key Authentication",
-                    description: "Perform challenge-response authentication.",
-                    status: self.step_status_for("authentication"),
-                    button_label: "Verify Authentication",
-                    message: Message::VerifyKeyAuthentication,
-                }),
-                self.workflow_step_card(WorkflowStep {
+        let workflow = column![
+            text("Operator-controlled workflow for provisioning a buyer's digital key fob.")
+                .size(12)
+                .font(Font::MONOSPACE)
+                .style(theme::Text::Color(SECONDARY_TEXT)),
+            self.workflow_group(
+                "A. Vehicle Connection",
+                "Connect the vehicle endpoint before provisioning starts.",
+                column![self.workflow_step_card(WorkflowStep {
+                    icon_name: "vehicle",
+                    title: "Connect Vehicle",
+                    description: "Connect to VEHICLE_001 using AIACS_AUTH_V1.",
+                    status: self.completed_status(
+                        self.workflow_state.vehicle_connected,
+                        "Connected",
+                        false,
+                    ),
+                    button_label: "Connect Vehicle",
+                    message: Message::ConnectVehicle,
+                })]
+                .spacing(6),
+            ),
+            self.workflow_group(
+                "B. Key Fob Registration",
+                "Detect the buyer's fob and register its local credential identity.",
+                column![
+                    self.workflow_step_card(WorkflowStep {
+                        icon_name: "key",
+                        title: "Detect Key Fob",
+                        description: "Detect FOB_001 and prepare credential registration.",
+                        status: self.completed_status(
+                            self.workflow_state.keyfob_detected,
+                            "Detected",
+                            false,
+                        ),
+                        button_label: "Detect Fob",
+                        message: Message::DetectKeyFob,
+                    }),
+                    self.workflow_step_card(WorkflowStep {
+                        icon_name: "register-key",
+                        title: "Register Key Fob",
+                        description:
+                            "Create fob credentials and persist redacted key storage metadata.",
+                        status: self.completed_status(
+                            self.workflow_state.keyfob_registered,
+                            "Registered",
+                            self.status.key_fob_status == "Error",
+                        ),
+                        button_label: "Register Fob",
+                        message: Message::RegisterDigitalKeyFob,
+                    }),
+                ]
+                .spacing(6),
+            ),
+            self.workflow_group(
+                "C. Certificate Provisioning",
+                "Initialize trust and issue the CA-signed access certificate.",
+                column![
+                    self.workflow_step_card(WorkflowStep {
+                        icon_name: "trust",
+                        title: "Initialize Vehicle Trust",
+                        description: "Initialize vehicle trust root and certificate authority.",
+                        status: self.completed_status(
+                            self.workflow_state.trust_initialized,
+                            "Initialized",
+                            self.status.trust_status == "Error",
+                        ),
+                        button_label: "Initialize Trust",
+                        message: Message::InitializeVehicleTrust,
+                    }),
+                    self.workflow_step_card(WorkflowStep {
+                        icon_name: "issue-cert",
+                        title: "Issue Access Certificate",
+                        description: "Issue CA-signed access certificate to the key fob.",
+                        status: self.completed_status(
+                            self.workflow_state.certificate_issued,
+                            "Issued",
+                            self.status.certificate_status == "Error",
+                        ),
+                        button_label: "Issue Certificate",
+                        message: Message::IssueCertificate,
+                    }),
+                    self.workflow_step_card(WorkflowStep {
+                        icon_name: "certificate",
+                        title: "View Certificate Details",
+                        description:
+                            "Inspect subject, issuer, validity, and public key fingerprint.",
+                        status: self.completed_status(
+                            self.workflow_state.certificate_viewed,
+                            "Viewed",
+                            false,
+                        ),
+                        button_label: "View Certificate",
+                        message: Message::ViewCertificateDetails,
+                    }),
+                ]
+                .spacing(6),
+            ),
+            self.workflow_group(
+                "D. Authentication Verification",
+                "Run the operator-visible challenge-response authentication steps.",
+                column![
+                    self.workflow_step_card(WorkflowStep {
+                        icon_name: "auth",
+                        title: "Generate Challenge",
+                        description: "Create vehicle nonce challenge; raw nonce remains redacted.",
+                        status: self.completed_status(
+                            self.workflow_state.challenge_generated,
+                            "Generated",
+                            false,
+                        ),
+                        button_label: "Generate",
+                        message: Message::GenerateChallenge,
+                    }),
+                    self.workflow_step_card(WorkflowStep {
+                        icon_name: "verify-auth",
+                        title: "Sign Canonical Payload",
+                        description: "Stage Ed25519 payload signing; private key stays redacted.",
+                        status: self.completed_status(
+                            self.workflow_state.payload_signed,
+                            "Signed",
+                            false,
+                        ),
+                        button_label: "Sign Payload",
+                        message: Message::SignCanonicalPayload,
+                    }),
+                    self.workflow_step_card(WorkflowStep {
+                        icon_name: "auth",
+                        title: "Verify Key Authentication",
+                        description: "Run the real AIACS authentication and access decision path.",
+                        status: self.completed_status(
+                            self.workflow_state.authentication_verified,
+                            "Verified",
+                            matches!(
+                                self.status.authentication_status.as_str(),
+                                "Failed" | "Error"
+                            ),
+                        ),
+                        button_label: "Verify Authentication",
+                        message: Message::VerifyAuthentication,
+                    }),
+                ]
+                .spacing(6),
+            ),
+            self.workflow_group(
+                "E. Secure Session Activation",
+                "Activate the secure access channel after authentication succeeds.",
+                column![self.workflow_step_card(WorkflowStep {
                     icon_name: "secure-session",
                     title: "Activate Secure Session",
-                    description: "Establish encrypted access session.",
-                    status: self.step_status_for("session"),
+                    description: "Establish encrypted access session for the provisioned key fob.",
+                    status: self.completed_status(
+                        self.workflow_state.session_active,
+                        "Active",
+                        self.status.session_status == "Error",
+                    ),
                     button_label: "Activate Session",
-                    message: Message::ActivateSecureSession,
-                }),
-                self.provisioning_completion_card(),
-                self.core_detail_box(),
+                    message: Message::ActivateSecureChannel,
+                })]
+                .spacing(6),
+            ),
+            self.workflow_group(
+                "F. Finalize",
+                "Export the safe provisioning report after setup is complete.",
+                column![
+                    self.provisioning_completion_card(),
+                    self.workflow_step_card(WorkflowStep {
+                        icon_name: "terminal",
+                        title: "Export Provisioning Report",
+                        description: "Save safe provisioning report with all secrets redacted.",
+                        status: self.completed_status(
+                            self.workflow_state.report_exported,
+                            "Exported",
+                            false,
+                        ),
+                        button_label: "Export Report",
+                        message: Message::ExportProvisioningReport,
+                    }),
+                ]
+                .spacing(6),
+            ),
+            self.core_detail_box(),
+        ]
+        .spacing(10);
+
+        container(
+            column![
+                text("Staged Vehicle Access Provisioning")
+                    .size(16)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(ACCENT_PINK)),
+                scrollable(workflow).height(Length::Fill),
             ]
-            .spacing(8),
-            Length::Fill,
-            PanelKind::Elevated,
+            .spacing(10),
         )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(12)
+        .style(container_style(PanelKind::Elevated))
+        .into()
+    }
+
+    fn workflow_group<'a>(
+        &self,
+        title: &'a str,
+        description: &'a str,
+        steps: iced::widget::Column<'a, Message>,
+    ) -> Element<'a, Message> {
+        container(
+            column![
+                text(title)
+                    .size(13)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(ACCENT_BLUE)),
+                text(description)
+                    .size(11)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(SECONDARY_TEXT)),
+                steps,
+            ]
+            .spacing(6),
+        )
+        .width(Length::Fill)
+        .padding(9)
+        .style(container_style(PanelKind::Detail))
+        .into()
     }
 
     fn workflow_step_card<'a>(&self, step: WorkflowStep<'a>) -> Element<'a, Message> {
@@ -549,7 +741,7 @@ impl AIACSApp {
             .align_items(Alignment::Center),
         )
         .width(Length::Fill)
-        .padding([8, 10])
+        .padding([9, 10])
         .style(container_style(PanelKind::StepCard))
         .into()
     }
@@ -613,50 +805,9 @@ impl AIACSApp {
         .into()
     }
 
-    fn summary_status_card(&self) -> Element<'_, Message> {
-        let complete = self.setup_complete();
-        let color = if complete {
-            SUCCESS_GREEN
-        } else {
-            PENDING_TEXT
-        };
-        let title = if complete {
-            "Setup Complete"
-        } else {
-            "In Progress"
-        };
-        let message = if complete {
-            "The vehicle and key fob are successfully provisioned."
-        } else {
-            "Complete the provisioning steps to authorize the key fob."
-        };
-
-        container(
-            column![
-                summary_indicator(complete),
-                text(title)
-                    .size(15)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(color))
-                    .horizontal_alignment(alignment::Horizontal::Center),
-                text(message)
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(SECONDARY_TEXT))
-                    .horizontal_alignment(alignment::Horizontal::Center),
-            ]
-            .spacing(5)
-            .align_items(Alignment::Center),
-        )
-        .width(Length::Fill)
-        .padding([10, 12])
-        .style(container_style(PanelKind::SummaryHero))
-        .into()
-    }
-
     fn view_provisioning_side_panel(&self) -> Element<'_, Message> {
         column![
-            self.view_provisioning_summary_panel(),
+            self.view_protocol_artifact_viewer(),
             self.view_diagnostics_card(),
         ]
         .spacing(10)
@@ -665,33 +816,83 @@ impl AIACSApp {
         .into()
     }
 
-    fn view_provisioning_summary_panel(&self) -> Element<'_, Message> {
+    fn view_protocol_artifact_viewer(&self) -> Element<'_, Message> {
+        let artifact_rows = column![
+            self.artifact_summary_row(
+                "auth",
+                "Challenge Message",
+                if self.workflow_state.challenge_generated {
+                    "Generated"
+                } else {
+                    "Pending"
+                },
+                "Vehicle nonce evidence is summarized in the trace; raw nonce stays redacted.",
+            ),
+            self.artifact_summary_row(
+                "verify-auth",
+                "Authentication Proof",
+                if self.workflow_state.authentication_verified {
+                    "Verified"
+                } else if self.workflow_state.payload_signed {
+                    "Signed"
+                } else {
+                    "Pending"
+                },
+                "Canonical payload and signature fingerprints only; no raw signature material shown.",
+            ),
+            self.artifact_summary_row(
+                "certificate",
+                "Certificate Details",
+                if self.workflow_state.certificate_issued {
+                    "Issued"
+                } else {
+                    "Pending"
+                },
+                "Subject FOB-GUI-001, issuer AIACS-Demo-CA, public key fingerprint only.",
+            ),
+            self.artifact_summary_row(
+                "key",
+                "Credential Storage",
+                if self.workflow_state.keyfob_registered {
+                    "Stored"
+                } else {
+                    "Pending"
+                },
+                "Local prototype key paths and public fingerprints; private key material redacted.",
+            ),
+            self.artifact_summary_row(
+                "lock",
+                "Session Summary",
+                if self.workflow_state.session_active {
+                    "Active"
+                } else {
+                    "Pending"
+                },
+                "X25519 + HKDF + AES-GCM summary only; session keys remain redacted.",
+            ),
+            self.artifact_summary_row(
+                "decision",
+                "Access Decision",
+                self.access_decision_artifact_status(),
+                "Decision result from the AppController-backed authentication flow.",
+            ),
+        ]
+        .spacing(7)
+        .width(Length::Fill);
+
         container(
             column![
-                text("Provisioning Summary")
+                text("Protocol Artifact Viewer")
                     .size(16)
                     .font(Font::MONOSPACE)
                     .style(theme::Text::Color(ACCENT_PINK)),
-                self.summary_status_card(),
-                column![
-                    self.summary_row("vehicle", "Vehicle", VEHICLE_ID),
-                    self.summary_row("key", "Key Fob", KEY_FOB_ID),
-                    self.summary_row(
-                        "certificate",
-                        "Certificate",
-                        self.summary_certificate_value()
-                    ),
-                    self.summary_row(
-                        "auth",
-                        "Authentication",
-                        self.summary_authentication_value()
-                    ),
-                    self.summary_row("lock", "Secure Session", self.summary_session_value()),
-                    self.summary_row("decision", "Access Decision", self.summary_access_value()),
-                ]
-                .spacing(6),
+                text("Safe summaries only. Full secret material is never rendered.")
+                    .size(11)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(SECONDARY_TEXT)),
+                scrollable(artifact_rows).height(Length::Fill),
             ]
-            .spacing(10),
+            .spacing(8),
         )
         .width(Length::Fill)
         .height(Length::Fill)
@@ -713,8 +914,8 @@ impl AIACSApp {
                     .style(theme::Text::Color(PRIMARY_TEXT)),
                 self.nav_button(
                     "warning-shield",
-                    "Open Diagnostics / Security Validation",
-                    Message::OpenValidationLab,
+                    "Launch Diagnostics Tool",
+                    Message::LaunchDiagnosticsTool,
                 ),
                 row![
                     icon("diagnostics", 18),
@@ -733,95 +934,6 @@ impl AIACSApp {
         .padding(10)
         .style(container_style(PanelKind::Elevated))
         .into()
-    }
-
-    fn view_attack_panel(&self) -> Element<'_, Message> {
-        self.panel(
-            Some("Attack Scenarios"),
-            column![
-                row![
-                    icon("warning-shield", 20),
-                    text("Testing mode only")
-                        .size(12)
-                        .font(Font::MONOSPACE)
-                        .style(theme::Text::Color(ACCENT_BLUE)),
-                ]
-                .spacing(8),
-                self.validation_button(
-                    "warning-shield",
-                    "Replay Attack",
-                    Message::RunAttack(AttackType::ReplayAttack),
-                ),
-                self.validation_button(
-                    "warning-shield",
-                    "Forged Signature",
-                    Message::RunAttack(AttackType::ForgedSignature),
-                ),
-                self.validation_button(
-                    "warning-shield",
-                    "Fake Certificate",
-                    Message::RunAttack(AttackType::FakeCertificate),
-                ),
-                self.validation_button(
-                    "warning-shield",
-                    "Identity Mismatch",
-                    Message::RunAttack(AttackType::IdentityMismatch),
-                ),
-                self.validation_button(
-                    "warning-shield",
-                    "Delayed Relay",
-                    Message::RunAttack(AttackType::DelayedRelay),
-                ),
-                self.validation_button(
-                    "warning-shield",
-                    "Packet Tampering",
-                    Message::RunAttack(AttackType::PacketTampering),
-                ),
-                self.validation_button(
-                    "warning-shield",
-                    "Unauthorized Key Fob",
-                    Message::RunAttack(AttackType::UnauthorizedKeyFob),
-                ),
-                self.validation_button(
-                    "warning-shield",
-                    "Tampered Ciphertext",
-                    Message::RunAttack(AttackType::TamperedSessionCiphertext),
-                ),
-                self.validation_button(
-                    "warning-shield",
-                    "Wrong Session Key",
-                    Message::RunAttack(AttackType::WrongSessionKey),
-                ),
-                self.validation_suite_button(
-                    "diagnostics",
-                    "Run All Attacks",
-                    Message::RunAllAttacks
-                ),
-            ]
-            .spacing(7),
-            Length::FillPortion(2),
-            PanelKind::Elevated,
-        )
-    }
-
-    fn view_result_panel(&self) -> Element<'_, Message> {
-        self.panel(
-            Some("Validation Result / Details"),
-            column![
-                row![
-                    icon("diagnostics", 20),
-                    text("Adversarial validation is isolated from Core System operation.")
-                        .size(12)
-                        .font(Font::MONOSPACE)
-                        .style(theme::Text::Color(ACCENT_BLUE)),
-                ]
-                .spacing(8),
-                self.detail_box("Selected Attack / Result"),
-            ]
-            .spacing(10),
-            Length::FillPortion(3),
-            PanelKind::Panel,
-        )
     }
 
     fn view_protocol_trace_panel(&self) -> Element<'_, Message> {
@@ -990,39 +1102,6 @@ impl AIACSApp {
         .into()
     }
 
-    fn summary_row<'a>(
-        &self,
-        icon_name: &'static str,
-        label: &'a str,
-        value: &'a str,
-    ) -> Element<'a, Message> {
-        container(
-            row![
-                container(icon(icon_name, 18))
-                    .width(Length::Fixed(24.0))
-                    .center_x(),
-                text(label)
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(MUTED_TEXT))
-                    .width(Length::Fill),
-                text(value)
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(status_color(value)))
-                    .width(Length::Fixed(96.0))
-                    .horizontal_alignment(alignment::Horizontal::Right),
-            ]
-            .spacing(8)
-            .align_items(Alignment::Center)
-            .width(Length::Fill),
-        )
-        .width(Length::Fill)
-        .height(Length::Fixed(32.0))
-        .padding([6, 0])
-        .into()
-    }
-
     fn detail_row<'a>(&self, label: &'a str, value: &'a str) -> Element<'a, Message> {
         row![
             text(label)
@@ -1041,40 +1120,51 @@ impl AIACSApp {
         .into()
     }
 
+    fn artifact_summary_row<'a>(
+        &self,
+        icon_name: &'static str,
+        label: &'a str,
+        value: &'a str,
+        detail: &'a str,
+    ) -> Element<'a, Message> {
+        container(
+            row![
+                icon(icon_name, 18),
+                column![
+                    row![
+                        text(label)
+                            .size(11)
+                            .font(Font::MONOSPACE)
+                            .style(theme::Text::Color(PRIMARY_TEXT))
+                            .width(Length::Fill),
+                        text(value)
+                            .size(11)
+                            .font(Font::MONOSPACE)
+                            .style(theme::Text::Color(status_color(value)))
+                            .horizontal_alignment(alignment::Horizontal::Right),
+                    ]
+                    .spacing(8)
+                    .align_items(Alignment::Center),
+                    text(detail)
+                        .size(10)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(SECONDARY_TEXT))
+                        .width(Length::Fill),
+                ]
+                .spacing(3)
+                .width(Length::Fill),
+            ]
+            .spacing(8)
+            .align_items(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .padding(7)
+        .style(container_style(PanelKind::StepCard))
+        .into()
+    }
+
     fn setup_complete(&self) -> bool {
         self.status.session_status == "Active" && self.status.access_decision == "Access Granted"
-    }
-
-    fn summary_certificate_value(&self) -> &str {
-        match self.status.certificate_status.as_str() {
-            "Issued" => "Issued",
-            "Error" | "Failed" => "Error",
-            _ => "Not Issued",
-        }
-    }
-
-    fn summary_authentication_value(&self) -> &str {
-        match self.status.authentication_status.as_str() {
-            "Verified" => "Verified",
-            "Failed" | "Error" => "Failed",
-            _ => "Pending",
-        }
-    }
-
-    fn summary_session_value(&self) -> &str {
-        match self.status.session_status.as_str() {
-            "Active" => "Active",
-            "Error" | "Failed" => "Error",
-            _ => "Pending",
-        }
-    }
-
-    fn summary_access_value(&self) -> &str {
-        match self.status.access_decision.as_str() {
-            "Access Granted" | "Granted" => "Granted",
-            "Access Rejected" | "Rejected" | "Error" => "Rejected",
-            _ => "Pending",
-        }
     }
 
     fn certificate_trust_label(&self) -> &str {
@@ -1089,53 +1179,36 @@ impl AIACSApp {
         }
     }
 
-    fn step_status_for(&self, step: &str) -> StepStatus {
-        match step {
-            "trust" => match self.status.trust_status.as_str() {
-                "Initialized" => StepStatus::Completed,
-                "Error" => StepStatus::Error,
-                _ => StepStatus::Pending,
-            },
-            "key_fob" => match self.status.key_fob_status.as_str() {
-                "Registered" => StepStatus::Completed,
-                "Error" => StepStatus::Error,
-                _ => StepStatus::Pending,
-            },
-            "certificate" => match self.status.certificate_status.as_str() {
-                "Issued" => StepStatus::Completed,
-                "Error" => StepStatus::Error,
-                _ => StepStatus::Pending,
-            },
-            "authentication" => match self.status.authentication_status.as_str() {
-                "Verified" => StepStatus::Success,
-                "Failed" | "Error" => StepStatus::Error,
-                _ => StepStatus::Pending,
-            },
-            "session" => match self.status.session_status.as_str() {
-                "Active" => StepStatus::Active,
-                "Error" => StepStatus::Error,
-                _ => StepStatus::Pending,
-            },
-            _ => StepStatus::Pending,
+    fn access_decision_artifact_status(&self) -> &str {
+        match self.status.access_decision.as_str() {
+            "Access Granted" => "Granted",
+            "Error" | "Access Rejected" => "Rejected",
+            _ => "Pending",
         }
     }
 
-    fn validation_button<'a>(
+    fn completed_status(
         &self,
-        icon_name: &'static str,
-        label: &'a str,
-        message: Message,
-    ) -> Element<'a, Message> {
-        styled_button(icon_name, label, message, ButtonKind::Validation)
-    }
-
-    fn validation_suite_button<'a>(
-        &self,
-        icon_name: &'static str,
-        label: &'a str,
-        message: Message,
-    ) -> Element<'a, Message> {
-        styled_button(icon_name, label, message, ButtonKind::ValidationSuite)
+        completed: bool,
+        completed_label: &'static str,
+        failed: bool,
+    ) -> ChipState {
+        if failed {
+            ChipState {
+                status: StepStatus::Error,
+                label: "Error",
+            }
+        } else if completed {
+            ChipState {
+                status: StepStatus::Completed,
+                label: completed_label,
+            }
+        } else {
+            ChipState {
+                status: StepStatus::Pending,
+                label: "Pending",
+            }
+        }
     }
 
     fn nav_button<'a>(
@@ -1145,30 +1218,6 @@ impl AIACSApp {
         message: Message,
     ) -> Element<'a, Message> {
         styled_button(icon_name, label, message, ButtonKind::Nav)
-    }
-
-    fn detail_box<'a>(&'a self, title: &'a str) -> Element<'a, Message> {
-        container(
-            scrollable(
-                column![
-                    text(title)
-                        .size(12)
-                        .font(Font::MONOSPACE)
-                        .style(theme::Text::Color(ACCENT_BLUE)),
-                    text(self.selected_detail.as_str())
-                        .size(13)
-                        .font(Font::MONOSPACE)
-                        .style(theme::Text::Color(PRIMARY_TEXT)),
-                ]
-                .spacing(6),
-            )
-            .height(Length::Fill),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .padding(10)
-        .style(container_style(PanelKind::Detail))
-        .into()
     }
 
     fn push_log(&mut self, tag: &str, message: impl AsRef<str>) {
@@ -1195,17 +1244,21 @@ struct WorkflowStep<'a> {
     icon_name: &'static str,
     title: &'a str,
     description: &'a str,
-    status: StepStatus,
+    status: ChipState,
     button_label: &'a str,
     message: Message,
+}
+
+#[derive(Clone, Copy)]
+struct ChipState {
+    status: StepStatus,
+    label: &'static str,
 }
 
 #[derive(Clone, Copy)]
 enum StepStatus {
     Pending,
     Completed,
-    Success,
-    Active,
     Error,
 }
 
@@ -1220,8 +1273,6 @@ enum PanelKind {
     StepCard,
     SuccessCard,
     ProgressCard,
-    SummaryHero,
-    SummaryIndicator(bool),
     StatusChip(StepStatus),
     StatusDot(Color),
     Badge,
@@ -1250,19 +1301,9 @@ impl iced::widget::container::StyleSheet for PanelStyle {
                 7.0,
             ),
             PanelKind::ProgressCard => (PENDING_BG, PENDING_BORDER, 7.0),
-            PanelKind::SummaryHero => (LOG_BG, BUTTON_BORDER, 7.0),
-            PanelKind::SummaryIndicator(complete) => {
-                if complete {
-                    (Color::from_rgb(0.10, 0.17, 0.13), SUCCESS_GREEN, 999.0)
-                } else {
-                    (PENDING_BG, PENDING_BORDER, 999.0)
-                }
-            }
             PanelKind::StatusChip(status) => match status {
                 StepStatus::Pending => (PENDING_BG, PENDING_BORDER, 5.0),
-                StepStatus::Completed | StepStatus::Success | StepStatus::Active => {
-                    (Color::from_rgb(0.11, 0.14, 0.12), SUCCESS_GREEN, 5.0)
-                }
+                StepStatus::Completed => (Color::from_rgb(0.11, 0.14, 0.12), SUCCESS_GREEN, 5.0),
                 StepStatus::Error => (Color::from_rgb(0.18, 0.105, 0.115), DANGER_RED, 5.0),
             },
             PanelKind::StatusDot(color) => (color, color, 999.0),
@@ -1289,8 +1330,6 @@ impl iced::widget::container::StyleSheet for PanelStyle {
 #[derive(Clone, Copy)]
 enum ButtonKind {
     StepAction,
-    Validation,
-    ValidationSuite,
     Nav,
 }
 
@@ -1305,8 +1344,6 @@ impl iced::widget::button::StyleSheet for ButtonStyle {
     fn active(&self, _style: &Self::Style) -> iced::widget::button::Appearance {
         let (text_color, border_color) = match self.kind {
             ButtonKind::StepAction => (PRIMARY_TEXT, ACCENT_PINK),
-            ButtonKind::Validation => (PRIMARY_TEXT, BUTTON_BORDER),
-            ButtonKind::ValidationSuite => (ACCENT_PINK, ACCENT_PINK),
             ButtonKind::Nav => (ACCENT_BLUE, ACCENT_BLUE),
         };
 
@@ -1379,22 +1416,21 @@ fn compact_button<'a>(
         .spacing(7)
         .align_items(Alignment::Center),
     )
-    .width(Length::Fixed(168.0))
+    .width(Length::Fixed(190.0))
     .padding([7, 9])
     .style(button_style(kind))
     .on_press(message)
     .into()
 }
 
-fn status_chip(status: StepStatus) -> Element<'static, Message> {
-    let label = step_status_label(status);
-    let text_color = step_status_color(status);
-    let dot_color = step_status_dot_color(status);
+fn status_chip(state: ChipState) -> Element<'static, Message> {
+    let text_color = step_status_color(state.status);
+    let dot_color = step_status_dot_color(state.status);
 
     container(
         row![
             status_dot(dot_color),
-            text(label)
+            text(state.label)
                 .size(11)
                 .font(Font::MONOSPACE)
                 .style(theme::Text::Color(text_color)),
@@ -1404,7 +1440,7 @@ fn status_chip(status: StepStatus) -> Element<'static, Message> {
     )
     .width(Length::Fixed(112.0))
     .padding([6, 8])
-    .style(container_style(PanelKind::StatusChip(status)))
+    .style(container_style(PanelKind::StatusChip(state.status)))
     .into()
 }
 
@@ -1414,24 +1450,6 @@ fn status_dot(color: Color) -> Element<'static, Message> {
         .height(Length::Fixed(7.0))
         .style(container_style(PanelKind::StatusDot(color)))
         .into()
-}
-
-fn summary_indicator(complete: bool) -> Element<'static, Message> {
-    let label = if complete { "✓" } else { "" };
-    let color = if complete { SUCCESS_GREEN } else { PENDING_DOT };
-
-    container(
-        text(label)
-            .size(20)
-            .font(Font::MONOSPACE)
-            .style(theme::Text::Color(color)),
-    )
-    .width(Length::Fixed(36.0))
-    .height(Length::Fixed(36.0))
-    .center_x()
-    .center_y()
-    .style(container_style(PanelKind::SummaryIndicator(complete)))
-    .into()
 }
 
 fn icon(name: &'static str, size: u16) -> Element<'static, Message> {
@@ -1458,7 +1476,24 @@ fn status_badge(label: &str) -> Element<'_, Message> {
 fn badge_color(value: &str) -> Color {
     match value {
         "Not Initialized" => PENDING_TEXT,
-        "Trust Ready"
+        "Vehicle Connected"
+        | "Connected"
+        | "Detected"
+        | "Stored"
+        | "Generated"
+        | "Signed"
+        | "Exported"
+        | "Viewed"
+        | "Issued"
+        | "Granted"
+        | "Verified"
+        | "Active"
+        | "Access Granted"
+        | "Valid"
+        | "Complete"
+        | "CA-signed certificate issued"
+        | "Trust root initialized"
+        | "Trust Ready"
         | "Key Fob Registered"
         | "Access Certificate Issued"
         | "Key Verified"
@@ -1470,8 +1505,15 @@ fn badge_color(value: &str) -> Color {
 
 fn status_color(value: &str) -> Color {
     match value {
-        "Initialized"
+        "Connected"
+        | "Detected"
         | "Registered"
+        | "Initialized"
+        | "Viewed"
+        | "Generated"
+        | "Signed"
+        | "Stored"
+        | "Exported"
         | "Issued"
         | "Verified"
         | "Active"
@@ -1490,20 +1532,10 @@ fn status_color(value: &str) -> Color {
     }
 }
 
-fn step_status_label(status: StepStatus) -> &'static str {
-    match status {
-        StepStatus::Pending => "Pending",
-        StepStatus::Completed => "Completed",
-        StepStatus::Success => "Success",
-        StepStatus::Active => "Active",
-        StepStatus::Error => "Error",
-    }
-}
-
 fn step_status_color(status: StepStatus) -> Color {
     match status {
         StepStatus::Pending => PENDING_TEXT,
-        StepStatus::Completed | StepStatus::Success | StepStatus::Active => SUCCESS_GREEN,
+        StepStatus::Completed => SUCCESS_GREEN,
         StepStatus::Error => DANGER_RED,
     }
 }
@@ -1511,7 +1543,7 @@ fn step_status_color(status: StepStatus) -> Color {
 fn step_status_dot_color(status: StepStatus) -> Color {
     match status {
         StepStatus::Pending => PENDING_DOT,
-        StepStatus::Completed | StepStatus::Success | StepStatus::Active => SUCCESS_GREEN,
+        StepStatus::Completed => SUCCESS_GREEN,
         StepStatus::Error => DANGER_RED,
     }
 }
@@ -1534,71 +1566,6 @@ fn log_parts(entry: &str) -> (&str, &str, &str) {
     let message = parts.next().unwrap_or("");
 
     (timestamp, tag, message)
-}
-
-fn format_attack_detail(_attack_name: &str, message: &str, _defense_status: &str) -> String {
-    message.to_string()
-}
-
-fn format_attack_suite_summary(messages: &[String]) -> String {
-    let baseline_count = messages
-        .iter()
-        .filter(|message| is_baseline_result(message))
-        .count();
-    let attack_count = messages.len().saturating_sub(baseline_count);
-    let successful_defenses = messages
-        .iter()
-        .filter(|message| !is_baseline_result(message))
-        .filter(|message| attack_defense_succeeded(message))
-        .count();
-    let defense_status = if successful_defenses == attack_count {
-        "Successful"
-    } else {
-        "Failed"
-    };
-
-    let mut summary = format!(
-        "Attack suite: Run All Attacks\nExpected outcome: Rejected for attack scenarios\nScenarios run: {}\nAttack scenarios: {}\nDefense status: {}\n\nResults:",
-        messages.len(),
-        attack_count,
-        defense_status
-    );
-
-    for message in messages {
-        summary.push_str("\n- ");
-        summary.push_str(message);
-    }
-
-    summary
-}
-
-fn defense_status_for_attack(message: &str) -> &'static str {
-    if attack_defense_succeeded(message) {
-        "Successful"
-    } else {
-        "Failed"
-    }
-}
-
-fn attack_defense_succeeded(message: &str) -> bool {
-    let lower = message.to_lowercase();
-
-    lower.contains("access denied")
-        || lower.contains("rejected")
-        || lower.contains("detected")
-        || lower.contains("should fail")
-}
-
-fn is_baseline_result(message: &str) -> bool {
-    message.contains("Legitimate Baseline")
-}
-
-fn summarize_log_message(message: &str) -> String {
-    message
-        .lines()
-        .find(|line| line.starts_with("Attack:") || line.starts_with("Scenario:"))
-        .map(|line| line.replace("Attack: ", "").replace("Scenario: ", ""))
-        .unwrap_or_else(|| message.replace(['\r', '\n'], " | "))
 }
 
 fn trace_parts(entry: &str) -> (&str, &str) {
