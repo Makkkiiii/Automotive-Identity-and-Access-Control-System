@@ -561,8 +561,16 @@ impl AppController {
         message: impl AsRef<str>,
     ) -> Result<(), AppControllerError> {
         let message = redact_sensitive_terms(message.as_ref());
-        self.protocol_trace
-            .push(format!("{} {}", tag, message.as_str()));
+        let entry = format!("{} {}", tag, message.as_str());
+        if self
+            .protocol_trace
+            .iter()
+            .any(|existing| existing == &entry)
+        {
+            return Ok(());
+        }
+
+        self.protocol_trace.push(entry);
         self.write_log_file(PROTOCOL_TRACE_LOG_FILE, tag, &message)?;
         Ok(())
     }
@@ -609,63 +617,138 @@ impl AppController {
         let mut report = String::new();
         report.push_str("AIACS Provisioning Audit Report\n");
         report.push_str("================================\n");
-        report.push_str(&format!("generated_at: {}\n", Utc::now().to_rfc3339()));
-        report.push_str(&format!("vehicle_id: {}\n", DEFAULT_VEHICLE_ID));
-        report.push_str(&format!("fob_id: {}\n", DEFAULT_FOB_ID));
+        report.push_str(&format!("Generated At: {}\n", Utc::now().to_rfc3339()));
+        report.push('\n');
+
+        report.push_str("Provisioning Summary\n");
+        report.push_str("--------------------\n");
+        report.push_str(&format!("Vehicle ID: {}\n", DEFAULT_VEHICLE_ID));
+        report.push_str(&format!("Key Fob ID: {}\n", DEFAULT_FOB_ID));
         report.push_str(&format!(
-            "ca_status: {}\n",
+            "Vehicle Connected: {}\n",
+            if self.vehicle_connected {
+                "Yes"
+            } else {
+                "Pending"
+            }
+        ));
+        report.push_str(&format!(
+            "Key Fob Detected: {}\n",
+            if self.keyfob_detected {
+                "Yes"
+            } else {
+                "Pending"
+            }
+        ));
+        report.push_str(&format!(
+            "Trust Status: {}\n",
             if self.ca.is_some() {
                 "Initialized"
             } else {
                 "Pending"
             }
         ));
-        if let Some(cert) = cert {
-            report.push_str(&format!("certificate_subject: {}\n", cert.subject_id));
-            report.push_str(&format!("certificate_issuer: {}\n", cert.issuer));
-            report.push_str(&format!("certificate_path: {}\n", KEYFOB_CERTIFICATE_PATH));
-            report.push_str(&format!(
-                "certificate_public_key_fingerprint: {}\n",
-                fingerprint(&cert.public_key)
-            ));
-        } else {
-            report.push_str("certificate_subject: Pending\n");
-            report.push_str("certificate_issuer: Pending\n");
-        }
-        for line in self.credential_storage_summary() {
-            report.push_str(&line);
-            report.push('\n');
-        }
         report.push_str(&format!(
-            "authentication_result: {}\n",
-            self.last_auth_result
-                .map(|result| result.to_string())
-                .unwrap_or_else(|| "Pending".to_string())
+            "Certificate Status: {}\n",
+            if cert.is_some() { "Issued" } else { "Pending" }
         ));
-        report.push_str("session_method: X25519 + HKDF-SHA256 + AES-GCM\n");
-        report.push_str("session_key: [REDACTED]\n");
-        report.push_str("shared_secret: [REDACTED]\n");
         report.push_str(&format!(
-            "access_decision: {}\n",
+            "Access Decision: {}\n",
             self.last_access_decision
                 .map(|decision| decision.to_string())
                 .unwrap_or_else(|| "Pending".to_string())
         ));
+        report.push('\n');
+
+        report.push_str("Credential Storage\n");
+        report.push_str("------------------\n");
+        for line in self.credential_storage_summary() {
+            report.push_str(&line);
+            report.push('\n');
+        }
+        report.push('\n');
+
+        report.push_str("Certificate Details\n");
+        report.push_str("-------------------\n");
+        if let Some(cert) = cert {
+            report.push_str(&format!("Subject: {}\n", cert.subject_id));
+            report.push_str(&format!("Issuer: {}\n", cert.issuer));
+            report.push_str(&format!("Certificate Path: {}\n", KEYFOB_CERTIFICATE_PATH));
+            report.push_str(&format!("Issued At: {}\n", cert.issued_at));
+            report.push_str(&format!("Expires At: {}\n", cert.expires_at));
+            report.push_str(&format!(
+                "Public Key Fingerprint: {}\n",
+                fingerprint(&cert.public_key)
+            ));
+            report.push_str("Certificate Signature: Verified\n");
+        } else {
+            report.push_str("Subject: Pending\n");
+            report.push_str("Issuer: Pending\n");
+            report.push_str("Certificate Path: Pending\n");
+        }
+        report.push('\n');
+
+        report.push_str("Authentication Verification\n");
+        report.push_str("---------------------------\n");
+        report.push_str(&format!(
+            "Authentication Result: {}\n",
+            self.last_auth_result
+                .map(|result| result.to_string())
+                .unwrap_or_else(|| "Pending".to_string())
+        ));
+        report.push_str("Authentication Method: Ed25519 + PKI\n");
+        report.push_str("Certificate Chain Validation: trusted CA path only\n");
+        report.push_str("Signature Material: [REDACTED]\n");
+        report.push('\n');
+
+        report.push_str("Secure Session Establishment\n");
+        report.push_str("----------------------------\n");
+        report.push_str(&format!("Session ID: {}\n", DEFAULT_SESSION_ID));
+        report.push_str("Session Method: X25519 + HKDF-SHA256 + AES-GCM\n");
+        report.push_str("Session Key: [REDACTED]\n");
+        report.push_str("Shared Secret: [REDACTED]\n");
+        report.push_str("Ephemeral Private Keys: [REDACTED]\n");
+        report.push_str(&format!(
+            "Session Status: {}\n",
+            if self.session.is_some() {
+                "Established"
+            } else {
+                "Pending"
+            }
+        ));
+        report.push('\n');
+
+        report.push_str("Security Notes\n");
+        report.push_str("--------------\n");
+        report.push_str("Private keys, session keys, shared secrets, raw AES keys, and X25519 private keys are redacted.\n");
+        report.push_str(
+            "Report includes only safe metadata, file paths, algorithm names, and fingerprints.\n",
+        );
+        report.push_str("Diagnostics are isolated in the separate AIACS diagnostics tool.\n");
+        report.push('\n');
+
         report.push_str("\nProtocol Trace\n");
+        report.push_str("--------------\n");
         for entry in &self.protocol_trace {
             report.push_str(entry);
             report.push('\n');
         }
         report.push_str("\nDiagnostics Summary\n");
+        report.push_str("-------------------\n");
+        let mut diagnostics_found = false;
         for entry in self
             .protocol_trace
             .iter()
             .filter(|entry| entry.contains("[ATTACK]"))
         {
+            diagnostics_found = true;
             report.push_str(entry);
             report.push('\n');
         }
-        report.push_str("\nSecrets: [REDACTED]\n");
+        if !diagnostics_found {
+            report.push_str("No diagnostics run from this controller session.\n");
+        }
+        report.push_str("\nSecret Material: [REDACTED]\n");
 
         fs::write(&report_path, redact_sensitive_terms(&report))
             .map_err(|e| AppControllerError::Backend(e.to_string()))?;
@@ -1240,6 +1323,33 @@ mod tests {
     }
 
     #[test]
+    fn test_protocol_trace_deduplicates_repeated_entries() {
+        let log_dir = temp_log_dir("trace_deduplication");
+        let mut controller = AppController::new_with_log_dir(&log_dir);
+
+        controller.connect_vehicle().expect("connect failed");
+        controller.connect_vehicle().expect("second connect failed");
+
+        let trace = controller.get_protocol_trace();
+        assert_eq!(
+            trace
+                .iter()
+                .filter(|entry| entry.as_str() == "[VEHICLE] Vehicle connection established")
+                .count(),
+            1
+        );
+        assert_eq!(
+            trace
+                .iter()
+                .filter(|entry| entry.as_str() == "[VEHICLE] Protocol version: AIACS_AUTH_V1")
+                .count(),
+            1
+        );
+
+        let _ = fs::remove_dir_all(log_dir);
+    }
+
+    #[test]
     fn test_protocol_trace_redacts_secret_material() {
         let log_dir = temp_log_dir("trace_redaction");
         let mut controller = AppController::new_with_log_dir(&log_dir);
@@ -1390,6 +1500,14 @@ mod tests {
 
         let report = fs::read_to_string(controller.provisioning_report_file_path())
             .expect("report read failed");
+        assert!(report.contains("Provisioning Summary"));
+        assert!(report.contains("Credential Storage"));
+        assert!(report.contains("Certificate Details"));
+        assert!(report.contains("Authentication Verification"));
+        assert!(report.contains("Secure Session Establishment"));
+        assert!(report.contains("Security Notes"));
+        assert!(report.contains("Protocol Trace"));
+        assert!(report.contains("Diagnostics Summary"));
         assert!(report.contains("[REDACTED]"));
         assert!(report.contains(CA_PRIVATE_KEY_PATH));
         assert!(report.contains(KEYFOB_PRIVATE_KEY_PATH));

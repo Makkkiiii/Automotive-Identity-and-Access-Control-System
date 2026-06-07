@@ -42,6 +42,8 @@ struct AIACSApp {
     controller: AppController,
     status: SystemStatus,
     workflow_state: WorkflowState,
+    selected_tab: MainTab,
+    selected_artifact: ArtifactSection,
     selected_detail: String,
     event_log: Vec<String>,
 }
@@ -86,8 +88,27 @@ struct WorkflowState {
     report_exported: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MainTab {
+    Provisioning,
+    ProtocolArtifacts,
+    CredentialStorage,
+    LogsReport,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArtifactSection {
+    ChallengeMessage,
+    AuthenticationProof,
+    CertificateDetails,
+    SessionSummary,
+    AccessDecision,
+}
+
 #[derive(Debug, Clone)]
 enum Message {
+    SelectTab(MainTab),
+    SelectArtifact(ArtifactSection),
     ConnectVehicle,
     DetectKeyFob,
     InitializeVehicleTrust,
@@ -123,6 +144,8 @@ impl Sandbox for AIACSApp {
             controller,
             status: SystemStatus::default(),
             workflow_state: WorkflowState::default(),
+            selected_tab: MainTab::Provisioning,
+            selected_artifact: ArtifactSection::ChallengeMessage,
             selected_detail: "Provisioning console ready. Initialize vehicle trust to begin."
                 .to_string(),
             event_log: initial_messages
@@ -158,6 +181,12 @@ impl Sandbox for AIACSApp {
 
     fn update(&mut self, message: Message) {
         match message {
+            Message::SelectTab(tab) => {
+                self.selected_tab = tab;
+            }
+            Message::SelectArtifact(section) => {
+                self.selected_artifact = section;
+            }
             Message::ConnectVehicle => match self.controller.connect_vehicle() {
                 Ok(message) => {
                     self.workflow_state.vehicle_connected = true;
@@ -385,18 +414,66 @@ impl Sandbox for AIACSApp {
 impl AIACSApp {
     fn view_core_system(&self) -> Element<'_, Message> {
         column![
+            self.view_core_header(),
+            self.view_tab_bar(),
+            self.view_selected_tab(),
+        ]
+        .spacing(10)
+        .height(Length::Fill)
+        .into()
+    }
+
+    fn view_tab_bar(&self) -> Element<'_, Message> {
+        container(
             row![
-                self.view_status_panel(),
-                column![self.view_core_header(), self.view_workflow_panel(),]
-                    .spacing(10)
-                    .width(Length::FillPortion(5))
-                    .height(Length::Fill),
-                self.view_provisioning_side_panel(),
+                tab_button(
+                    "shield",
+                    "Provisioning",
+                    MainTab::Provisioning,
+                    self.selected_tab,
+                ),
+                tab_button(
+                    "certificate",
+                    "Protocol Artifacts",
+                    MainTab::ProtocolArtifacts,
+                    self.selected_tab,
+                ),
+                tab_button(
+                    "key",
+                    "Credential Storage",
+                    MainTab::CredentialStorage,
+                    self.selected_tab,
+                ),
+                tab_button(
+                    "terminal",
+                    "Logs / Report",
+                    MainTab::LogsReport,
+                    self.selected_tab,
+                ),
             ]
-            .spacing(10)
-            .height(Length::FillPortion(7)),
-            self.view_protocol_trace_panel(),
-            self.view_event_log(),
+            .spacing(8)
+            .align_items(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .padding(8)
+        .style(container_style(PanelKind::Panel))
+        .into()
+    }
+
+    fn view_selected_tab(&self) -> Element<'_, Message> {
+        match self.selected_tab {
+            MainTab::Provisioning => self.view_provisioning_tab(),
+            MainTab::ProtocolArtifacts => self.view_protocol_artifacts_tab(),
+            MainTab::CredentialStorage => self.view_credential_storage_tab(),
+            MainTab::LogsReport => self.view_logs_report_tab(),
+        }
+    }
+
+    fn view_provisioning_tab(&self) -> Element<'_, Message> {
+        row![
+            self.view_status_panel(),
+            self.view_workflow_panel(),
+            self.view_provisioning_side_panel(),
         ]
         .spacing(10)
         .height(Length::Fill)
@@ -440,21 +517,6 @@ impl AIACSApp {
                 .style(theme::Text::Color(MUTED_TEXT)),
         ]
         .spacing(6);
-        let storage_rows = self.controller.credential_storage_summary().iter().fold(
-            column![text("Credential Storage")
-                .size(12)
-                .font(Font::MONOSPACE)
-                .style(theme::Text::Color(ACCENT_BLUE))]
-            .spacing(5),
-            |column, line| {
-                column.push(
-                    text(line.as_str())
-                        .size(10)
-                        .font(Font::MONOSPACE)
-                        .style(theme::Text::Color(SECONDARY_TEXT)),
-                )
-            },
-        );
 
         self.panel(
             None,
@@ -476,7 +538,6 @@ impl AIACSApp {
                 self.status_row("lock", "Secure Session Status", &self.status.session_status),
                 self.status_row("decision", "Access Decision", &self.status.access_decision),
                 self.status_row("gear", "Controller", self.controller_label()),
-                storage_rows,
             ]
             .spacing(9),
             Length::FillPortion(2),
@@ -807,7 +868,7 @@ impl AIACSApp {
 
     fn view_provisioning_side_panel(&self) -> Element<'_, Message> {
         column![
-            self.view_protocol_artifact_viewer(),
+            self.view_provisioning_status_panel(),
             self.view_diagnostics_card(),
         ]
         .spacing(10)
@@ -816,89 +877,106 @@ impl AIACSApp {
         .into()
     }
 
-    fn view_protocol_artifact_viewer(&self) -> Element<'_, Message> {
-        let artifact_rows = column![
-            self.artifact_summary_row(
-                "auth",
-                "Challenge Message",
-                if self.workflow_state.challenge_generated {
-                    "Generated"
-                } else {
-                    "Pending"
-                },
-                "Vehicle nonce evidence is summarized in the trace; raw nonce stays redacted.",
-            ),
-            self.artifact_summary_row(
-                "verify-auth",
-                "Authentication Proof",
-                if self.workflow_state.authentication_verified {
-                    "Verified"
-                } else if self.workflow_state.payload_signed {
-                    "Signed"
-                } else {
-                    "Pending"
-                },
-                "Canonical payload and signature fingerprints only; no raw signature material shown.",
-            ),
-            self.artifact_summary_row(
-                "certificate",
-                "Certificate Details",
-                if self.workflow_state.certificate_issued {
-                    "Issued"
-                } else {
-                    "Pending"
-                },
-                "Subject FOB-GUI-001, issuer AIACS-Demo-CA, public key fingerprint only.",
-            ),
-            self.artifact_summary_row(
-                "key",
-                "Credential Storage",
-                if self.workflow_state.keyfob_registered {
-                    "Stored"
-                } else {
-                    "Pending"
-                },
-                "Local prototype key paths and public fingerprints; private key material redacted.",
-            ),
-            self.artifact_summary_row(
-                "lock",
-                "Session Summary",
-                if self.workflow_state.session_active {
-                    "Active"
-                } else {
-                    "Pending"
-                },
-                "X25519 + HKDF + AES-GCM summary only; session keys remain redacted.",
-            ),
-            self.artifact_summary_row(
-                "decision",
-                "Access Decision",
-                self.access_decision_artifact_status(),
-                "Decision result from the AppController-backed authentication flow.",
-            ),
-        ]
-        .spacing(7)
-        .width(Length::Fill);
-
+    fn view_provisioning_status_panel(&self) -> Element<'_, Message> {
         container(
             column![
-                text("Protocol Artifact Viewer")
+                text("Provisioning Status")
                     .size(16)
                     .font(Font::MONOSPACE)
                     .style(theme::Text::Color(ACCENT_PINK)),
-                text("Safe summaries only. Full secret material is never rendered.")
-                    .size(11)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(SECONDARY_TEXT)),
-                scrollable(artifact_rows).height(Length::Fill),
+                self.provisioning_completion_card(),
+                self.view_provisioning_summary_rows(),
+                self.core_detail_box(),
             ]
-            .spacing(8),
+            .spacing(10),
         )
         .width(Length::Fill)
         .height(Length::Fill)
         .padding(10)
         .style(container_style(PanelKind::Panel))
         .into()
+    }
+
+    fn view_protocol_artifacts_tab(&self) -> Element<'_, Message> {
+        row![
+            container(
+                column![
+                    text("Protocol Artifacts")
+                        .size(16)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(ACCENT_PINK)),
+                    text("Select one safe artifact summary.")
+                        .size(11)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(SECONDARY_TEXT)),
+                    artifact_button(
+                        "auth",
+                        "Challenge Message",
+                        ArtifactSection::ChallengeMessage,
+                        self.selected_artifact,
+                    ),
+                    artifact_button(
+                        "verify-auth",
+                        "Authentication Proof",
+                        ArtifactSection::AuthenticationProof,
+                        self.selected_artifact,
+                    ),
+                    artifact_button(
+                        "certificate",
+                        "Certificate Details",
+                        ArtifactSection::CertificateDetails,
+                        self.selected_artifact,
+                    ),
+                    artifact_button(
+                        "lock",
+                        "Session Summary",
+                        ArtifactSection::SessionSummary,
+                        self.selected_artifact,
+                    ),
+                    artifact_button(
+                        "decision",
+                        "Access Decision",
+                        ArtifactSection::AccessDecision,
+                        self.selected_artifact,
+                    ),
+                ]
+                .spacing(8),
+            )
+            .width(Length::FillPortion(2))
+            .height(Length::Fill)
+            .padding(12)
+            .style(container_style(PanelKind::Status)),
+            self.view_selected_artifact_detail(),
+        ]
+        .spacing(10)
+        .height(Length::Fill)
+        .into()
+    }
+
+    fn view_selected_artifact_detail(&self) -> Element<'_, Message> {
+        let (title, rows) = self.selected_artifact_rows();
+        let details = rows.into_iter().fold(
+            column![
+                text(title)
+                    .size(18)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(ACCENT_PINK)),
+                text("Only display-safe metadata, fingerprints, and redaction markers are shown.")
+                    .size(11)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(SECONDARY_TEXT)),
+            ]
+            .spacing(8)
+            .width(Length::Fill),
+            |column, (label, value)| column.push(self.artifact_detail_row(label, value)),
+        );
+
+        container(scrollable(details).height(Length::Fill))
+            .width(Length::FillPortion(5))
+            .height(Length::Fill)
+            .padding(14)
+            .style(container_style(PanelKind::Panel))
+            .into()
     }
 
     fn view_diagnostics_card(&self) -> Element<'_, Message> {
@@ -933,6 +1011,73 @@ impl AIACSApp {
         .height(Length::Fixed(150.0))
         .padding(10)
         .style(container_style(PanelKind::Elevated))
+        .into()
+    }
+
+    fn view_credential_storage_tab(&self) -> Element<'_, Message> {
+        let storage_summary = self.controller.credential_storage_summary();
+        let rows = storage_summary.iter().fold(
+            column![
+                text("Credential Storage")
+                    .size(18)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(ACCENT_PINK)),
+                text("Dealer-side storage evidence. Secret material remains redacted.")
+                    .size(11)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(SECONDARY_TEXT)),
+            ]
+            .spacing(8)
+            .width(Length::Fill),
+            |column, line| {
+                let (label, value) = split_storage_line(line);
+                column.push(self.artifact_detail_row(label, value))
+            },
+        );
+
+        container(scrollable(rows).height(Length::Fill))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(14)
+            .style(container_style(PanelKind::Panel))
+            .into()
+    }
+
+    fn view_logs_report_tab(&self) -> Element<'_, Message> {
+        column![
+            row![self.view_event_log(), self.view_protocol_trace_panel(),]
+                .spacing(10)
+                .height(Length::Fill),
+            container(
+                row![
+                    compact_button("terminal", "Clear Log", Message::ClearLog, ButtonKind::Nav),
+                    compact_button(
+                        "terminal",
+                        "Save / Export Logs",
+                        Message::ExportLogs,
+                        ButtonKind::Nav
+                    ),
+                    compact_button(
+                        "terminal",
+                        "Export Report",
+                        Message::ExportProvisioningReport,
+                        ButtonKind::Nav
+                    ),
+                    text(self.selected_detail.as_str())
+                        .size(11)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(SECONDARY_TEXT))
+                        .width(Length::Fill),
+                ]
+                .spacing(8)
+                .align_items(Alignment::Center),
+            )
+            .width(Length::Fill)
+            .padding(10)
+            .style(container_style(PanelKind::Elevated)),
+        ]
+        .spacing(10)
+        .height(Length::Fill)
         .into()
     }
 
@@ -991,25 +1136,16 @@ impl AIACSApp {
 
     fn view_event_log(&self) -> Element<'_, Message> {
         let entries = self.event_log.iter().fold(
-            column![row![
-                row![
-                    icon("terminal", 20),
-                    text("Event Log")
-                        .size(16)
-                        .font(Font::MONOSPACE)
-                        .style(theme::Text::Color(ACCENT_PINK))
-                ]
-                .spacing(8)
-                .align_items(Alignment::Center)
-                .width(Length::Fill),
-                compact_button("terminal", "Clear Log", Message::ClearLog, ButtonKind::Nav),
-                compact_button(
-                    "terminal",
-                    "Save / Export Logs",
-                    Message::ExportLogs,
-                    ButtonKind::Nav
-                ),
+            column![row![row![
+                icon("terminal", 20),
+                text("Event Log")
+                    .size(16)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(ACCENT_PINK))
             ]
+            .spacing(8)
+            .align_items(Alignment::Center)
+            .width(Length::Fill),]
             .spacing(8)
             .align_items(Alignment::Center)]
             .spacing(5)
@@ -1120,46 +1256,191 @@ impl AIACSApp {
         .into()
     }
 
-    fn artifact_summary_row<'a>(
+    fn artifact_detail_row(
+        &self,
+        label: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Element<'static, Message> {
+        let label = label.into();
+        let value = value.into();
+        let value_color = status_color(&value);
+
+        container(
+            row![
+                text(label)
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(MUTED_TEXT))
+                    .width(Length::FillPortion(2)),
+                text(value)
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(value_color))
+                    .width(Length::FillPortion(3)),
+            ]
+            .spacing(12)
+            .align_items(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .padding([8, 10])
+        .style(container_style(PanelKind::StepCard))
+        .into()
+    }
+
+    fn selected_artifact_rows(&self) -> (&'static str, Vec<(&'static str, String)>) {
+        match self.selected_artifact {
+            ArtifactSection::ChallengeMessage => (
+                "Challenge Message",
+                vec![
+                    ("Status", self.challenge_status().to_string()),
+                    ("Vehicle", VEHICLE_ID.to_string()),
+                    ("Protocol", "AIACS_AUTH_V1".to_string()),
+                    ("Nonce", "[REDACTED]".to_string()),
+                    (
+                        "Evidence",
+                        "Nonce hash appears in protocol trace after verification".to_string(),
+                    ),
+                ],
+            ),
+            ArtifactSection::AuthenticationProof => (
+                "Authentication Proof",
+                vec![
+                    ("Status", self.authentication_proof_status().to_string()),
+                    ("Subject", KEY_FOB_ID.to_string()),
+                    ("Auth Method", "Ed25519 + PKI".to_string()),
+                    (
+                        "Canonical Payload",
+                        "AIACS_AUTH_V1 fields summarized only".to_string(),
+                    ),
+                    ("Signature", "[REDACTED]".to_string()),
+                ],
+            ),
+            ArtifactSection::CertificateDetails => (
+                "Certificate Details",
+                vec![
+                    ("Status", self.certificate_artifact_status().to_string()),
+                    ("Subject", KEY_FOB_ID.to_string()),
+                    ("Issuer", "AIACS-Demo-CA".to_string()),
+                    ("Certificate Path", "certs/fob_FOB-GUI-001.json".to_string()),
+                    (
+                        "Public Key",
+                        "Fingerprint only; see credential storage".to_string(),
+                    ),
+                ],
+            ),
+            ArtifactSection::SessionSummary => (
+                "Session Summary",
+                vec![
+                    ("Status", self.session_artifact_status().to_string()),
+                    ("Key Exchange", "X25519".to_string()),
+                    ("KDF", "HKDF-SHA256".to_string()),
+                    ("Cipher", "AES-GCM".to_string()),
+                    ("Session Key", "[REDACTED]".to_string()),
+                    ("Shared Secret", "[REDACTED]".to_string()),
+                ],
+            ),
+            ArtifactSection::AccessDecision => (
+                "Access Decision",
+                vec![
+                    ("Status", self.access_decision_artifact_status().to_string()),
+                    (
+                        "Authentication",
+                        self.authentication_artifact_status().to_string(),
+                    ),
+                    (
+                        "Decision",
+                        self.access_decision_artifact_status().to_string(),
+                    ),
+                    (
+                        "Policy Path",
+                        "AppController -> Authentication -> Access Decision".to_string(),
+                    ),
+                    ("Secret Material", "[REDACTED]".to_string()),
+                ],
+            ),
+        }
+    }
+
+    fn challenge_status(&self) -> &'static str {
+        if self.workflow_state.challenge_generated {
+            "Generated"
+        } else {
+            "Pending"
+        }
+    }
+
+    fn authentication_proof_status(&self) -> &'static str {
+        if self.workflow_state.authentication_verified {
+            "Verified"
+        } else if self.workflow_state.payload_signed {
+            "Signed"
+        } else {
+            "Pending"
+        }
+    }
+
+    fn certificate_artifact_status(&self) -> &'static str {
+        if self.workflow_state.certificate_issued {
+            "Issued"
+        } else {
+            "Pending"
+        }
+    }
+
+    fn session_artifact_status(&self) -> &'static str {
+        if self.workflow_state.session_active {
+            "Active"
+        } else {
+            "Pending"
+        }
+    }
+
+    fn authentication_artifact_status(&self) -> &'static str {
+        match self.status.authentication_status.as_str() {
+            "Verified" => "Verified",
+            "Failed" | "Error" => "Failed",
+            _ => "Pending",
+        }
+    }
+
+    fn view_summary_row<'a>(
         &self,
         icon_name: &'static str,
         label: &'a str,
         value: &'a str,
-        detail: &'a str,
     ) -> Element<'a, Message> {
-        container(
-            row![
-                icon(icon_name, 18),
-                column![
-                    row![
-                        text(label)
-                            .size(11)
-                            .font(Font::MONOSPACE)
-                            .style(theme::Text::Color(PRIMARY_TEXT))
-                            .width(Length::Fill),
-                        text(value)
-                            .size(11)
-                            .font(Font::MONOSPACE)
-                            .style(theme::Text::Color(status_color(value)))
-                            .horizontal_alignment(alignment::Horizontal::Right),
-                    ]
-                    .spacing(8)
-                    .align_items(Alignment::Center),
-                    text(detail)
-                        .size(10)
-                        .font(Font::MONOSPACE)
-                        .style(theme::Text::Color(SECONDARY_TEXT))
-                        .width(Length::Fill),
-                ]
-                .spacing(3)
+        row![
+            icon(icon_name, 18),
+            text(label)
+                .size(12)
+                .font(Font::MONOSPACE)
+                .style(theme::Text::Color(MUTED_TEXT))
                 .width(Length::Fill),
-            ]
-            .spacing(8)
-            .align_items(Alignment::Center),
-        )
-        .width(Length::Fill)
-        .padding(7)
-        .style(container_style(PanelKind::StepCard))
+            text(value)
+                .size(12)
+                .font(Font::MONOSPACE)
+                .style(theme::Text::Color(status_color(value)))
+                .horizontal_alignment(alignment::Horizontal::Right),
+        ]
+        .spacing(8)
+        .align_items(Alignment::Center)
+        .into()
+    }
+
+    fn view_provisioning_summary_rows(&self) -> Element<'_, Message> {
+        column![
+            self.view_summary_row("vehicle", "Vehicle", VEHICLE_ID),
+            self.view_summary_row("key", "Key Fob", KEY_FOB_ID),
+            self.view_summary_row(
+                "certificate",
+                "Certificate",
+                &self.status.certificate_status
+            ),
+            self.view_summary_row("auth", "Authentication", &self.status.authentication_status),
+            self.view_summary_row("lock", "Secure Session", &self.status.session_status),
+            self.view_summary_row("decision", "Access Decision", &self.status.access_decision),
+        ]
+        .spacing(8)
         .into()
     }
 
@@ -1331,6 +1612,8 @@ impl iced::widget::container::StyleSheet for PanelStyle {
 enum ButtonKind {
     StepAction,
     Nav,
+    Tab(bool),
+    Artifact(bool),
 }
 
 #[derive(Clone, Copy)]
@@ -1345,6 +1628,20 @@ impl iced::widget::button::StyleSheet for ButtonStyle {
         let (text_color, border_color) = match self.kind {
             ButtonKind::StepAction => (PRIMARY_TEXT, ACCENT_PINK),
             ButtonKind::Nav => (ACCENT_BLUE, ACCENT_BLUE),
+            ButtonKind::Tab(selected) => {
+                if selected {
+                    (ACCENT_PINK, ACCENT_PINK)
+                } else {
+                    (SECONDARY_TEXT, BUTTON_BORDER)
+                }
+            }
+            ButtonKind::Artifact(selected) => {
+                if selected {
+                    (ACCENT_BLUE, ACCENT_BLUE)
+                } else {
+                    (SECONDARY_TEXT, BUTTON_BORDER)
+                }
+            }
         };
 
         iced::widget::button::Appearance {
@@ -1399,6 +1696,50 @@ fn styled_button<'a>(
     .padding([7, 9])
     .style(button_style(kind))
     .on_press(message)
+    .into()
+}
+
+fn tab_button<'a>(
+    icon_name: &'static str,
+    label: &'a str,
+    tab: MainTab,
+    selected_tab: MainTab,
+) -> Element<'a, Message> {
+    button(
+        row![
+            icon(icon_name, 17),
+            text(label).size(12).font(Font::MONOSPACE)
+        ]
+        .spacing(8)
+        .align_items(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .padding([8, 10])
+    .style(button_style(ButtonKind::Tab(tab == selected_tab)))
+    .on_press(Message::SelectTab(tab))
+    .into()
+}
+
+fn artifact_button<'a>(
+    icon_name: &'static str,
+    label: &'a str,
+    section: ArtifactSection,
+    selected_section: ArtifactSection,
+) -> Element<'a, Message> {
+    button(
+        row![
+            icon(icon_name, 17),
+            text(label).size(12).font(Font::MONOSPACE)
+        ]
+        .spacing(8)
+        .align_items(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .padding([8, 10])
+    .style(button_style(ButtonKind::Artifact(
+        section == selected_section,
+    )))
+    .on_press(Message::SelectArtifact(section))
     .into()
 }
 
@@ -1566,6 +1907,12 @@ fn log_parts(entry: &str) -> (&str, &str, &str) {
     let message = parts.next().unwrap_or("");
 
     (timestamp, tag, message)
+}
+
+fn split_storage_line(line: &str) -> (&str, &str) {
+    line.split_once(':')
+        .map(|(label, value)| (label.trim(), value.trim()))
+        .unwrap_or(("Storage Entry", line))
 }
 
 fn trace_parts(entry: &str) -> (&str, &str) {
