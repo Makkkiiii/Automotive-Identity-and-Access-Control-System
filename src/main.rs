@@ -1,4 +1,5 @@
 use aiacs::app_controller::AppController;
+use aiacs::attacks::AttackType;
 use chrono::Local;
 use iced::alignment;
 use iced::theme;
@@ -86,7 +87,7 @@ enum Message {
     IssueCertificate,
     VerifyKeyAuthentication,
     ActivateSecureSession,
-    RunAttack(&'static str),
+    RunAttack(AttackType),
     RunAllAttacks,
 }
 
@@ -138,7 +139,7 @@ impl Sandbox for AIACSApp {
             Message::OpenValidationLab => {
                 self.screen = Screen::ValidationLab;
                 self.selected_detail =
-                    "Diagnostics / Security Validation opened. Attack execution is placeholder-only."
+                    "Diagnostics / Security Validation opened. Select an attack scenario to run."
                         .to_string();
                 self.push_log("[INFO]", "Diagnostics / Security Validation opened");
             }
@@ -241,20 +242,41 @@ impl Sandbox for AIACSApp {
                     }
                 }
             }
-            Message::RunAttack(label) => {
-                self.status.access_decision = format!("{} queued", label);
-                self.selected_detail = format!(
-                    "{} queued in testing mode. Execution is deferred for this phase.",
-                    label
-                );
-                self.push_log("[ATTACK]", format!("{} selected", label));
-            }
-            Message::RunAllAttacks => {
-                self.status.access_decision = "Attack suite queued".to_string();
-                self.selected_detail =
-                    "Full adversarial validation suite queued. Execution is deferred.".to_string();
-                self.push_log("[ATTACK]", "Run All Attacks selected");
-            }
+            Message::RunAttack(attack_type) => match self.controller.run_attack(attack_type) {
+                Ok(message) => {
+                    let attack_name = attack_type.to_string();
+                    let defense_status = defense_status_for_attack(&message);
+                    self.selected_detail =
+                        format_attack_detail(&attack_name, &message, defense_status);
+                    self.push_log(
+                        "[ATTACK]",
+                        format!("{} completed: defense {}", attack_name, defense_status),
+                    );
+                }
+                Err(error) => {
+                    let attack_name = attack_type.to_string();
+                    self.selected_detail = format!(
+                        "Attack name: {}\nExpected outcome: Rejected\nActual result: {}\nDefense status: Failed",
+                        attack_name, error
+                    );
+                    self.push_log("[ERROR]", format!("{} failed: {}", attack_name, error));
+                }
+            },
+            Message::RunAllAttacks => match self.controller.run_all_attacks() {
+                Ok(messages) => {
+                    self.selected_detail = format_attack_suite_summary(&messages);
+                    for message in messages {
+                        self.push_log("[ATTACK]", message);
+                    }
+                }
+                Err(error) => {
+                    self.selected_detail = format!(
+                        "Attack suite: Run All Attacks\nExpected outcome: Rejected\nActual result: {}\nDefense status: Failed",
+                        error
+                    );
+                    self.push_log("[ERROR]", format!("Run All Attacks failed: {}", error));
+                }
+            },
         }
     }
 
@@ -687,47 +709,47 @@ impl AIACSApp {
                 self.validation_button(
                     "warning-shield",
                     "Replay Attack",
-                    Message::RunAttack("Replay Attack")
+                    Message::RunAttack(AttackType::ReplayAttack),
                 ),
                 self.validation_button(
                     "warning-shield",
                     "Forged Signature",
-                    Message::RunAttack("Forged Signature")
+                    Message::RunAttack(AttackType::ForgedSignature),
                 ),
                 self.validation_button(
                     "warning-shield",
                     "Fake Certificate",
-                    Message::RunAttack("Fake Certificate")
+                    Message::RunAttack(AttackType::FakeCertificate),
                 ),
                 self.validation_button(
                     "warning-shield",
                     "Identity Mismatch",
-                    Message::RunAttack("Identity Mismatch"),
+                    Message::RunAttack(AttackType::IdentityMismatch),
                 ),
                 self.validation_button(
                     "warning-shield",
                     "Delayed Relay",
-                    Message::RunAttack("Delayed Relay")
+                    Message::RunAttack(AttackType::DelayedRelay),
                 ),
                 self.validation_button(
                     "warning-shield",
                     "Packet Tampering",
-                    Message::RunAttack("Packet Tampering"),
+                    Message::RunAttack(AttackType::PacketTampering),
                 ),
                 self.validation_button(
                     "warning-shield",
                     "Unauthorized Key Fob",
-                    Message::RunAttack("Unauthorized Key Fob"),
+                    Message::RunAttack(AttackType::UnauthorizedKeyFob),
                 ),
                 self.validation_button(
                     "warning-shield",
                     "Tampered Ciphertext",
-                    Message::RunAttack("Tampered Ciphertext"),
+                    Message::RunAttack(AttackType::TamperedSessionCiphertext),
                 ),
                 self.validation_button(
                     "warning-shield",
                     "Wrong Session Key",
-                    Message::RunAttack("Wrong Session Key"),
+                    Message::RunAttack(AttackType::WrongSessionKey),
                 ),
                 self.validation_suite_button(
                     "diagnostics",
@@ -1020,20 +1042,23 @@ impl AIACSApp {
 
     fn detail_box<'a>(&'a self, title: &'a str) -> Element<'a, Message> {
         container(
-            column![
-                text(title)
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(ACCENT_BLUE)),
-                text(self.selected_detail.as_str())
-                    .size(13)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(PRIMARY_TEXT)),
-            ]
-            .spacing(6),
+            scrollable(
+                column![
+                    text(title)
+                        .size(12)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(ACCENT_BLUE)),
+                    text(self.selected_detail.as_str())
+                        .size(13)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(PRIMARY_TEXT)),
+                ]
+                .spacing(6),
+            )
+            .height(Length::Fill),
         )
         .width(Length::Fill)
-        .height(Length::Fixed(96.0))
+        .height(Length::Fill)
         .padding(10)
         .style(container_style(PanelKind::Detail))
         .into()
@@ -1395,6 +1420,66 @@ fn log_parts(entry: &str) -> (&str, &str, &str) {
     let message = parts.next().unwrap_or("");
 
     (timestamp, tag, message)
+}
+
+fn format_attack_detail(attack_name: &str, message: &str, defense_status: &str) -> String {
+    format!(
+        "Attack name: {}\nExpected outcome: Rejected\nActual result: {}\nDefense status: {}",
+        attack_name, message, defense_status
+    )
+}
+
+fn format_attack_suite_summary(messages: &[String]) -> String {
+    let baseline_count = messages
+        .iter()
+        .filter(|message| is_baseline_result(message))
+        .count();
+    let attack_count = messages.len().saturating_sub(baseline_count);
+    let successful_defenses = messages
+        .iter()
+        .filter(|message| !is_baseline_result(message))
+        .filter(|message| attack_defense_succeeded(message))
+        .count();
+    let defense_status = if successful_defenses == attack_count {
+        "Successful"
+    } else {
+        "Failed"
+    };
+
+    let mut summary = format!(
+        "Attack suite: Run All Attacks\nExpected outcome: Rejected for attack scenarios\nScenarios run: {}\nAttack scenarios: {}\nDefense status: {}\n\nResults:",
+        messages.len(),
+        attack_count,
+        defense_status
+    );
+
+    for message in messages {
+        summary.push_str("\n- ");
+        summary.push_str(message);
+    }
+
+    summary
+}
+
+fn defense_status_for_attack(message: &str) -> &'static str {
+    if attack_defense_succeeded(message) {
+        "Successful"
+    } else {
+        "Failed"
+    }
+}
+
+fn attack_defense_succeeded(message: &str) -> bool {
+    let lower = message.to_lowercase();
+
+    lower.contains("access denied")
+        || lower.contains("rejected")
+        || lower.contains("detected")
+        || lower.contains("should fail")
+}
+
+fn is_baseline_result(message: &str) -> bool {
+    message.contains("(Baseline:")
 }
 
 fn timestamped(tag: &str, message: &str) -> String {
