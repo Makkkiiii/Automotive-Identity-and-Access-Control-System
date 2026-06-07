@@ -8,8 +8,19 @@ use iced::{
     Theme,
 };
 
-const VEHICLE_ID: &str = "VEHICLE_001";
-const KEY_FOB_ID: &str = "FOB_001";
+const OWNER_NAME: &str = "Dennis Maharjan";
+const CUSTOMER_ID: &str = "CUST-GUI-001";
+const CUSTOMER_EMAIL: &str = "demo@example.com";
+const CUSTOMER_PHONE: &str = "+977-9800000000";
+const VEHICLE_DISPLAY_NAME: &str = "Nissan Magnite 2021";
+const TECH_VEHICLE_ID: &str = "VEH-GUI-001";
+const VEHICLE_MAKE: &str = "Nissan";
+const VEHICLE_MODEL: &str = "Magnite";
+const VEHICLE_YEAR: &str = "2021";
+const VEHICLE_VIN: &str = "VIN-DEMO-001";
+const VEHICLE_REGISTRATION: &str = "BA-00-PA-0001";
+const KEY_FOB_LABEL: &str = "Primary Key Fob";
+const TECH_KEY_FOB_ID: &str = "FOB-GUI-001";
 const ICON_DIR: &str = "assets/icons";
 
 const WINDOW_BG: Color = Color::from_rgb(0.105, 0.09, 0.11);
@@ -42,6 +53,7 @@ struct AIACSApp {
     controller: AppController,
     status: SystemStatus,
     workflow_state: WorkflowState,
+    management_state: ManagementState,
     selected_tab: MainTab,
     selected_artifact: ArtifactSection,
     selected_detail: String,
@@ -88,12 +100,34 @@ struct WorkflowState {
     report_exported: bool,
 }
 
+#[derive(Debug, Clone)]
+struct ManagementState {
+    customer_note: String,
+    vehicle_note: String,
+    keyfob_note: String,
+}
+
+impl Default for ManagementState {
+    fn default() -> Self {
+        Self {
+            customer_note: "Demo customer selected".to_string(),
+            vehicle_note: "Demo vehicle selected".to_string(),
+            keyfob_note: "Primary key fob ready for provisioning".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MainTab {
+    Dashboard,
+    Customers,
+    Vehicles,
+    KeyFobs,
     Provisioning,
     ProtocolArtifacts,
     CredentialStorage,
     LogsReport,
+    Diagnostics,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +143,13 @@ enum ArtifactSection {
 enum Message {
     SelectTab(MainTab),
     SelectArtifact(ArtifactSection),
+    AddCustomer,
+    SelectCustomer,
+    EditCustomer,
+    AddVehicle,
+    SelectVehicle,
+    LinkVehicleToOwner,
+    RotateCredential,
     ConnectVehicle,
     DetectKeyFob,
     InitializeVehicleTrust,
@@ -144,7 +185,8 @@ impl Sandbox for AIACSApp {
             controller,
             status: SystemStatus::default(),
             workflow_state: WorkflowState::default(),
-            selected_tab: MainTab::Provisioning,
+            management_state: ManagementState::default(),
+            selected_tab: MainTab::Dashboard,
             selected_artifact: ArtifactSection::ChallengeMessage,
             selected_detail: "Provisioning console ready. Initialize vehicle trust to begin."
                 .to_string(),
@@ -187,6 +229,57 @@ impl Sandbox for AIACSApp {
             Message::SelectArtifact(section) => {
                 self.selected_artifact = section;
             }
+            Message::AddCustomer => {
+                self.management_state.customer_note =
+                    "Add Customer is staged as a GUI-only demo action.".to_string();
+                self.selected_detail = self.management_state.customer_note.clone();
+                self.push_log("[INFO]", "Customer add placeholder selected");
+            }
+            Message::SelectCustomer => {
+                self.management_state.customer_note =
+                    format!("Active customer selected: {}", OWNER_NAME);
+                self.selected_detail = self.management_state.customer_note.clone();
+                self.push_log("[INFO]", format!("Customer selected: {}", OWNER_NAME));
+            }
+            Message::EditCustomer => {
+                self.management_state.customer_note =
+                    "Edit Customer is staged as a GUI-only demo action.".to_string();
+                self.selected_detail = self.management_state.customer_note.clone();
+                self.push_log("[INFO]", "Customer edit placeholder selected");
+            }
+            Message::AddVehicle => {
+                self.management_state.vehicle_note =
+                    "Add Vehicle is staged as a GUI-only demo action.".to_string();
+                self.selected_detail = self.management_state.vehicle_note.clone();
+                self.push_log("[INFO]", "Vehicle add placeholder selected");
+            }
+            Message::SelectVehicle => {
+                self.management_state.vehicle_note =
+                    format!("Selected vehicle: {}", VEHICLE_DISPLAY_NAME);
+                self.selected_detail = self.management_state.vehicle_note.clone();
+                self.push_log(
+                    "[INFO]",
+                    format!("Vehicle selected: {}", VEHICLE_DISPLAY_NAME),
+                );
+            }
+            Message::LinkVehicleToOwner => {
+                self.management_state.vehicle_note =
+                    format!("{} linked to {}", VEHICLE_DISPLAY_NAME, OWNER_NAME);
+                self.selected_detail = self.management_state.vehicle_note.clone();
+                self.push_log(
+                    "[INFO]",
+                    format!(
+                        "Vehicle linked to owner: {} -> {}",
+                        VEHICLE_DISPLAY_NAME, OWNER_NAME
+                    ),
+                );
+            }
+            Message::RotateCredential => {
+                self.management_state.keyfob_note =
+                    "Credential rotation is a placeholder; no keys were changed.".to_string();
+                self.selected_detail = self.management_state.keyfob_note.clone();
+                self.push_log("[INFO]", "Credential rotation placeholder selected");
+            }
             Message::ConnectVehicle => match self.controller.connect_vehicle() {
                 Ok(message) => {
                     self.workflow_state.vehicle_connected = true;
@@ -202,6 +295,7 @@ impl Sandbox for AIACSApp {
             Message::DetectKeyFob => match self.controller.detect_key_fob() {
                 Ok(message) => {
                     self.workflow_state.keyfob_detected = true;
+                    self.management_state.keyfob_note = format!("{} detected", KEY_FOB_LABEL);
                     self.selected_detail = message.clone();
                     self.push_log("[INFO]", message);
                 }
@@ -231,6 +325,7 @@ impl Sandbox for AIACSApp {
             Message::RegisterDigitalKeyFob => match self.controller.register_digital_key_fob() {
                 Ok(message) => {
                     self.workflow_state.keyfob_registered = true;
+                    self.management_state.keyfob_note = format!("{} registered", KEY_FOB_LABEL);
                     self.status.key_fob_status = "Registered".to_string();
                     self.status.top_badge = "Key Fob Registered".to_string();
                     self.selected_detail = message.clone();
@@ -269,6 +364,8 @@ impl Sandbox for AIACSApp {
             },
             Message::ViewCertificateDetails => {
                 self.workflow_state.certificate_viewed = true;
+                self.management_state.keyfob_note =
+                    "Certificate details available for selected key fob".to_string();
                 self.selected_detail =
                     "Certificate details are shown in the Protocol Artifact Viewer.".to_string();
                 self.push_log("[INFO]", "Certificate details viewed");
@@ -425,34 +522,51 @@ impl AIACSApp {
 
     fn view_tab_bar(&self) -> Element<'_, Message> {
         container(
-            row![
-                tab_button(
-                    "shield",
-                    "Provisioning",
-                    MainTab::Provisioning,
-                    self.selected_tab,
-                ),
-                tab_button(
-                    "certificate",
-                    "Protocol Artifacts",
-                    MainTab::ProtocolArtifacts,
-                    self.selected_tab,
-                ),
-                tab_button(
-                    "key",
-                    "Credential Storage",
-                    MainTab::CredentialStorage,
-                    self.selected_tab,
-                ),
-                tab_button(
-                    "terminal",
-                    "Logs / Report",
-                    MainTab::LogsReport,
-                    self.selected_tab,
-                ),
+            column![
+                row![
+                    tab_button("gear", "Dashboard", MainTab::Dashboard, self.selected_tab),
+                    tab_button("auth", "Customers", MainTab::Customers, self.selected_tab),
+                    tab_button("vehicle", "Vehicles", MainTab::Vehicles, self.selected_tab),
+                    tab_button("key", "Key Fobs", MainTab::KeyFobs, self.selected_tab),
+                    tab_button(
+                        "shield",
+                        "Provisioning",
+                        MainTab::Provisioning,
+                        self.selected_tab,
+                    ),
+                ]
+                .spacing(8)
+                .align_items(Alignment::Center),
+                row![
+                    tab_button(
+                        "certificate",
+                        "Protocol Artifacts",
+                        MainTab::ProtocolArtifacts,
+                        self.selected_tab,
+                    ),
+                    tab_button(
+                        "key",
+                        "Credential Storage",
+                        MainTab::CredentialStorage,
+                        self.selected_tab,
+                    ),
+                    tab_button(
+                        "terminal",
+                        "Logs / Report",
+                        MainTab::LogsReport,
+                        self.selected_tab,
+                    ),
+                    tab_button(
+                        "diagnostics",
+                        "Diagnostics",
+                        MainTab::Diagnostics,
+                        self.selected_tab,
+                    ),
+                ]
+                .spacing(8)
+                .align_items(Alignment::Center),
             ]
-            .spacing(8)
-            .align_items(Alignment::Center),
+            .spacing(8),
         )
         .width(Length::Fill)
         .padding(8)
@@ -462,10 +576,15 @@ impl AIACSApp {
 
     fn view_selected_tab(&self) -> Element<'_, Message> {
         match self.selected_tab {
+            MainTab::Dashboard => self.view_dashboard_tab(),
+            MainTab::Customers => self.view_customers_tab(),
+            MainTab::Vehicles => self.view_vehicles_tab(),
+            MainTab::KeyFobs => self.view_keyfobs_tab(),
             MainTab::Provisioning => self.view_provisioning_tab(),
             MainTab::ProtocolArtifacts => self.view_protocol_artifacts_tab(),
             MainTab::CredentialStorage => self.view_credential_storage_tab(),
             MainTab::LogsReport => self.view_logs_report_tab(),
+            MainTab::Diagnostics => self.view_diagnostics_tab(),
         }
     }
 
@@ -474,6 +593,187 @@ impl AIACSApp {
             self.view_status_panel(),
             self.view_workflow_panel(),
             self.view_provisioning_side_panel(),
+        ]
+        .spacing(10)
+        .height(Length::Fill)
+        .into()
+    }
+
+    fn view_dashboard_tab(&self) -> Element<'_, Message> {
+        let setup_status = if self.setup_complete() {
+            "Complete"
+        } else {
+            "Provisioning In Progress"
+        };
+
+        column![
+            row![
+                self.dashboard_card("auth", "Active Customer", OWNER_NAME, "Dealer owner record"),
+                self.dashboard_card(
+                    "vehicle",
+                    "Selected Vehicle",
+                    VEHICLE_DISPLAY_NAME,
+                    TECH_VEHICLE_ID,
+                ),
+                self.dashboard_card("key", "Registered Key Fob", KEY_FOB_LABEL, TECH_KEY_FOB_ID),
+                self.dashboard_card(
+                    "certificate",
+                    "Certificate Status",
+                    &self.status.certificate_status,
+                    "Access certificate",
+                ),
+            ]
+            .spacing(10),
+            row![
+                self.dashboard_card(
+                    "verify-auth",
+                    "Authentication Status",
+                    &self.status.authentication_status,
+                    "Challenge-response",
+                ),
+                self.dashboard_card(
+                    "lock",
+                    "Secure Session Status",
+                    &self.status.session_status,
+                    "Encrypted access channel",
+                ),
+                self.dashboard_card("decision", "Access Setup Status", setup_status, "Provisioning"),
+                self.dashboard_card("terminal", "Recent Activity", &self.selected_detail, "Latest event"),
+            ]
+            .spacing(10),
+            container(
+                column![
+                    text("Provisioning Console Overview")
+                        .size(18)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(ACCENT_PINK)),
+                    text("Use Customers, Vehicles, and Key Fobs to review dealer records, then complete access provisioning.")
+                        .size(12)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(SECONDARY_TEXT)),
+                    self.view_provisioning_summary_rows(),
+                ]
+                .spacing(10),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(14)
+            .style(container_style(PanelKind::Panel)),
+        ]
+        .spacing(10)
+        .height(Length::Fill)
+        .into()
+    }
+
+    fn view_customers_tab(&self) -> Element<'_, Message> {
+        row![
+            self.management_details_panel(
+                "Customer / Owner",
+                "Selected customer record used for access provisioning.",
+                vec![
+                    ("Owner Name", OWNER_NAME.to_string()),
+                    ("Customer ID", CUSTOMER_ID.to_string()),
+                    ("Email", CUSTOMER_EMAIL.to_string()),
+                    ("Phone", CUSTOMER_PHONE.to_string()),
+                    ("Assigned Vehicle", VEHICLE_DISPLAY_NAME.to_string()),
+                    ("Provisioning Status", self.setup_status_label().to_string()),
+                ],
+            ),
+            self.management_actions_panel(
+                "Customer Actions",
+                self.management_state.customer_note.as_str(),
+                vec![
+                    ("auth", "Add Customer", Message::AddCustomer),
+                    ("auth", "Select Customer", Message::SelectCustomer),
+                    ("auth", "Edit Customer", Message::EditCustomer),
+                ],
+            ),
+        ]
+        .spacing(10)
+        .height(Length::Fill)
+        .into()
+    }
+
+    fn view_vehicles_tab(&self) -> Element<'_, Message> {
+        row![
+            self.management_details_panel(
+                "Vehicle",
+                "Selected vehicle for dealer-side digital access setup.",
+                vec![
+                    ("Vehicle Name", VEHICLE_DISPLAY_NAME.to_string()),
+                    ("Vehicle ID", TECH_VEHICLE_ID.to_string()),
+                    ("Make", VEHICLE_MAKE.to_string()),
+                    ("Model", VEHICLE_MODEL.to_string()),
+                    ("Year", VEHICLE_YEAR.to_string()),
+                    ("VIN", VEHICLE_VIN.to_string()),
+                    ("Registration Number", VEHICLE_REGISTRATION.to_string()),
+                    ("Assigned Owner", OWNER_NAME.to_string()),
+                    ("Access Status", self.setup_status_label().to_string()),
+                ],
+            ),
+            self.management_actions_panel(
+                "Vehicle Actions",
+                self.management_state.vehicle_note.as_str(),
+                vec![
+                    ("vehicle", "Add Vehicle", Message::AddVehicle),
+                    ("vehicle", "Select Vehicle", Message::SelectVehicle),
+                    (
+                        "vehicle",
+                        "Link Vehicle to Owner",
+                        Message::LinkVehicleToOwner
+                    ),
+                ],
+            ),
+        ]
+        .spacing(10)
+        .height(Length::Fill)
+        .into()
+    }
+
+    fn view_keyfobs_tab(&self) -> Element<'_, Message> {
+        row![
+            self.management_details_panel(
+                "Digital Key Fob",
+                "Selected fob credential used for vehicle access provisioning.",
+                vec![
+                    ("Fob Label", KEY_FOB_LABEL.to_string()),
+                    ("Fob ID", TECH_KEY_FOB_ID.to_string()),
+                    ("Assigned Vehicle", VEHICLE_DISPLAY_NAME.to_string()),
+                    ("Assigned Owner", OWNER_NAME.to_string()),
+                    ("Certificate Status", self.status.certificate_status.clone()),
+                    (
+                        "Public Key Fingerprint",
+                        self.keyfob_public_key_fingerprint()
+                    ),
+                    ("Private Key", "[REDACTED]".to_string()),
+                    (
+                        "Credential Storage Status",
+                        self.credential_storage_status().to_string()
+                    ),
+                ],
+            ),
+            self.management_actions_panel(
+                "Key Fob Actions",
+                self.management_state.keyfob_note.as_str(),
+                vec![
+                    ("key", "Detect Key Fob", Message::DetectKeyFob),
+                    (
+                        "register-key",
+                        "Register Key Fob",
+                        Message::RegisterDigitalKeyFob
+                    ),
+                    (
+                        "certificate",
+                        "View Certificate",
+                        Message::ViewCertificateDetails
+                    ),
+                    (
+                        "secure-session",
+                        "Rotate Credential",
+                        Message::RotateCredential
+                    ),
+                ],
+            ),
         ]
         .spacing(10)
         .height(Length::Fill)
@@ -522,8 +822,9 @@ impl AIACSApp {
             None,
             column![
                 logo,
-                self.status_row("vehicle", "Vehicle ID", VEHICLE_ID),
-                self.status_row("key", "Key Fob ID", KEY_FOB_ID),
+                self.status_row("auth", "Owner", OWNER_NAME),
+                self.status_row("vehicle", "Vehicle", VEHICLE_DISPLAY_NAME),
+                self.status_row("key", "Digital Key", KEY_FOB_LABEL),
                 self.status_row("shield", "Trust Status", &self.status.trust_status),
                 self.status_row(
                     "certificate",
@@ -557,7 +858,7 @@ impl AIACSApp {
                 column![self.workflow_step_card(WorkflowStep {
                     icon_name: "vehicle",
                     title: "Connect Vehicle",
-                    description: "Connect to VEHICLE_001 using AIACS_AUTH_V1.",
+                    description: "Connect the selected Nissan Magnite using AIACS_AUTH_V1.",
                     status: self.completed_status(
                         self.workflow_state.vehicle_connected,
                         "Connected",
@@ -575,7 +876,8 @@ impl AIACSApp {
                     self.workflow_step_card(WorkflowStep {
                         icon_name: "key",
                         title: "Detect Key Fob",
-                        description: "Detect FOB_001 and prepare credential registration.",
+                        description:
+                            "Detect the primary key fob and prepare credential registration.",
                         status: self.completed_status(
                             self.workflow_state.keyfob_detected,
                             "Detected",
@@ -727,7 +1029,6 @@ impl AIACSApp {
                 ]
                 .spacing(6),
             ),
-            self.core_detail_box(),
         ]
         .spacing(10);
 
@@ -1014,6 +1315,136 @@ impl AIACSApp {
         .into()
     }
 
+    fn view_diagnostics_tab(&self) -> Element<'_, Message> {
+        container(
+            column![
+                text("Diagnostics / Security Validation")
+                    .size(20)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(ACCENT_PINK)),
+                text("Diagnostics runs separately from normal provisioning.")
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(SECONDARY_TEXT)),
+                text("Attack scenarios are kept in the dedicated diagnostics tool and are not shown in the main dealer console.")
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(PRIMARY_TEXT)),
+                container(self.nav_button(
+                    "warning-shield",
+                    "Launch Diagnostics Tool",
+                    Message::LaunchDiagnosticsTool,
+                ))
+                .width(Length::Fixed(280.0)),
+                self.core_detail_box(),
+            ]
+            .spacing(12),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(16)
+        .style(container_style(PanelKind::Panel))
+        .into()
+    }
+
+    fn dashboard_card<'a>(
+        &self,
+        icon_name: &'static str,
+        title: &'a str,
+        value: &'a str,
+        detail: &'a str,
+    ) -> Element<'a, Message> {
+        container(
+            column![
+                row![
+                    icon(icon_name, 18),
+                    text(title)
+                        .size(12)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(MUTED_TEXT)),
+                ]
+                .spacing(8)
+                .align_items(Alignment::Center),
+                text(value)
+                    .size(15)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(status_color(value))),
+                text(detail)
+                    .size(11)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(SECONDARY_TEXT)),
+            ]
+            .spacing(7),
+        )
+        .width(Length::Fill)
+        .height(Length::Fixed(112.0))
+        .padding(12)
+        .style(container_style(PanelKind::Elevated))
+        .into()
+    }
+
+    fn management_details_panel(
+        &self,
+        title: &'static str,
+        subtitle: &'static str,
+        rows: Vec<(&'static str, String)>,
+    ) -> Element<'static, Message> {
+        let details = rows.into_iter().fold(
+            column![
+                text(title)
+                    .size(18)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(ACCENT_PINK)),
+                text(subtitle)
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(SECONDARY_TEXT)),
+            ]
+            .spacing(8)
+            .width(Length::Fill),
+            |column, (label, value)| column.push(self.artifact_detail_row(label, value)),
+        );
+
+        container(scrollable(details).height(Length::Fill))
+            .width(Length::FillPortion(5))
+            .height(Length::Fill)
+            .padding(14)
+            .style(container_style(PanelKind::Panel))
+            .into()
+    }
+
+    fn management_actions_panel<'a>(
+        &self,
+        title: &'static str,
+        note: &'a str,
+        actions: Vec<(&'static str, &'static str, Message)>,
+    ) -> Element<'a, Message> {
+        let buttons = actions.into_iter().fold(
+            column![
+                text(title)
+                    .size(18)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(ACCENT_PINK)),
+                text(note)
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(SECONDARY_TEXT)),
+            ]
+            .spacing(8)
+            .width(Length::Fill),
+            |column, (icon_name, label, message)| {
+                column.push(compact_button(icon_name, label, message, ButtonKind::Nav))
+            },
+        );
+
+        container(buttons)
+            .width(Length::FillPortion(2))
+            .height(Length::Fill)
+            .padding(14)
+            .style(container_style(PanelKind::Elevated))
+            .into()
+    }
+
     fn view_credential_storage_tab(&self) -> Element<'_, Message> {
         let storage_summary = self.controller.credential_storage_summary();
         let rows = storage_summary.iter().fold(
@@ -1293,7 +1724,7 @@ impl AIACSApp {
                 "Challenge Message",
                 vec![
                     ("Status", self.challenge_status().to_string()),
-                    ("Vehicle", VEHICLE_ID.to_string()),
+                    ("Vehicle ID", TECH_VEHICLE_ID.to_string()),
                     ("Protocol", "AIACS_AUTH_V1".to_string()),
                     ("Nonce", "[REDACTED]".to_string()),
                     (
@@ -1306,7 +1737,7 @@ impl AIACSApp {
                 "Authentication Proof",
                 vec![
                     ("Status", self.authentication_proof_status().to_string()),
-                    ("Subject", KEY_FOB_ID.to_string()),
+                    ("Subject ID", TECH_KEY_FOB_ID.to_string()),
                     ("Auth Method", "Ed25519 + PKI".to_string()),
                     (
                         "Canonical Payload",
@@ -1319,7 +1750,7 @@ impl AIACSApp {
                 "Certificate Details",
                 vec![
                     ("Status", self.certificate_artifact_status().to_string()),
-                    ("Subject", KEY_FOB_ID.to_string()),
+                    ("Subject ID", TECH_KEY_FOB_ID.to_string()),
                     ("Issuer", "AIACS-Demo-CA".to_string()),
                     ("Certificate Path", "certs/fob_FOB-GUI-001.json".to_string()),
                     (
@@ -1429,8 +1860,9 @@ impl AIACSApp {
 
     fn view_provisioning_summary_rows(&self) -> Element<'_, Message> {
         column![
-            self.view_summary_row("vehicle", "Vehicle", VEHICLE_ID),
-            self.view_summary_row("key", "Key Fob", KEY_FOB_ID),
+            self.view_summary_row("auth", "Owner", OWNER_NAME),
+            self.view_summary_row("vehicle", "Vehicle", VEHICLE_DISPLAY_NAME),
+            self.view_summary_row("key", "Digital Key", KEY_FOB_LABEL),
             self.view_summary_row(
                 "certificate",
                 "Certificate",
@@ -1446,6 +1878,33 @@ impl AIACSApp {
 
     fn setup_complete(&self) -> bool {
         self.status.session_status == "Active" && self.status.access_decision == "Access Granted"
+    }
+
+    fn setup_status_label(&self) -> &'static str {
+        if self.setup_complete() {
+            "Complete"
+        } else {
+            "Provisioning In Progress"
+        }
+    }
+
+    fn credential_storage_status(&self) -> &'static str {
+        if self.workflow_state.keyfob_registered {
+            "Stored"
+        } else {
+            "Pending"
+        }
+    }
+
+    fn keyfob_public_key_fingerprint(&self) -> String {
+        self.controller
+            .credential_storage_summary()
+            .into_iter()
+            .find_map(|line| {
+                line.strip_prefix("Key fob public key fingerprint: ")
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "Pending".to_string())
     }
 
     fn certificate_trust_label(&self) -> &str {
@@ -1858,14 +2317,21 @@ fn status_color(value: &str) -> Color {
         | "Issued"
         | "Verified"
         | "Active"
+        | "Yes"
         | "Access Granted"
         | "Granted"
         | "Valid"
         | "Complete"
         | "CA-signed certificate issued"
         | "Trust root initialized" => SUCCESS_GREEN,
-        "Pending" | "Not Initialized" | "Not Registered" | "Not Issued" | "Not Run"
-        | "Not Established" | "N/A" => PENDING_TEXT,
+        "Pending"
+        | "Not Initialized"
+        | "Not Registered"
+        | "Not Issued"
+        | "Not Run"
+        | "Not Established"
+        | "N/A"
+        | "Provisioning In Progress" => PENDING_TEXT,
         "Error" | "Failed" | "Rejected" | "Access Rejected" | "Certificate trust error" => {
             DANGER_RED
         }
