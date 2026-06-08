@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://skillicons.dev/icons?i=rust,postgres,github" />
+  <img src="https://skillicons.dev/icons?i=rust" />
 </p>
 
 <p align="center">
@@ -22,7 +22,6 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Tests-147%2B_passed-1f3a2e?style=flat-square" />
   <img src="https://img.shields.io/badge/License-MIT-2b2430?style=flat-square" />
 </p>
 
