@@ -590,11 +590,10 @@ impl AIACSApp {
 
     fn view_provisioning_tab(&self) -> Element<'_, Message> {
         row![
-            self.view_status_panel(),
+            self.view_provisioning_context_panel(),
             self.view_workflow_panel(),
-            self.view_provisioning_side_panel(),
         ]
-        .spacing(10)
+        .spacing(12)
         .height(Length::Fill)
         .into()
     }
@@ -803,47 +802,6 @@ impl AIACSApp {
         .padding(12)
         .style(container_style(PanelKind::Elevated))
         .into()
-    }
-
-    fn view_status_panel(&self) -> Element<'_, Message> {
-        let logo = column![
-            text("AIACS")
-                .size(30)
-                .font(Font::MONOSPACE)
-                .style(theme::Text::Color(ACCENT_PINK)),
-            text("VEHICLE ACCESS PROVISIONING")
-                .size(11)
-                .font(Font::MONOSPACE)
-                .style(theme::Text::Color(MUTED_TEXT)),
-        ]
-        .spacing(6);
-
-        self.panel(
-            None,
-            column![
-                logo,
-                self.status_row("auth", "Owner", OWNER_NAME),
-                self.status_row("vehicle", "Vehicle", VEHICLE_DISPLAY_NAME),
-                self.status_row("key", "Digital Key", KEY_FOB_LABEL),
-                self.status_row("shield", "Trust Status", &self.status.trust_status),
-                self.status_row(
-                    "certificate",
-                    "Certificate Status",
-                    &self.status.certificate_status
-                ),
-                self.status_row(
-                    "auth",
-                    "Authentication Status",
-                    &self.status.authentication_status
-                ),
-                self.status_row("lock", "Secure Session Status", &self.status.session_status),
-                self.status_row("decision", "Access Decision", &self.status.access_decision),
-                self.status_row("gear", "Controller", self.controller_label()),
-            ]
-            .spacing(9),
-            Length::FillPortion(2),
-            PanelKind::Status,
-        )
     }
 
     fn view_workflow_panel(&self) -> Element<'_, Message> {
@@ -1167,31 +1125,27 @@ impl AIACSApp {
         .into()
     }
 
-    fn view_provisioning_side_panel(&self) -> Element<'_, Message> {
-        column![
-            self.view_provisioning_status_panel(),
-            self.view_diagnostics_card(),
-        ]
-        .spacing(10)
-        .width(Length::FillPortion(3))
-        .height(Length::Fill)
-        .into()
-    }
-
-    fn view_provisioning_status_panel(&self) -> Element<'_, Message> {
+    fn view_provisioning_context_panel(&self) -> Element<'_, Message> {
         container(
             column![
+                text("Selected Access Setup")
+                    .size(16)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(ACCENT_PINK)),
+                self.selected_setup_card("auth", "Owner", OWNER_NAME),
+                self.selected_setup_card("vehicle", "Vehicle", VEHICLE_DISPLAY_NAME),
+                self.selected_setup_card("key", "Digital Key", KEY_FOB_LABEL),
                 text("Provisioning Status")
                     .size(16)
                     .font(Font::MONOSPACE)
                     .style(theme::Text::Color(ACCENT_PINK)),
                 self.provisioning_completion_card(),
-                self.view_provisioning_summary_rows(),
-                self.core_detail_box(),
+                self.view_compact_status_rows(),
+                self.compact_current_result_card(),
             ]
-            .spacing(10),
+            .spacing(8),
         )
-        .width(Length::Fill)
+        .width(Length::Fixed(320.0))
         .height(Length::Fill)
         .padding(10)
         .style(container_style(PanelKind::Panel))
@@ -1280,41 +1234,6 @@ impl AIACSApp {
             .into()
     }
 
-    fn view_diagnostics_card(&self) -> Element<'_, Message> {
-        container(
-            column![
-                text("Diagnostics & Testing")
-                    .size(16)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(ACCENT_PINK)),
-                text("Run security validations and protocol testing in a separate environment.")
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(PRIMARY_TEXT)),
-                self.nav_button(
-                    "warning-shield",
-                    "Launch Diagnostics Tool",
-                    Message::LaunchDiagnosticsTool,
-                ),
-                row![
-                    icon("diagnostics", 18),
-                    text("Diagnostics are isolated from normal provisioning.")
-                        .size(11)
-                        .font(Font::MONOSPACE)
-                        .style(theme::Text::Color(ACCENT_BLUE)),
-                ]
-                .spacing(8)
-                .align_items(Alignment::Center),
-            ]
-            .spacing(7),
-        )
-        .width(Length::Fill)
-        .height(Length::Fixed(150.0))
-        .padding(10)
-        .style(container_style(PanelKind::Elevated))
-        .into()
-    }
-
     fn view_diagnostics_tab(&self) -> Element<'_, Message> {
         container(
             column![
@@ -1344,6 +1263,37 @@ impl AIACSApp {
         .height(Length::Fill)
         .padding(16)
         .style(container_style(PanelKind::Panel))
+        .into()
+    }
+
+    fn selected_setup_card<'a>(
+        &self,
+        icon_name: &'static str,
+        label: &'a str,
+        value: &'a str,
+    ) -> Element<'a, Message> {
+        container(
+            row![
+                icon(icon_name, 18),
+                column![
+                    text(label)
+                        .size(11)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(MUTED_TEXT)),
+                    text(value)
+                        .size(13)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(PRIMARY_TEXT)),
+                ]
+                .spacing(3)
+                .width(Length::Fill),
+            ]
+            .spacing(9)
+            .align_items(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .padding([9, 10])
+        .style(container_style(PanelKind::StepCard))
         .into()
     }
 
@@ -1616,59 +1566,6 @@ impl AIACSApp {
             .into()
     }
 
-    fn panel<'a>(
-        &self,
-        title: Option<&'a str>,
-        content: iced::widget::Column<'a, Message>,
-        width: Length,
-        kind: PanelKind,
-    ) -> Element<'a, Message> {
-        let panel_content = if let Some(title) = title {
-            column![
-                text(title)
-                    .size(16)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(ACCENT_PINK)),
-                content,
-            ]
-            .spacing(10)
-        } else {
-            content
-        };
-
-        container(panel_content)
-            .width(width)
-            .height(Length::Fill)
-            .padding(12)
-            .style(container_style(kind))
-            .into()
-    }
-
-    fn status_row<'a>(
-        &self,
-        icon_name: &'static str,
-        label: &'a str,
-        value: &'a str,
-    ) -> Element<'a, Message> {
-        row![
-            icon(icon_name, 18),
-            text(label)
-                .size(12)
-                .font(Font::MONOSPACE)
-                .style(theme::Text::Color(MUTED_TEXT))
-                .width(Length::Fixed(154.0)),
-            text(value)
-                .size(12)
-                .font(Font::MONOSPACE)
-                .style(theme::Text::Color(status_color(value)))
-                .width(Length::Fill)
-                .horizontal_alignment(alignment::Horizontal::Right),
-        ]
-        .spacing(8)
-        .width(Length::Fill)
-        .into()
-    }
-
     fn detail_row<'a>(&self, label: &'a str, value: &'a str) -> Element<'a, Message> {
         row![
             text(label)
@@ -1876,6 +1773,47 @@ impl AIACSApp {
         .into()
     }
 
+    fn view_compact_status_rows(&self) -> Element<'_, Message> {
+        container(
+            column![
+                self.view_summary_row(
+                    "certificate",
+                    "Certificate",
+                    &self.status.certificate_status
+                ),
+                self.view_summary_row("auth", "Authentication", &self.status.authentication_status),
+                self.view_summary_row("lock", "Session", &self.status.session_status),
+                self.view_summary_row("decision", "Access", &self.status.access_decision),
+            ]
+            .spacing(7),
+        )
+        .width(Length::Fill)
+        .padding(8)
+        .style(container_style(PanelKind::Detail))
+        .into()
+    }
+
+    fn compact_current_result_card(&self) -> Element<'_, Message> {
+        container(
+            column![
+                text("Current Result")
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(ACCENT_BLUE)),
+                text(self.selected_detail.as_str())
+                    .size(11)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(PRIMARY_TEXT))
+                    .width(Length::Fill),
+            ]
+            .spacing(5),
+        )
+        .width(Length::Fill)
+        .padding(9)
+        .style(container_style(PanelKind::Detail))
+        .into()
+    }
+
     fn setup_complete(&self) -> bool {
         self.status.session_status == "Active" && self.status.access_decision == "Access Granted"
     }
@@ -1968,14 +1906,6 @@ impl AIACSApp {
                 "[ERROR]",
                 &format!("Persistent log write failed: {}", error),
             ));
-        }
-    }
-
-    fn controller_label(&self) -> &str {
-        if self.controller.get_status_summary().is_empty() {
-            "Unavailable"
-        } else {
-            "Ready"
         }
     }
 }
