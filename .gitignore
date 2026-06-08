@@ -6,9 +6,6 @@
 *.so
 *.dylib
 
-# Cargo
-Cargo.lock
-
 # IDE
 .vscode/
 .idea/
