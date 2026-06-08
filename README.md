@@ -168,8 +168,6 @@ AIACS is organized around a GUI-safe controller facade and backend modules for c
   </ul>
 </div>
 
-Folder structure is documented here instead of in the banner so the top section stays focused on project identity.
-
 ---
 
 ## System Architecture
