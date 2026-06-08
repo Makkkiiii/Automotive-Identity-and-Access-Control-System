@@ -4,6 +4,7 @@ pub mod attacks;
 pub mod auth;
 /// AIACS Library - Public modules for testing
 pub mod ca;
+pub mod cloud_storage;
 pub mod crypto;
 pub mod keyfob;
 pub mod session;
