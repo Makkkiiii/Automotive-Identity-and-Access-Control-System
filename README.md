@@ -1,30 +1,17 @@
-<p align="center">
-  <img width="100%" src="https://capsule-render.vercel.app/api?type=waving&color=0:1b171c,100:d3869b&height=180&section=header&text=AIACS&fontColor=e8d8d4&fontSize=48&animation=fadeIn" />
-</p>
+# AIACS
 
-<h2 align="center">Automotive Identity and Access Control System</h2>
+## Automotive Identity and Access Control System
 
-<p align="center">
-  A Rust-based vehicle access provisioning prototype for digital key fob registration, certificate-based authentication, secure session establishment, adversarial validation, audit reporting, and cloud-backed provisioning metadata storage.
-</p>
+![Rust](https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white)
+![Iced GUI](https://img.shields.io/badge/Iced_GUI-4B5563?style=for-the-badge&logo=rust&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-316192?style=for-the-badge&logo=postgresql&logoColor=white)
+![Neon](https://img.shields.io/badge/Neon-00E599?style=for-the-badge&logo=neon&logoColor=black)
+![Ed25519](https://img.shields.io/badge/Ed25519-PKI-8A2BE2?style=for-the-badge)
+![AES-GCM](https://img.shields.io/badge/AES--GCM-Authenticated_Encryption-0F766E?style=for-the-badge)
+![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)
+![Build](https://img.shields.io/badge/Build%2FTests-local_validation-lightgrey?style=for-the-badge)
 
-<p align="center">
-  <img src="https://skillicons.dev/icons?i=rust,postgres,github" />
-</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/Vehicle_Access-Provisioning-2b2430?style=flat-square" />
-  <img src="https://img.shields.io/badge/GUI-Iced-2b2430?style=flat-square" />
-  <img src="https://img.shields.io/badge/Cloud-Neon_PostgreSQL-2b2430?style=flat-square" />
-  <img src="https://img.shields.io/badge/Crypto-Ed25519_+_X25519_+_AES--GCM-2b2430?style=flat-square" />
-  <img src="https://img.shields.io/badge/Database-PostgreSQL-2b2430?style=flat-square&logo=postgresql&logoColor=white" />
-  <img src="https://img.shields.io/badge/Language-Rust-2b2430?style=flat-square&logo=rust&logoColor=white" />
-</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/Tests-147%2B_passed-1f3a2e?style=flat-square" />
-  <img src="https://img.shields.io/badge/License-MIT-2b2430?style=flat-square" />
-</p>
+AIACS is a Rust-based automotive vehicle access provisioning prototype for dealer and technician-side digital key fob provisioning, certificate-based authentication, secure session establishment, adversarial validation, audit reporting, and cloud-backed provisioning metadata storage.
 
 The main desktop application is the **Vehicle Access Provisioning Console**. Security diagnostics are kept separate in `src/bin/aiacs_diagnostics.rs`.
 
@@ -617,24 +604,6 @@ Allowed in GUI, logs, reports, or cloud metadata:
 - `[REDACTED]` markers
 
 `[REDACTED]` means sensitive material may exist internally for protocol operation, but it is intentionally hidden from GUI output, logs, reports, Debug formatting, README examples, and cloud metadata sync.
-
----
-
-## Development Status
-
-| Area                               | Status                                             |
-| ---------------------------------- | -------------------------------------------------- |
-| Core cryptography                  | Implemented for prototype use                      |
-| Certificate authority              | Implemented                                        |
-| Authentication engine              | Implemented with strict certificate validation     |
-| Secure session                     | Implemented with X25519, HKDF-SHA256, and AES-GCM  |
-| Access decisions                   | Implemented                                        |
-| Main GUI                           | Implemented as Vehicle Access Provisioning Console |
-| Diagnostics binary                 | Implemented separately                             |
-| Audit reports                      | Implemented with redaction                         |
-| Cloud schema                       | Implemented                                        |
-| Safe cloud metadata sync           | Implemented                                        |
-| Encrypted private key cloud upload | Planned                                            |
 
 ---
 
