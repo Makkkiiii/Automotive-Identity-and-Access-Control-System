@@ -2,575 +2,653 @@
 
 ## Automotive Identity and Access Control System
 
-A Rust-based cryptographic protocol prototype implementing certificate-based challenge-response authentication with adversarial protocol validation.
+![Rust](https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white)
+![Iced GUI](https://img.shields.io/badge/Iced_GUI-4B5563?style=for-the-badge&logo=rust&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-316192?style=for-the-badge&logo=postgresql&logoColor=white)
+![Neon](https://img.shields.io/badge/Neon-00E599?style=for-the-badge&logo=neon&logoColor=black)
+![Ed25519](https://img.shields.io/badge/Ed25519-PKI-8A2BE2?style=for-the-badge)
+![AES-GCM](https://img.shields.io/badge/AES--GCM-Authenticated_Encryption-0F766E?style=for-the-badge)
+![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)
+![Build](https://img.shields.io/badge/Build%2FTests-local_validation-lightgrey?style=for-the-badge)
 
-```
-    ┌─────────────────────────────────────────────────────────┐
-    │                                                         │
-    │         VEHICLE CONTROL MODULE (VCM)                   │
-    │                                                         │
-    │     Generates nonce challenge → Verifies signature     │
-    │     Validates certificate chain → Grants/rejects access│
-    │                                                         │
-    └──────────────────────┬──────────────────────────────────┘
-                           │
-                    Ed25519 Challenge
-                    (128-bit nonce)
-                           │
-    ┌──────────────────────▼──────────────────────────────────┐
-    │                                                         │
-    │      DIGITAL KEY FOB MODULE (DKF)                       │
-    │                                                         │
-    │     Receives challenge → Signs with private key        │
-    │     Returns signature + certificate                    │
-    │                                                         │
-    └──────────────────────┬──────────────────────────────────┘
-                           │
-                    Signature Response
-                           │
-    ┌──────────────────────▼──────────────────────────────────┐
-    │                                                         │
-    │      AUTHENTICATION ENGINE                              │
-    │                                                         │
-    │     Verify signature (Ed25519)                         │
-    │     Validate certificate chain                         │
-    │     Check nonce freshness                              │
-    │     Establish AES-GCM session                          │
-    │                                                         │
-    └──────────────────────┬──────────────────────────────────┘
-                           │
-                    Access Decision
-                           │
-            ┌──────────────┴──────────────┐
-            │                             │
-        GRANTED                       REJECTED
-    (AES-GCM session)        (Replay/Forge/Timeout)
-```
+AIACS is a Rust-based automotive vehicle access provisioning prototype for dealer and technician-side digital key fob provisioning, certificate-based authentication, secure session establishment, adversarial validation, audit reporting, and cloud-backed provisioning metadata storage.
+
+The main desktop application is the **Vehicle Access Provisioning Console**. Security diagnostics are kept separate in `src/bin/aiacs_diagnostics.rs`.
 
 ---
 
-## Project Overview
+## Table of Contents
 
-AIACS is an academic prototype demonstrating:
-
-- **Certificate-Based Authentication** — PKI trust model with root CA, key fob certificates, and trust chain validation
-- **Replay Resistance** — Nonce freshness validation and timeout enforcement
-- **Protocol-Level Relay Mitigation** — Software timing threshold validation
-- **Cryptographic Integrity** — AES-GCM authenticated encryption after successful authentication
-- **Adversarial Testing** — Six attack scenarios to validate protocol robustness
-
-### What This Is NOT
-
-- Not a production automotive system
-- Not a cloud platform or database-backed service
-- Not a hardware TPM implementation
-- Not a real RF/relay elimination (software timing only)
-- Not a general-purpose login system
-
-### Technology Stack
-
-| Component     | Library       | Version |
-| ------------- | ------------- | ------- |
-| Language      | Rust          | stable  |
-| Signatures    | ed25519-dalek | 2.1     |
-| Encryption    | aes-gcm       | 0.10    |
-| Randomness    | rand          | 0.8     |
-| GUI           | iced          | 0.12    |
-| Serialization | serde         | 1.0     |
-| Hashing       | sha2          | 0.10    |
-| Async         | tokio         | 1.0     |
+1. [Overview](#overview)
+2. [Key Features](#key-features)
+3. [System Architecture](#system-architecture)
+4. [Workflow Illustration](#workflow-illustration)
+5. [Demo Records](#demo-records)
+6. [GUI Pages](#gui-pages)
+7. [Cryptographic Protocol Flow](#cryptographic-protocol-flow)
+8. [Diagnostics and Attack Validation](#diagnostics-and-attack-validation)
+9. [Cloud Database Support](#cloud-database-support)
+10. [Environment Configuration](#environment-configuration)
+11. [Neon PostgreSQL Setup](#neon-postgresql-setup)
+12. [Installation](#installation)
+13. [Running the Application](#running-the-application)
+14. [Testing and Validation](#testing-and-validation)
+15. [Runtime Generated Files](#runtime-generated-files)
+16. [Provisioning Audit Report](#provisioning-audit-report)
+17. [Screenshots](#screenshots)
+18. [Security Design Notes](#security-design-notes)
+19. [Development Status](#development-status)
+20. [Academic Scope and Limitations](#academic-scope-and-limitations)
+21. [License](#license)
 
 ---
 
-## Architecture
+## Overview
 
-### Core Modules
+AIACS demonstrates a complete digital vehicle access provisioning path:
 
-1. **Certificate Authority (CA)** — `src/ca/mod.rs`
-   - Generates root CA keypair (Ed25519)
-   - Issues certificates to key fobs
-   - Validates certificate chains
-   - Manages trust anchors
+- A technician selects a customer, vehicle, and digital key fob.
+- The system initializes a vehicle trust root and certificate authority.
+- A key fob identity is registered and issued a CA-signed access certificate.
+- A challenge-response authentication flow verifies certificate trust, identity binding, signature validity, freshness, and replay resistance.
+- A secure session is established using X25519, HKDF-SHA256, and AES-GCM.
+- Safe provisioning metadata can be synced to a Neon PostgreSQL database.
+- Audit logs and reports expose protocol state without revealing sensitive key material.
 
-2. **Cryptographic Engine** — `src/crypto/mod.rs`
-   - Ed25519 keypair generation and signing
-   - AES-GCM encryption/decryption
-   - Random nonce generation
-   - SHA-256 hashing
-
-3. **Vehicle Control Module (VCM)** — `src/vehicle/mod.rs`
-   - Generates 128-bit nonce challenges
-   - Verifies Ed25519 signatures
-   - Validates certificate chains
-   - Establishes AES-GCM sessions
-
-4. **Digital Key Fob (DKF)** — `src/keyfob/mod.rs`
-   - Stores private key securely
-   - Signs nonce challenges
-   - Returns certificate with signature
-   - Participates in encrypted sessions
-
-5. **Authentication Engine** — `src/auth/mod.rs`
-   - Orchestrates challenge-response flow
-   - Validates certificates
-   - Checks nonce freshness (timeout-based)
-   - Returns authentication result
-
-6. **Session Validation** — `src/session/mod.rs`
-   - Timestamps and freshness checks
-   - Timeout enforcement
-   - Session state management
-
-7. **Access Decision Engine** — `src/access/mod.rs`
-   - Aggregates all validation results
-   - Issues grant/reject decisions with reasons
-   - Logs access events
-
-8. **Adversarial Validation Engine** — `src/attacks/mod.rs`
-   - Simulates replay attacks (reused nonces)
-   - Simulates forged signatures
-   - Simulates fake certificates
-   - Simulates delayed relay attacks
-   - Simulates packet tampering
-   - Simulates unauthorized identities
+AIACS is an academic prototype. It is designed to demonstrate protocol structure, software-side security controls, redaction practices, and validation strategy. It is not a production automotive access system.
 
 ---
 
-## GUI Overview
+## Key Features
 
-The Iced-based GUI provides 5 main screens:
+| Area | Capability |
+| --- | --- |
+| Vehicle provisioning | Dealer/technician-side flow for customer, vehicle, and digital key fob setup |
+| Certificate authority | Root trust initialization and CA-signed key fob certificate issuance |
+| Authentication | Ed25519 challenge-response authentication with PKI validation |
+| Replay protection | Nonce freshness, nonce reuse detection, and timestamp validation |
+| Secure session | X25519 key agreement, HKDF-SHA256 derivation, and AES-GCM authenticated encryption |
+| Access decisions | Structured grant/reject decisions with displayable denial reasons |
+| Diagnostics | Separate adversarial validation tool for controlled protocol testing |
+| Audit reporting | Human-readable provisioning report with redacted secrets |
+| Cloud metadata | Neon PostgreSQL schema creation and safe customer/vehicle/key fob metadata sync |
+| Secret handling | Public debug/log/report output redacts private keys and session secrets |
 
+---
+
+## System Architecture
+
+```mermaid
+flowchart LR
+    GUI["Vehicle Access Provisioning Console"]
+    CTRL["AppController Safe Facade"]
+    CA["Certificate Authority"]
+    FOB["Digital Key Fob"]
+    VEH["Vehicle Nonce Manager"]
+    AUTH["Authentication Engine"]
+    SESSION["Session Module"]
+    ACCESS["Access Decision Engine"]
+    DB["Neon PostgreSQL Cloud DB"]
+    DIAG["Separate Diagnostics Tool"]
+
+    GUI --> CTRL
+    DIAG --> CTRL
+    CTRL --> CA
+    CTRL --> FOB
+    CTRL --> VEH
+    CTRL --> AUTH
+    CTRL --> SESSION
+    CTRL --> ACCESS
+    CTRL --> DB
 ```
-MAIN MENU
-├── Certificate Authority
-│   ├── Initialize CA (generate root keypair)
-│   └── Issue Certificate (to key fobs)
-├── Authentication
-│   └── Run Legitimate Authentication (VCM + DKF handshake)
-├── Attack Simulation
-│   ├── Replay Attack (reuse captured nonce)
-│   ├── Forged Signature (invalid signature)
-│   ├── Fake Certificate (untrusted cert)
-│   ├── Delayed Relay (timeout simulation)
-│   └── Packet Tampering (modify payload)
-└── Session Monitor
-    └── View active sessions and logs
+
+The GUI calls `AppController` only. `AppController` is the safe application facade that coordinates backend modules and prevents GUI code from duplicating cryptographic, authentication, session, access, or diagnostics logic.
+
+### Module Map
+
+| Module | Purpose |
+| --- | --- |
+| `src/app_controller/mod.rs` | GUI-safe facade for provisioning, diagnostics launch, reports, logs, and cloud metadata operations |
+| `src/ca/mod.rs` | Certificate authority initialization, certificate issuance, and chain validation |
+| `src/crypto/mod.rs` | Ed25519, AES-GCM, hashing, nonce generation, and key helpers |
+| `src/keyfob/mod.rs` | Digital key fob identity, key generation, challenge signing, certificate storage |
+| `src/vehicle/mod.rs` | Vehicle nonce generation, replay tracking, and freshness checks |
+| `src/auth/mod.rs` | Authentication proof validation and `AuthResult` generation |
+| `src/session/mod.rs` | X25519, HKDF-SHA256, AES-GCM session establishment and validation |
+| `src/access/mod.rs` | Access grant/reject decision evaluation |
+| `src/attacks/mod.rs` | Adversarial validation scenarios |
+| `src/cloud_storage/mod.rs` | Neon/PostgreSQL connection, schema creation, and safe metadata sync |
+| `src/bin/aiacs_diagnostics.rs` | Separate diagnostics executable |
+
+### Cloud Data Model
+
+```mermaid
+erDiagram
+    CUSTOMERS ||--o{ VEHICLES : owns
+    VEHICLES ||--o{ KEY_FOBS : provisions
+    KEY_FOBS ||--o{ CERTIFICATES : receives
+    KEY_FOBS ||--o{ ENCRYPTED_KEYS : stores
+    VEHICLES ||--o{ PROVISIONING_SESSIONS : records
+    PROVISIONING_SESSIONS ||--o{ AUDIT_LOGS : produces
 ```
 
 ---
 
-## Installation & Setup
+## Workflow Illustration
+
+```mermaid
+sequenceDiagram
+    participant Operator
+    participant GUI as AIACS Console
+    participant CA as Certificate Authority
+    participant Fob as Digital Key Fob
+    participant Vehicle as Vehicle Module
+    participant Auth as Authentication Engine
+    participant Session as Session Module
+    participant DB as Neon PostgreSQL
+
+    Operator->>GUI: Select customer, vehicle, and key fob
+    Operator->>GUI: Connect vehicle
+    GUI->>Vehicle: Generate vehicle provisioning context
+    Operator->>GUI: Register key fob
+    GUI->>Fob: Generate Ed25519 keypair
+    Operator->>GUI: Initialize vehicle trust
+    GUI->>CA: Generate CA root keypair
+    Operator->>GUI: Issue access certificate
+    CA->>Fob: Issue CA-signed certificate
+    Operator->>GUI: Verify authentication
+    Vehicle->>Fob: Nonce challenge
+    Fob->>Auth: Signed canonical payload + certificate
+    Auth->>Auth: Verify certificate, subject binding, signature, freshness, replay protection
+    Auth->>GUI: Authentication successful
+    Operator->>GUI: Activate secure session
+    GUI->>Session: X25519 + HKDF-SHA256 + AES-GCM
+    GUI->>DB: Sync safe metadata
+```
+
+### Provisioning Stages
+
+| Stage | Actions |
+| --- | --- |
+| Vehicle Connection | Connect vehicle |
+| Key Fob Setup | Detect key fob, register key fob |
+| Certificate Provisioning | Initialize vehicle trust, issue access certificate, view certificate details |
+| Authentication Verification | Generate challenge, sign canonical payload, verify authentication |
+| Secure Session | Activate secure session |
+| Finalize | Export provisioning report, sync safe metadata |
+
+---
+
+## Demo Records
+
+The GUI uses stable demonstration records suitable for academic presentation and repeatable testing.
+
+### Customer
+
+| Field | Value |
+| --- | --- |
+| `customer_id` | `CUST-0001` |
+| `owner_name` | `Dennis Maharjan` |
+| `email` | `dennis.m@example.com` |
+
+### Vehicle
+
+| Field | Value |
+| --- | --- |
+| `vehicle_id` | `VEH-0001` |
+| `vehicle_display_name` | `Nissan Magnite 2021` |
+| `make` | `Nissan` |
+| `model` | `Magnite` |
+| `year` | `2021` |
+
+### Key Fob
+
+| Field | Value |
+| --- | --- |
+| `fob_id` | `FOB-0001` |
+| `fob_label` | `Primary Key Fob` |
+
+### Session
+
+| Field | Value |
+| --- | --- |
+| `session_id` | `SESSION-0001` |
+
+The README uses only the current generic demo records shown above.
+
+---
+
+## GUI Pages
+
+The desktop GUI is organized as a multi-page vehicle provisioning console.
+
+| Page | Purpose |
+| --- | --- |
+| Dashboard | High-level overview of active customer, selected vehicle, registered key fob, and provisioning status |
+| Customers | Demo customer/owner details and GUI-only customer actions |
+| Vehicles | Selected vehicle details, technical ID, make/model/year, and owner association |
+| Key Fobs | Digital key fob details, certificate state, public fingerprint, and redacted private key state |
+| Provisioning | Primary staged workflow for normal vehicle access provisioning |
+| Protocol Artifacts | Selectable protocol artifacts such as challenge message, authentication proof, certificate details, session summary, and access decision |
+| Credential Storage | Safe credential paths, fingerprints, storage mode, and `[REDACTED]` private key values |
+| Logs / Report | Event log, protocol trace, export report action, and clear log action |
+| Diagnostics | Launch page for the separate diagnostics tool |
+| Cloud Storage | Neon connection health check and safe metadata sync controls |
+
+Diagnostics are not part of the normal provisioning workflow. The main GUI launches diagnostics separately and does not show attack buttons inside the provisioning page.
+
+---
+
+## Cryptographic Protocol Flow
+
+```mermaid
+flowchart TD
+    A["Vehicle generates nonce challenge"] --> B["Key fob builds canonical payload"]
+    B --> C["Key fob signs payload using Ed25519"]
+    C --> D["Authentication Engine validates certificate"]
+    D --> E["Subject identity binding check"]
+    E --> F["Ed25519 signature verification"]
+    F --> G["Nonce freshness and replay check"]
+    G --> H["Access Decision: Grant or Reject"]
+    H --> I["Secure session: X25519 + HKDF + AES-GCM"]
+```
+
+### Authentication Checks
+
+| Check | Expected Success Condition |
+| --- | --- |
+| Certificate chain | The trusted CA returns `Ok(true)` for the key fob certificate |
+| Certificate validity | Certificate is within its validity window |
+| Subject binding | Authentication proof subject matches certificate subject |
+| Signature | Ed25519 verification succeeds over the canonical payload |
+| Freshness | Nonce timestamp is inside the configured freshness window |
+| Replay protection | Nonce has not already been used |
+| Session establishment | X25519/HKDF/AES-GCM session material is established without exposing raw key bytes |
+
+Certificate validation is strict: only `Ok(true)` from CA validation is accepted. `Ok(false)` and `Err(_)` are rejected.
+
+---
+
+## Diagnostics and Attack Validation
+
+Diagnostics are run through the separate binary:
+
+```bash
+cargo run --bin aiacs_diagnostics
+```
+
+| Attack | Expected Outcome |
+| --- | --- |
+| Replay Attack | Rejected because reused nonce is detected |
+| Forged Signature | Rejected because Ed25519 verification fails |
+| Fake Certificate | Rejected because CA validation fails |
+| Identity Mismatch | Rejected because proof subject and certificate subject do not match |
+| Delayed Relay | Rejected because freshness timeout fails |
+| Packet Tampering | Rejected because payload/signature binding fails |
+| Unauthorized Key Fob | Rejected because identity is not authorized |
+| Tampered Ciphertext | Rejected because AES-GCM integrity check fails |
+| Wrong Session Key | Rejected because session decryption/integrity validation fails |
+
+The diagnostics tool exercises the real protocol path through `AppController`. It does not bypass the authentication engine or duplicate CA validation logic.
+
+---
+
+## Cloud Database Support
+
+AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metadata.
+
+### Completed Cloud Phases
+
+| Phase | Status | Scope |
+| --- | --- | --- |
+| Cloud Phase 1 | Complete | Environment safety, `.env.example`, dependency setup |
+| Cloud Phase 2 | Complete | Neon/PostgreSQL connection and health check |
+| Cloud Phase 3 | Complete | Automatic schema creation with `CREATE TABLE IF NOT EXISTS` |
+| Cloud Phase 4 | Complete | Safe customer, vehicle, and key fob metadata sync |
+
+### Tables
+
+| Table | Purpose |
+| --- | --- |
+| `customers` | Owner/customer metadata |
+| `vehicles` | Vehicle metadata and provisioning status |
+| `key_fobs` | Key fob labels, fingerprints, certificate status, provisioning status |
+| `certificates` | Certificate metadata for future cloud sync |
+| `encrypted_keys` | Future encrypted private key blobs only, never plaintext private keys |
+| `provisioning_sessions` | Future provisioning session records |
+| `audit_logs` | Future cloud audit log records |
+| `diagnostic_results` | Future diagnostics result records |
+
+### Current Behavior
+
+- Schema can be created automatically.
+- Safe customer, vehicle, and key fob metadata can be synced.
+- Raw private keys are not uploaded.
+- Certificate JSON, session records, audit logs, diagnostics, and encrypted key blobs are not uploaded in the current metadata phase.
+- Encrypted private key blob upload is planned for a future cloud phase.
+
+### Planned Cloud Work
+
+| Planned Phase | Scope |
+| --- | --- |
+| Cloud Phase 5 | Client-side encrypted private key blob upload |
+| Cloud Phase 6 | Certificate, session, audit, and diagnostic cloud sync |
+| Cloud Phase 7 | Cloud GUI polish and richer metadata views |
+
+---
+
+## Environment Configuration
+
+Create a local `.env.local` file for development:
+
+```env
+DATABASE_URL=postgresql://USER:PASSWORD@HOST/DATABASE?sslmode=require
+AIACS_MASTER_KEY=base64_encoded_32_byte_key
+```
+
+Rules:
+
+- `.env.local` is local only.
+- Never commit `.env.local`.
+- `.env.example` contains placeholders only.
+- `DATABASE_URL` comes from Neon.
+- `AIACS_MASTER_KEY` is generated by the developer or operator.
+- Do not print, log, or paste either value into reports or screenshots.
+
+The project ignore rules should keep local environment files out of version control:
+
+```gitignore
+.env
+.env.local
+.env.*
+!.env.example
+```
+
+Generate a local 32-byte master key:
+
+```bash
+python -c "import os,base64; print(base64.b64encode(os.urandom(32)).decode())"
+```
+
+`AIACS_MASTER_KEY` is reserved for future client-side encryption of confidential key material before cloud upload.
+
+---
+
+## Neon PostgreSQL Setup
+
+1. Create a Neon PostgreSQL project.
+2. Copy the project connection string.
+3. Add it to `.env.local` as `DATABASE_URL`.
+4. Add a locally generated `AIACS_MASTER_KEY`.
+5. Run the optional live cloud test only when you intentionally want to connect to Neon.
+
+Git Bash:
+
+```bash
+AIACS_RUN_LIVE_DB_TESTS=1 cargo test cloud -- --nocapture
+```
+
+PowerShell:
+
+```powershell
+$env:AIACS_RUN_LIVE_DB_TESTS="1"
+cargo test cloud -- --nocapture
+```
+
+Verify created tables in the Neon SQL Editor:
+
+```sql
+SELECT table_schema, table_name
+FROM information_schema.tables
+WHERE table_schema = 'public'
+ORDER BY table_name;
+```
+
+Verify safe metadata:
+
+```sql
+SELECT * FROM customers;
+SELECT * FROM vehicles;
+SELECT * FROM key_fobs;
+```
+
+Expected demo records:
+
+| Table | Expected Record |
+| --- | --- |
+| `customers` | `CUST-0001` / `Dennis Maharjan` |
+| `vehicles` | `VEH-0001` / `Nissan Magnite 2021` |
+| `key_fobs` | `FOB-0001` / `Primary Key Fob` |
+
+---
+
+## Installation
 
 ### Prerequisites
 
-- Rust 1.70+ (install from [rustup.rs](https://rustup.rs))
+- Rust stable toolchain from [rustup.rs](https://rustup.rs)
+- Git
+- Optional: Neon PostgreSQL account for cloud metadata tests
 
-### Clone & Build
+### Clone and Build
 
 ```bash
-git clone <repository>
+git clone <repository-url>
 cd Cryptography
-
-# Download dependencies and build
-cargo build --release
-
-# Executable location
-./target/release/aiacs  # Linux/macOS
-./target/release/aiacs.exe  # Windows
+cargo build
 ```
+
+Release build:
+
+```bash
+cargo build --release
+```
+
+Windows PowerShell and Git Bash both work for standard Cargo commands. PowerShell uses `$env:NAME="value"` for temporary environment variables, while Git Bash uses `NAME=value command`.
 
 ---
 
 ## Running the Application
 
-### Start the GUI
+Start the main GUI:
 
 ```bash
-cargo run --release
+cargo run
 ```
 
-This launches the Iced GUI with the main menu. Navigation is handled through on-screen buttons.
-
-### Workflow Example
-
-1. **Initialize CA**
-   - Click "Certificate Authority" > "Initialize CA"
-   - Generates root CA keypair (Ed25519)
-   - Saves keys to `keys/` directory
-
-2. **Issue Certificate**
-   - Click "Certificate Authority" > "Issue Certificate"
-   - Creates signed certificate for a key fob
-   - Saves certificate to `certs/` directory
-
-3. **Run Legitimate Authentication**
-   - Click "Authentication" > "Legitimate Authentication"
-   - VCM generates nonce challenge
-   - DKF signs nonce and returns certificate
-   - VCM verifies signature and certificate
-   - Result: ACCESS GRANTED (with AES-GCM session established)
-
-4. **Run Attack Simulations**
-   - Click "Attack Simulation" and select attack type
-   - Each attack demonstrates proper rejection:
-
-   | Attack                | Expected Outcome                                |
-   | --------------------- | ----------------------------------------------- |
-   | Replay                | ACCESS REJECTED — Nonce Reuse                   |
-   | Forged Signature      | ACCESS REJECTED — Invalid Signature             |
-   | Fake Certificate      | ACCESS REJECTED — Certificate Validation Failed |
-   | Delayed Relay         | ACCESS REJECTED — Freshness Timeout             |
-   | Packet Tampering      | ACCESS REJECTED — Integrity Check Failed        |
-   | Unauthorized Identity | ACCESS REJECTED — Unknown Identity              |
-
----
-
-## Development Structure
-
-```
-Cryptography/
-├── Cargo.toml                 # Dependencies and metadata
-├── README.md                  # This file
-├── LICENSE                    # MIT License
-├── src/
-│   ├── main.rs               # Iced GUI entry point
-│   ├── ca/mod.rs             # Certificate Authority implementation
-│   ├── crypto/mod.rs         # Cryptographic operations (Ed25519, AES-GCM)
-│   ├── auth/mod.rs           # Authentication engine
-│   ├── vehicle/mod.rs        # Vehicle Control Module
-│   ├── keyfob/mod.rs         # Digital Key Fob
-│   ├── session/mod.rs        # Session validation
-│   ├── access/mod.rs         # Access decision logic
-│   └── attacks/mod.rs        # Adversarial attack simulations
-├── certs/                     # Stored certificates (generated at runtime)
-├── keys/                      # Stored keys (generated at runtime)
-└── logs/                      # Activity logs (generated at runtime)
-```
-
----
-
-## Cryptographic Flow
-
-### Successful Authentication (Step-by-Step Animation)
-
-**Phase 1: Challenge Generation**
-
-```
-VCM State:
-[Idle] ──▶ [Generating Nonce] ──▶ [Nonce Ready]
-         ↓
-         Generate: 128-bit random value
-         Nonce: 0xa7c3f2e1b4d9...
-         Timestamp: 2026-05-24T12:34:56Z
-```
-
-**Phase 2: Challenge Transmission**
-
-```
-VCM                                    DKF
-[Challenge Sent] ──────────────────▶ [Challenge Received]
-                                      ↓
-                                    Processing...
-                                      N = 0xa7c3f2e1b4d9...
-```
-
-**Phase 3: Signature Generation**
-
-```
-DKF State:
-[Processing] ──▶ [Signing] ──▶ [Signature Ready]
-              ↓
-              Sign(sk_fob, nonce)
-              S = 0x3e8b5a2c9d7f...
-              Certificate: pk_fob (issued by CA)
-```
-
-**Phase 4: Response Transmission**
-
-```
-DKF                                    VCM
-[Response Ready] ──────────────────▶ [Response Received]
-                                      ↓
-                                    Validating...
-```
-
-**Phase 5: Validation Chain**
-
-```
-VCM Validation Pipeline:
-├─▶ [Verify Signature]
-│   └─ Ed25519(pk_fob, nonce, signature)
-│      ✓ Valid
-│
-├─▶ [Validate Certificate]
-│   └─ Check issuer = CA root
-│      ✓ Trusted
-│
-├─▶ [Check Freshness]
-│   └─ Now - Timestamp < 5 seconds
-│      ✓ Fresh
-│
-└─▶ [Establish Session]
-    └─ Session Key ← SHA256(shared_secret)
-       ✓ AES-GCM ready
-```
-
-**Phase 6: Access Grant**
-
-```
-All Checks Passed:
-✓ Signature valid
-✓ Certificate trusted
-✓ Nonce fresh
-✓ Integrity verified
-
-[Validation Complete] ──▶ [SESSION ESTABLISHED]
-
-ACCESS GRANTED
-Session Key: 0x5f8e3a2b1c9d...
-Encryption: AES-256-GCM
-Valid Until: 2026-05-24T12:39:56Z
-```
-
----
-
-### Failed Authentication (Example: Replay Attack)
-
-**Phase 1: Attack Setup**
-
-```
-Attacker intercepts previous authentication:
-├─ Old Nonce: N_old = 0xa7c3f2e1b4d9...
-├─ Old Signature: S_old = 0x3e8b5a2c9d7f...
-├─ Old Timestamp: 2026-05-24T12:30:00Z (5 minutes ago)
-└─ Certificate: pk_fob
-```
-
-**Phase 2: Replay Attempt**
-
-```
-Attacker                                 VCM
-[Sending old N_old + S_old] ──────────▶ [Challenge Received]
-                                         ↓
-                                       Validating...
-```
-
-**Phase 3: Validation Chain (Fails)**
-
-```
-VCM Validation Pipeline:
-├─▶ [Verify Signature]
-│   └─ Ed25519(pk_fob, nonce, signature)
-│      ✓ Valid
-│
-├─▶ [Validate Certificate]
-│   └─ Check issuer = CA root
-│      ✓ Trusted
-│
-├─▶ [Check Freshness]
-│   └─ Now - Timestamp < 5 seconds
-│      └─ 2026-05-24T12:35:15Z - 2026-05-24T12:30:00Z = 315 seconds
-│         ✗ TIMEOUT EXCEEDED
-│
-└─▶ [SESSION REJECTED]
-```
-
-**Phase 4: Access Denied**
-
-```
-Validation Failed:
-✓ Signature valid
-✓ Certificate trusted
-✗ Nonce STALE (timeout exceeded)
-
-[Validation Failed] ──▶ [SESSION REJECTED]
-
-ACCESS REJECTED
-Reason: Freshness Timeout (Replay Attack Detected)
-Timestamp Threshold: 5 seconds
-Elapsed Time: 315 seconds
-```
-
----
-
-### Attack Scenarios Visualization
-
-**Scenario 1: Replay Attack**
-
-```
-Time ──────────────────────────────────────────────────
-     │
-     ├─ t=0: Normal auth (Nonce N, Signature S created)
-     │
-     ├─ t=0.5s: Attacker captures (N, S)
-     │
-     ├─ t=5m: Normal timeout window closed
-     │
-     └─ t=5m+1s: Attacker replays (N, S)
-                  ✗ REJECTED (too old)
-```
-
-**Scenario 2: Forged Signature**
-
-```
-DKF sends: (N, S_valid, Cert)
-                ↓
-Attacker modifies: (N, S_forged, Cert)
-                         ↓
-VCM receives: (N, S_forged, Cert)
-                ↓
-Ed25519Verify(pk_fob, N, S_forged)
-                ↓
-           ✗ INVALID SIGNATURE
-                ↓
-         ACCESS REJECTED
-```
-
-**Scenario 3: Fake Certificate**
-
-```
-Attacker provides: (N, S_attacker, Cert_untrusted)
-                                    ↓
-VCM validates chain: Cert_untrusted
-                     ├─ Issuer != CA root
-                     ├─ Signature verification fails
-                     └─ ✗ NOT TRUSTED
-                        ↓
-                 ACCESS REJECTED
-```
-
-**Scenario 4: Delayed Relay**
-
-```
-Message Path 1 (Normal):
-VCM ──(N)──────────────▶ DKF: 0.1s
-DKF ──(S, Cert)────────▶ VCM: 0.1s
-Total RTT: 0.2s
-
-Message Path 2 (Relay Attack):
-VCM ──(N)──────────────▶ Relay (Delays 10s)
-Relay ──(N)─────────▶ DKF: 0.1s
-DKF ──(S, Cert)────────▶ Relay: 0.1s
-Relay ──(S, Cert)──────▶ VCM (Delayed 10s total)
-Total RTT: 10.2s
-
-VCM receives response:
-├─ Signature: ✓ Valid
-├─ Certificate: ✓ Trusted
-├─ Freshness check:
-│  └─ Timestamp diff = 10.2 seconds
-│     └─ Exceeds 5s threshold
-│        ✗ TIMEOUT
-│           ↓
-│      ACCESS REJECTED
-```
-
-**Scenario 5: Packet Tampering**
-
-```
-Original Message:
-[N=0xa7c3...][S=0x3e8b...][Cert]
-     ↓
-Attacker modifies Certificate bytes:
-[N=0xa7c3...][S=0x3e8b...][Cert_modified]
-     ↓
-VCM receives and validates:
-├─ Signature with (pk_fob_original, N, S): ✓ Valid
-├─ Certificate chain with Cert_modified: ✗ INVALID
-│  └─ Cert bytes don't match signature
-│     ↓
-│  ACCESS REJECTED
-```
-
-**Scenario 6: Unauthorized Identity**
-
-```
-Unknown DKF attempts auth:
-├─ Nonce: N = 0xb9e4...
-├─ Signature: S = 0x7f2c...
-├─ Certificate: Cert_unknown (signed by CA but not registered)
-     ↓
-VCM validation:
-├─ Signature verification: Ed25519Verify(pk_unknown, N, S)
-│  ✗ pk_unknown NOT in whitelist
-│  ✗ UNKNOWN IDENTITY
-│     ↓
-│  ACCESS REJECTED
-```
-
----
-
-## Academic Claims
-
-### What We Demonstrate
-
-- Protocol-level challenge-response authentication
-- Certificate-based PKI trust model
-- Ed25519 digital signature verification
-- Nonce-based replay resistance
-- Software-based timing validation for relay mitigation
-- AES-GCM authenticated encryption
-- Protocol robustness under 6 attack scenarios
-
-### What We Do NOT Claim
-
-- Real-world relay attack elimination (no hardware-layer defenses)
-- Production automotive security
-- Physical RF protection
-- Hardware-rooted trust or TPM
-- Real-time safety guarantees
-
----
-
-## Testing & Validation
-
-Each attack scenario validates that the protocol correctly rejects invalid authentication attempts:
+Run the diagnostics tool:
 
 ```bash
-cargo run --release
-# Navigate to Attack Simulation
-# Each attack produces deterministic rejection with clear reasoning
+cargo run --bin aiacs_diagnostics
 ```
 
-Expected behavior:
+Run the release binary on Windows:
 
-- Legitimate authentication: All checks pass → ACCESS GRANTED
-- Any attack variant: At least one check fails → ACCESS REJECTED with reason
+```powershell
+.\target\release\aiacs.exe
+```
+
+Run the release binary on Linux/macOS:
+
+```bash
+./target/release/aiacs
+```
+
+### Recommended Demo Flow
+
+1. Open the GUI with `cargo run`.
+2. Review the Dashboard page.
+3. Open Customers, Vehicles, and Key Fobs to view the selected demo records.
+4. Open Provisioning.
+5. Complete the staged vehicle access workflow.
+6. Review Protocol Artifacts.
+7. Review Credential Storage and confirm private key values are redacted.
+8. Open Cloud Storage and run safe metadata sync if `.env.local` is configured.
+9. Export the provisioning report from Logs / Report.
+10. Launch diagnostics separately when testing adversarial validation.
 
 ---
 
-## File Locations
+## Testing and Validation
 
-| Purpose             | Path                      |
-| ------------------- | ------------------------- |
-| Root CA private key | `keys/ca_private.der`     |
-| Root CA public key  | `keys/ca_public.der`      |
-| Key fob certificate | `certs/keyfob_cert.der`   |
-| Key fob private key | `keys/keyfob_private.der` |
-| Activity logs       | `logs/access.log`         |
+Run library tests:
+
+```bash
+cargo test --lib
+```
+
+Run full local validation:
+
+```bash
+cargo fmt
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --lib
+cargo check --all-targets
+cargo check --bins
+```
+
+Optional live cloud tests:
+
+```bash
+AIACS_RUN_LIVE_DB_TESTS=1 cargo test cloud -- --nocapture
+```
+
+Current validation status:
+
+| Area | Status |
+| --- | --- |
+| Unit tests | 147+ tests |
+| Diagnostics | Separate from main provisioning console |
+| Cloud tests | Normal tests do not require a live database |
+| Live cloud verification | Available behind `AIACS_RUN_LIVE_DB_TESTS=1` |
+| Secret redaction | Covered by Debug/log/report tests |
 
 ---
 
-## Future Enhancements (Post-Phase 1)
+## Runtime Generated Files
 
-- Multi-vehicle support with key fob pairing
-- GUI-based certificate lifecycle management
-- Real-time attack simulation controls
-- Session key renegotiation
-- Enhanced logging with JSON export
-- WebAssembly export for browser-based demos
+The application may generate local runtime files:
+
+```text
+keys/
+certs/
+logs/
+```
+
+Examples:
+
+```text
+keys/ca_private.json
+keys/ca_public.json
+keys/fob_FOB-0001_private.json
+keys/fob_FOB-0001_public.json
+certs/fob_FOB-0001.json
+logs/aiacs_gui.log
+logs/aiacs_protocol_trace.log
+logs/aiacs_provisioning_report.txt
+```
+
+Private material may exist in local runtime storage for the prototype, but GUI output, logs, reports, and Debug formatting must redact sensitive values.
+
+---
+
+## Provisioning Audit Report
+
+The exported audit report is designed for demonstration and academic review. It includes:
+
+- Provisioning Summary
+- Credential Storage
+- Certificate Details
+- Authentication Verification
+- Secure Session Establishment
+- Security Notes
+- Protocol Trace
+- Diagnostics Summary
+
+All secrets must remain redacted. Reports may include safe metadata, certificate metadata, algorithm names, public fingerprints, timestamps, and `[REDACTED]` markers.
+
+---
+
+## Screenshots
+
+> Add screenshots to `docs/screenshots/` and update the links below.
+
+![Dashboard](docs/screenshots/dashboard.png)
+![Provisioning Workflow](docs/screenshots/provisioning.png)
+![Protocol Artifacts](docs/screenshots/protocol-artifacts.png)
+![Cloud Storage](docs/screenshots/cloud-storage.png)
+![Diagnostics Tool](docs/screenshots/diagnostics.png)
+
+---
+
+## Security Design Notes
+
+AIACS treats the following values as sensitive. They must never be displayed, logged, printed, committed, or uploaded as plaintext:
+
+- CA private key
+- Key fob private key
+- X25519 private key
+- Shared secret
+- AES session key
+- Raw session key bytes
+- `AIACS_MASTER_KEY`
+- `DATABASE_URL`
+- Neon password
+
+Allowed in GUI, logs, reports, or cloud metadata:
+
+- Customer metadata
+- Vehicle metadata
+- Key fob metadata
+- Public key fingerprints
+- Certificate metadata
+- Algorithm names
+- Key file paths
+- Timestamps
+- Nonces where safe
+- Future encrypted blobs
+- `[REDACTED]` markers
+
+`[REDACTED]` means sensitive material may exist internally for protocol operation, but it is intentionally hidden from GUI output, logs, reports, Debug formatting, README examples, and cloud metadata sync.
+
+---
+
+## Development Status
+
+| Area | Status |
+| --- | --- |
+| Core cryptography | Implemented for prototype use |
+| Certificate authority | Implemented |
+| Authentication engine | Implemented with strict certificate validation |
+| Secure session | Implemented with X25519, HKDF-SHA256, and AES-GCM |
+| Access decisions | Implemented |
+| Main GUI | Implemented as Vehicle Access Provisioning Console |
+| Diagnostics binary | Implemented separately |
+| Audit reports | Implemented with redaction |
+| Cloud schema | Implemented |
+| Safe cloud metadata sync | Implemented |
+| Encrypted private key cloud upload | Planned |
+
+---
+
+## Academic Scope and Limitations
+
+AIACS demonstrates software-side protocol design and validation for automotive digital access provisioning. It is appropriate for academic demonstration, prototype evaluation, and security workflow discussion.
+
+AIACS does not claim:
+
+- Production automotive readiness
+- Hardware-backed secure element protection
+- TPM-backed key isolation
+- Real RF relay attack elimination
+- Compliance with an automotive OEM security standard
+- Safety certification
+- Complete cloud production hardening
+
+The project is intentionally scoped as a prototype. Its value is in showing protocol composition, safe GUI/backend boundaries, strict certificate validation, adversarial testing, audit reporting, and secret redaction discipline.
 
 ---
 
 ## License
 
-MIT License — See LICENSE file for details
-
----
-
-## References
-
-- [Ed25519 RFC 8037](https://tools.ietf.org/html/rfc8037)
-- [AES-GCM NIST SP 800-38D](https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-38d.pdf)
-- [Iced GUI Framework](https://github.com/iced-rs/iced)
-- [ed25519-dalek Documentation](https://docs.rs/ed25519-dalek/)
+MIT License. See `LICENSE` for details.
