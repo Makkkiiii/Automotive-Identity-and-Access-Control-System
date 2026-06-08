@@ -154,7 +154,7 @@ AIACS is organized around a GUI-safe controller facade and backend modules for c
         <li><img width="15" src="https://api.iconify.design/lucide/lock.svg?color=%23a7d28d" alt="session" /> <code>session/</code></li>
         <li><img width="15" src="https://api.iconify.design/lucide/car.svg?color=%237da9d8" alt="vehicle" /> <code>vehicle/</code></li>
         <li>
-          <img width="15" src="https://api.iconify.design/lucide/folder-terminal.svg?color=%23e6c384" alt="binary" /> <code>bin/</code>
+          <img width="15" src="https://api.iconify.design/lucide/folder-cog.svg?color=%23e6c384" alt="binary" /> <code>bin/</code>
           <ul>
             <li><img width="15" src="https://api.iconify.design/lucide/terminal.svg?color=%23e6c384" alt="diagnostics binary" /> <code>aiacs_diagnostics.rs</code></li>
           </ul>
