@@ -1,11 +1,15 @@
-# Automotive Identity and Access Control System
+<p align="center">
+  <img width="100%" src="https://capsule-render.vercel.app/api?type=waving&color=0:1b171c,100:d3869b&height=180&section=header&text=AIACS&fontColor=e8d8d4&fontSize=48&animation=fadeIn" />
+</p>
+
+<h2 align="center">Automotive Identity and Access Control System</h2>
 
 <p align="center">
   A Rust-based vehicle access provisioning prototype for digital key fob registration, certificate-based authentication, secure session establishment, adversarial validation, audit reporting, and cloud-backed provisioning metadata storage.
 </p>
 
 <p align="center">
-  <img src="https://skillicons.dev/icons?i=rust" />
+  <img src="https://skillicons.dev/icons?i=rust,postgres,github" />
 </p>
 
 <p align="center"><strong>Core Stack</strong></p>
@@ -60,25 +64,26 @@ The main desktop application is the **Vehicle Access Provisioning Console**. Sec
 
 1. [Overview](#overview)
 2. [Key Features](#key-features)
-3. [System Architecture](#system-architecture)
-4. [Workflow Illustration](#workflow-illustration)
-5. [Demo Records](#demo-records)
-6. [GUI Pages](#gui-pages)
-7. [Cryptographic Protocol Flow](#cryptographic-protocol-flow)
-8. [Diagnostics and Attack Validation](#diagnostics-and-attack-validation)
-9. [Cloud Database Support](#cloud-database-support)
-10. [Environment Configuration](#environment-configuration)
-11. [Neon PostgreSQL Setup](#neon-postgresql-setup)
-12. [Installation](#installation)
-13. [Running the Application](#running-the-application)
-14. [Testing and Validation](#testing-and-validation)
-15. [Runtime Generated Files](#runtime-generated-files)
-16. [Provisioning Audit Report](#provisioning-audit-report)
-17. [Screenshots](#screenshots)
-18. [Security Design Notes](#security-design-notes)
-19. [Development Status](#development-status)
-20. [Academic Scope and Limitations](#academic-scope-and-limitations)
-21. [License](#license)
+3. [Project Structure](#project-structure)
+4. [System Architecture](#system-architecture)
+5. [Workflow Illustration](#workflow-illustration)
+6. [Demo Records](#demo-records)
+7. [GUI Pages](#gui-pages)
+8. [Cryptographic Protocol Flow](#cryptographic-protocol-flow)
+9. [Diagnostics and Attack Validation](#diagnostics-and-attack-validation)
+10. [Cloud Database Support](#cloud-database-support)
+11. [Environment Configuration](#environment-configuration)
+12. [Neon PostgreSQL Setup](#neon-postgresql-setup)
+13. [Installation](#installation)
+14. [Running the Application](#running-the-application)
+15. [Testing and Validation](#testing-and-validation)
+16. [Runtime Generated Files](#runtime-generated-files)
+17. [Provisioning Audit Report](#provisioning-audit-report)
+18. [Screenshots](#screenshots)
+19. [Security Design Notes](#security-design-notes)
+20. [Development Status](#development-status)
+21. [Academic Scope and Limitations](#academic-scope-and-limitations)
+22. [License](#license)
 
 ---
 
@@ -112,6 +117,59 @@ AIACS is an academic prototype. It is designed to demonstrate protocol structure
 | Audit reporting       | Human-readable provisioning report with redacted secrets                           |
 | Cloud metadata        | Neon PostgreSQL schema creation and safe customer/vehicle/key fob metadata sync    |
 | Secret handling       | Public debug/log/report output redacts private keys and session secrets            |
+
+---
+
+## Project Structure
+
+AIACS is organized around a GUI-safe controller facade and backend modules for cryptographic provisioning, authentication, session handling, diagnostics, and cloud metadata storage.
+
+```text
+Cryptography/
+|-- Cargo.toml
+|-- Cargo.lock
+|-- README.md
+|-- LICENSE
+|-- .env.example
+|-- assets/
+|   `-- icons/
+|-- src/
+|   |-- main.rs
+|   |-- lib.rs
+|   |-- app_controller/
+|   |-- access/
+|   |-- attacks/
+|   |-- auth/
+|   |-- ca/
+|   |-- cloud_storage/
+|   |-- crypto/
+|   |-- keyfob/
+|   |-- session/
+|   |-- vehicle/
+|   `-- bin/
+|       `-- aiacs_diagnostics.rs
+|-- certs/
+|-- keys/
+|-- logs/
+`-- target/
+```
+
+| Path | Role |
+| --- | --- |
+| `src/main.rs` | Iced desktop GUI presentation layer |
+| `src/app_controller/` | Safe application facade used by the GUI and diagnostics tool |
+| `src/ca/` | Certificate authority and certificate validation |
+| `src/keyfob/` | Digital key fob identity, keys, certificates, and authentication proofs |
+| `src/auth/` | Authentication engine and PKI challenge-response validation |
+| `src/session/` | Secure session establishment and validation |
+| `src/access/` | Access decision evaluation |
+| `src/attacks/` | Adversarial validation scenarios |
+| `src/cloud_storage/` | Neon/PostgreSQL connection, schema, and safe metadata sync |
+| `src/bin/aiacs_diagnostics.rs` | Separate diagnostics executable |
+| `assets/icons/` | Local SVG icons used by the GUI |
+| `certs/`, `keys/`, `logs/` | Runtime-generated local artifacts |
+
+Folder structure is documented here instead of in the banner so the top section stays focused on project identity.
 
 ---
 
