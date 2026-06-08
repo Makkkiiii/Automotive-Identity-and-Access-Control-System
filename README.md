@@ -1,8 +1,4 @@
-<p align="center">
-  <img width="100%" src="https://capsule-render.vercel.app/api?type=waving&color=0:1b171c,100:d3869b&height=180&section=header&text=AIACS&fontColor=e8d8d4&fontSize=48&animation=fadeIn" />
-</p>
-
-<h2 align="center">Automotive Identity and Access Control System</h2>
+# Automotive Identity and Access Control System
 
 <p align="center">
   A Rust-based vehicle access provisioning prototype for digital key fob registration, certificate-based authentication, secure session establishment, adversarial validation, audit reporting, and cloud-backed provisioning metadata storage.
@@ -12,18 +8,49 @@
   <img src="https://skillicons.dev/icons?i=rust" />
 </p>
 
+<p align="center"><strong>Core Stack</strong></p>
 <p align="center">
-  <img src="https://img.shields.io/badge/Vehicle_Access-Provisioning-2b2430?style=flat-square" />
-  <img src="https://img.shields.io/badge/GUI-Iced-2b2430?style=flat-square" />
-  <img src="https://img.shields.io/badge/Cloud-Neon_PostgreSQL-2b2430?style=flat-square" />
-  <img src="https://img.shields.io/badge/Crypto-Ed25519_+_X25519_+_AES--GCM-2b2430?style=flat-square" />
-  <img src="https://img.shields.io/badge/Database-PostgreSQL-2b2430?style=flat-square&logo=postgresql&logoColor=white" />
-  <img src="https://img.shields.io/badge/Language-Rust-2b2430?style=flat-square&logo=rust&logoColor=white" />
+  <img src="https://img.shields.io/badge/Rust-B7410E?style=flat-square&logo=rust&logoColor=white" />
+  <img src="https://img.shields.io/badge/Iced_GUI-7DA9D8?style=flat-square&logo=rust&logoColor=white" />
+  <img src="https://img.shields.io/badge/PostgreSQL-316192?style=flat-square&logo=postgresql&logoColor=white" />
+  <img src="https://img.shields.io/badge/Neon_Cloud-00E599?style=flat-square&logo=neon&logoColor=black" />
 </p>
 
+<p align="center"><strong>Cryptography</strong></p>
 <p align="center">
-  <img src="https://img.shields.io/badge/License-MIT-2b2430?style=flat-square" />
+  <img src="https://img.shields.io/badge/Ed25519-6D28D9?style=flat-square" />
+  <img src="https://img.shields.io/badge/X25519-7C3AED?style=flat-square" />
+  <img src="https://img.shields.io/badge/AES--GCM-0F766E?style=flat-square" />
+  <img src="https://img.shields.io/badge/HKDF--SHA256-14B8A6?style=flat-square" />
+  <img src="https://img.shields.io/badge/PKI_Certificates-8B5CF6?style=flat-square" />
 </p>
+
+<p align="center"><strong>Project Type</strong></p>
+<p align="center">
+  <img src="https://img.shields.io/badge/Vehicle_Access-Provisioning-D3869B?style=flat-square" />
+  <img src="https://img.shields.io/badge/Secure_Session-Establishment-0EA5E9?style=flat-square" />
+  <img src="https://img.shields.io/badge/Adversarial-Validation-E06C75?style=flat-square" />
+  <img src="https://img.shields.io/badge/Audit-Reporting-A78BFA?style=flat-square" />
+</p>
+
+<p align="center"><strong>Status</strong></p>
+<p align="center">
+  <img src="https://img.shields.io/badge/Local_Validation-Passing-1F7A3D?style=flat-square" />
+  <img src="https://img.shields.io/badge/Cloud_Metadata-Sync_Ready-00A36C?style=flat-square" />
+  <img src="https://img.shields.io/badge/License-MIT-2563EB?style=flat-square" />
+</p>
+
+## Technical Snapshot
+
+| Category           | Implementation        |
+| ------------------ | --------------------- |
+| Language           | Rust                  |
+| GUI                | Iced                  |
+| Database           | Neon PostgreSQL       |
+| Digital Signature  | Ed25519               |
+| Key Exchange       | X25519                |
+| Session Protection | HKDF-SHA256 + AES-GCM |
+| Trust Model        | Certificate-based PKI |
 
 The main desktop application is the **Vehicle Access Provisioning Console**. Security diagnostics are kept separate in `src/bin/aiacs_diagnostics.rs`.
 
