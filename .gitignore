@@ -18,6 +18,8 @@ Cargo.lock
 # Environment
 .env
 .env.local
+.env.*
+!.env.example
 
 # Generated files
 keys/
