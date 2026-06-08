@@ -2,6 +2,11 @@ use crate::access::{AccessDecision, AccessDecisionEngine};
 use crate::attacks::{AdversarialValidationEngine, AttackResult, AttackType};
 use crate::auth::{AuthResult, AuthenticationEngine};
 use crate::ca::{CAError, Certificate, CertificateAuthority};
+use crate::cloud_storage::{
+    demo_customer_metadata, demo_key_fob_metadata, demo_vehicle_metadata, CloudStorageClient,
+    CloudStorageError, CustomerMetadata, KeyFobMetadata, VehicleMetadata,
+    DEFAULT_CERTIFICATE_STATUS, DEMO_FOB_ID, DEMO_VEHICLE_ID,
+};
 use crate::keyfob::{DigitalKeyFob, KeyFobError};
 use crate::session::{SessionState, SessionValidationEngine};
 use crate::vehicle::{VehicleControlModule, VehicleError};
@@ -14,9 +19,9 @@ use std::io::Write;
 use std::path::PathBuf;
 
 const DEFAULT_CA_NAME: &str = "AIACS-Demo-CA";
-const DEFAULT_FOB_ID: &str = "FOB-GUI-001";
-const DEFAULT_VEHICLE_ID: &str = "VEH-GUI-001";
-const DEFAULT_SESSION_ID: &str = "SESSION-GUI-001";
+const DEFAULT_FOB_ID: &str = DEMO_FOB_ID;
+const DEFAULT_VEHICLE_ID: &str = DEMO_VEHICLE_ID;
+const DEFAULT_SESSION_ID: &str = "SESSION-0001";
 const DEFAULT_TIMEOUT_SECONDS: i64 = 60;
 const DEFAULT_LOG_DIR: &str = "logs";
 const GUI_LOG_FILE: &str = "aiacs_gui.log";
@@ -24,9 +29,9 @@ const PROTOCOL_TRACE_LOG_FILE: &str = "aiacs_protocol_trace.log";
 const PROVISIONING_REPORT_FILE: &str = "aiacs_provisioning_report.txt";
 const CA_PRIVATE_KEY_PATH: &str = "keys/ca_private.json";
 const CA_PUBLIC_KEY_PATH: &str = "keys/ca_public.json";
-const KEYFOB_PRIVATE_KEY_PATH: &str = "keys/fob_FOB-GUI-001_private.json";
-const KEYFOB_PUBLIC_KEY_PATH: &str = "keys/fob_FOB-GUI-001_public.json";
-const KEYFOB_CERTIFICATE_PATH: &str = "certs/fob_FOB-GUI-001.json";
+const KEYFOB_PRIVATE_KEY_PATH: &str = "keys/fob_FOB-0001_private.json";
+const KEYFOB_PUBLIC_KEY_PATH: &str = "keys/fob_FOB-0001_public.json";
+const KEYFOB_CERTIFICATE_PATH: &str = "certs/fob_FOB-0001.json";
 
 #[derive(Debug)]
 pub enum AppControllerError {
@@ -780,6 +785,91 @@ impl AppController {
         Ok(message)
     }
 
+    pub fn check_cloud_connection(&mut self) -> Result<String, AppControllerError> {
+        let runtime = Self::cloud_runtime()?;
+        let message = runtime
+            .block_on(async {
+                let client = CloudStorageClient::connect_from_env().await?;
+                client.health_check().await
+            })
+            .map_err(Self::map_cloud_error)?;
+
+        self.save_log_entry("[DB]", "Cloud database connection healthy")?;
+        Ok(message)
+    }
+
+    pub fn sync_customer_metadata(&mut self) -> Result<String, AppControllerError> {
+        let metadata = self.customer_metadata();
+        let runtime = Self::cloud_runtime()?;
+        let message = runtime
+            .block_on(async {
+                let client = CloudStorageClient::connect_from_env().await?;
+                client.upsert_customer(&metadata).await
+            })
+            .map_err(Self::map_cloud_error)?;
+
+        self.save_log_entry(
+            "[DB]",
+            format!("Customer metadata synced: {}", metadata.customer_id),
+        )?;
+        Ok(message)
+    }
+
+    pub fn sync_vehicle_metadata(&mut self) -> Result<String, AppControllerError> {
+        let metadata = self.vehicle_metadata();
+        let runtime = Self::cloud_runtime()?;
+        let message = runtime
+            .block_on(async {
+                let client = CloudStorageClient::connect_from_env().await?;
+                client.upsert_vehicle(&metadata).await
+            })
+            .map_err(Self::map_cloud_error)?;
+
+        self.save_log_entry(
+            "[DB]",
+            format!("Vehicle metadata synced: {}", metadata.vehicle_display_name),
+        )?;
+        Ok(message)
+    }
+
+    pub fn sync_key_fob_metadata(&mut self) -> Result<String, AppControllerError> {
+        let metadata = self.key_fob_metadata();
+        let runtime = Self::cloud_runtime()?;
+        let message = runtime
+            .block_on(async {
+                let client = CloudStorageClient::connect_from_env().await?;
+                client.upsert_key_fob(&metadata).await
+            })
+            .map_err(Self::map_cloud_error)?;
+
+        self.save_log_entry(
+            "[DB]",
+            format!("Key fob metadata synced: {}", metadata.fob_label),
+        )?;
+        Ok(message)
+    }
+
+    pub fn sync_demo_cloud_metadata(&mut self) -> Result<String, AppControllerError> {
+        let customer = self.customer_metadata();
+        let vehicle = self.vehicle_metadata();
+        let key_fob = self.key_fob_metadata();
+        let runtime = Self::cloud_runtime()?;
+        let message = runtime
+            .block_on(async {
+                let client = CloudStorageClient::connect_from_env().await?;
+                client.upsert_customer(&customer).await?;
+                client.upsert_vehicle(&vehicle).await?;
+                client.upsert_key_fob(&key_fob).await?;
+                Ok::<String, CloudStorageError>(
+                    "Demo metadata synced to cloud database".to_string(),
+                )
+            })
+            .map_err(Self::map_cloud_error)?;
+
+        self.save_log_entry("[DB]", "Demo metadata synced to company cloud database")?;
+        Ok(message)
+    }
+
     pub fn get_safe_crypto_summary(&self) -> String {
         let ca_public = self
             .ca
@@ -830,6 +920,60 @@ impl AppController {
             .as_ref()
             .and_then(|keyfob| keyfob.get_certificate().ok())
             .and_then(|cert_bytes| serde_json::from_slice(&cert_bytes).ok())
+    }
+
+    fn customer_metadata(&self) -> CustomerMetadata {
+        demo_customer_metadata()
+    }
+
+    fn vehicle_metadata(&self) -> VehicleMetadata {
+        demo_vehicle_metadata(self.provisioning_status_label())
+    }
+
+    fn key_fob_metadata(&self) -> KeyFobMetadata {
+        demo_key_fob_metadata(
+            self.key_fob_public_key_fingerprint(),
+            self.certificate_status_label(),
+            self.provisioning_status_label(),
+        )
+    }
+
+    fn key_fob_public_key_fingerprint(&self) -> Option<String> {
+        self.keyfob
+            .as_ref()
+            .and_then(|keyfob| keyfob.public_key.as_ref())
+            .map(|public_key| fingerprint(public_key))
+    }
+
+    fn certificate_status_label(&self) -> &'static str {
+        if self.current_certificate().is_some() {
+            "Issued"
+        } else {
+            DEFAULT_CERTIFICATE_STATUS
+        }
+    }
+
+    fn provisioning_status_label(&self) -> &'static str {
+        if self.session.is_some() && self.last_access_decision.is_some() {
+            "Complete"
+        } else {
+            "In Progress"
+        }
+    }
+
+    fn cloud_runtime() -> Result<tokio::runtime::Runtime, AppControllerError> {
+        tokio::runtime::Runtime::new().map_err(|_| {
+            AppControllerError::Backend("Cloud runtime initialization failed".to_string())
+        })
+    }
+
+    fn map_cloud_error(error: CloudStorageError) -> AppControllerError {
+        match error {
+            CloudStorageError::MissingDatabaseUrl => {
+                AppControllerError::Backend("Cloud database is not configured".to_string())
+            }
+            other => AppControllerError::Backend(other.to_string()),
+        }
     }
 
     fn append_key_storage_trace(
@@ -1519,6 +1663,70 @@ mod tests {
         assert!(!report.contains("private_key: ["));
 
         let _ = fs::remove_dir_all(log_dir);
+    }
+
+    #[test]
+    fn test_cloud_missing_database_url_error_is_safe_for_gui() {
+        let error = AppController::map_cloud_error(CloudStorageError::MissingDatabaseUrl);
+        let message = error.to_string();
+
+        assert_eq!(message, "Cloud database is not configured");
+        assert!(!message.contains("DATABASE_URL"));
+        assert!(!message.contains("AIACS_MASTER_KEY"));
+        assert!(!message.contains("postgresql://"));
+        assert!(!message.contains("password"));
+    }
+
+    #[test]
+    fn test_cloud_metadata_uses_generic_demo_values() {
+        let controller = AppController::new();
+        let customer = controller.customer_metadata();
+        let vehicle = controller.vehicle_metadata();
+        let key_fob = controller.key_fob_metadata();
+        let combined = format!("{customer:?}\n{vehicle:?}\n{key_fob:?}");
+
+        for expected in [
+            "CUST-0001",
+            "VEH-0001",
+            "FOB-0001",
+            "Dennis Maharjan",
+            "Nissan Magnite 2021",
+            "Primary Key Fob",
+            "dennis.m@example.com",
+        ] {
+            assert!(combined.contains(expected));
+        }
+
+        for disallowed in [
+            "CUST-GUI-001",
+            "VEH-GUI-001",
+            "FOB-GUI-001",
+            "SESSION-GUI-001",
+            "demo@example.com",
+        ] {
+            assert!(!combined.contains(disallowed));
+        }
+    }
+
+    #[test]
+    fn test_cloud_metadata_does_not_include_secret_upload_fields() {
+        let controller = AppController::new();
+        let customer = controller.customer_metadata();
+        let vehicle = controller.vehicle_metadata();
+        let key_fob = controller.key_fob_metadata();
+        let combined = format!("{customer:?}\n{vehicle:?}\n{key_fob:?}").to_lowercase();
+
+        for secret_marker in [
+            "private_key",
+            "root_private_key",
+            "session_key",
+            "shared_secret",
+            "raw aes",
+            "encrypted_key_blob",
+            "certificate_json",
+        ] {
+            assert!(!combined.contains(secret_marker));
+        }
     }
 
     #[test]

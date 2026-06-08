@@ -1,4 +1,4 @@
-use aiacs::app_controller::AppController;
+use aiacs::app_controller::{AppController, AppControllerError};
 use chrono::Local;
 use iced::alignment;
 use iced::theme;
@@ -9,18 +9,18 @@ use iced::{
 };
 
 const OWNER_NAME: &str = "Dennis Maharjan";
-const CUSTOMER_ID: &str = "CUST-GUI-001";
-const CUSTOMER_EMAIL: &str = "demo@example.com";
+const CUSTOMER_ID: &str = "CUST-0001";
+const CUSTOMER_EMAIL: &str = "dennis.m@example.com";
 const CUSTOMER_PHONE: &str = "+977-9800000000";
 const VEHICLE_DISPLAY_NAME: &str = "Nissan Magnite 2021";
-const TECH_VEHICLE_ID: &str = "VEH-GUI-001";
+const TECH_VEHICLE_ID: &str = "VEH-0001";
 const VEHICLE_MAKE: &str = "Nissan";
 const VEHICLE_MODEL: &str = "Magnite";
 const VEHICLE_YEAR: &str = "2021";
 const VEHICLE_VIN: &str = "VIN-DEMO-001";
 const VEHICLE_REGISTRATION: &str = "BA-00-PA-0001";
 const KEY_FOB_LABEL: &str = "Primary Key Fob";
-const TECH_KEY_FOB_ID: &str = "FOB-GUI-001";
+const TECH_KEY_FOB_ID: &str = "FOB-0001";
 const ICON_DIR: &str = "assets/icons";
 
 const WINDOW_BG: Color = Color::from_rgb(0.105, 0.09, 0.11);
@@ -56,6 +56,9 @@ struct AIACSApp {
     management_state: ManagementState,
     selected_tab: MainTab,
     selected_artifact: ArtifactSection,
+    cloud_status: String,
+    last_metadata_sync_status: String,
+    last_metadata_sync_time: String,
     selected_detail: String,
     event_log: Vec<String>,
 }
@@ -126,6 +129,7 @@ enum MainTab {
     Provisioning,
     ProtocolArtifacts,
     CredentialStorage,
+    CloudStorage,
     LogsReport,
     Diagnostics,
 }
@@ -161,6 +165,11 @@ enum Message {
     VerifyAuthentication,
     ActivateSecureChannel,
     LaunchDiagnosticsTool,
+    CheckCloudConnection,
+    SyncCustomerMetadata,
+    SyncVehicleMetadata,
+    SyncKeyFobMetadata,
+    SyncDemoMetadata,
     ClearLog,
     ExportLogs,
     ExportProvisioningReport,
@@ -188,6 +197,9 @@ impl Sandbox for AIACSApp {
             management_state: ManagementState::default(),
             selected_tab: MainTab::Dashboard,
             selected_artifact: ArtifactSection::ChallengeMessage,
+            cloud_status: "Disconnected".to_string(),
+            last_metadata_sync_status: "Not synced".to_string(),
+            last_metadata_sync_time: "N/A".to_string(),
             selected_detail: "Provisioning console ready. Initialize vehicle trust to begin."
                 .to_string(),
             event_log: initial_messages
@@ -459,6 +471,52 @@ impl Sandbox for AIACSApp {
                     self.push_log("[ERROR]", format!("Diagnostics launch failed: {}", error));
                 }
             },
+            Message::CheckCloudConnection => match self.controller.check_cloud_connection() {
+                Ok(message) => {
+                    self.cloud_status = "Connected".to_string();
+                    self.selected_detail = message.clone();
+                    self.push_log("[DB]", message);
+                }
+                Err(error) => {
+                    self.cloud_status = "Error".to_string();
+                    self.selected_detail = format!("Cloud connection check failed: {}", error);
+                    self.push_log("[DB]", format!("Cloud connection check failed: {}", error));
+                }
+            },
+            Message::SyncCustomerMetadata => match self.controller.sync_customer_metadata() {
+                Ok(message) => {
+                    self.record_metadata_sync(message.clone());
+                    self.push_log("[DB]", format!("Customer metadata synced: {}", CUSTOMER_ID));
+                }
+                Err(error) => self.record_metadata_sync_error(error),
+            },
+            Message::SyncVehicleMetadata => match self.controller.sync_vehicle_metadata() {
+                Ok(message) => {
+                    self.record_metadata_sync(message.clone());
+                    self.push_log(
+                        "[DB]",
+                        format!("Vehicle metadata synced: {}", VEHICLE_DISPLAY_NAME),
+                    );
+                }
+                Err(error) => self.record_metadata_sync_error(error),
+            },
+            Message::SyncKeyFobMetadata => match self.controller.sync_key_fob_metadata() {
+                Ok(message) => {
+                    self.record_metadata_sync(message.clone());
+                    self.push_log(
+                        "[DB]",
+                        format!("Key fob metadata synced: {}", KEY_FOB_LABEL),
+                    );
+                }
+                Err(error) => self.record_metadata_sync_error(error),
+            },
+            Message::SyncDemoMetadata => match self.controller.sync_demo_cloud_metadata() {
+                Ok(message) => {
+                    self.record_metadata_sync(message.clone());
+                    self.push_log("[DB]", "Demo metadata synced to company cloud database");
+                }
+                Err(error) => self.record_metadata_sync_error(error),
+            },
             Message::ClearLog => match self.controller.clear_logs() {
                 Ok(message) => {
                     self.event_log.clear();
@@ -551,6 +609,12 @@ impl AIACSApp {
                         self.selected_tab,
                     ),
                     tab_button(
+                        "shield",
+                        "Cloud Storage",
+                        MainTab::CloudStorage,
+                        self.selected_tab,
+                    ),
+                    tab_button(
                         "terminal",
                         "Logs / Report",
                         MainTab::LogsReport,
@@ -583,6 +647,7 @@ impl AIACSApp {
             MainTab::Provisioning => self.view_provisioning_tab(),
             MainTab::ProtocolArtifacts => self.view_protocol_artifacts_tab(),
             MainTab::CredentialStorage => self.view_credential_storage_tab(),
+            MainTab::CloudStorage => self.view_cloud_storage_tab(),
             MainTab::LogsReport => self.view_logs_report_tab(),
             MainTab::Diagnostics => self.view_diagnostics_tab(),
         }
@@ -1424,6 +1489,90 @@ impl AIACSApp {
             .into()
     }
 
+    fn view_cloud_storage_tab(&self) -> Element<'_, Message> {
+        row![
+            container(
+                column![
+                    text("Cloud Storage")
+                        .size(18)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(ACCENT_PINK)),
+                    text("Safe customer, vehicle, and key fob metadata sync only.")
+                        .size(12)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(SECONDARY_TEXT)),
+                    self.artifact_detail_row("Cloud DB Status", self.cloud_status.clone()),
+                    self.artifact_detail_row("Provider", "Neon PostgreSQL"),
+                    self.artifact_detail_row("Storage Mode", "Company Cloud DB"),
+                    self.artifact_detail_row("Sync Scope", "Customer / Vehicle / Key Fob Metadata"),
+                    self.artifact_detail_row(
+                        "Last Metadata Sync Status",
+                        self.last_metadata_sync_status.clone()
+                    ),
+                    self.artifact_detail_row(
+                        "Last Metadata Sync Time",
+                        self.last_metadata_sync_time.clone()
+                    ),
+                ]
+                .spacing(8),
+            )
+            .width(Length::FillPortion(4))
+            .height(Length::Fill)
+            .padding(14)
+            .style(container_style(PanelKind::Panel)),
+            container(
+                column![
+                    text("Metadata Sync Controls")
+                        .size(18)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(ACCENT_PINK)),
+                    text("No keys, sessions, certificates, audit logs, or diagnostics are uploaded in this phase.")
+                        .size(12)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(SECONDARY_TEXT)),
+                    compact_button(
+                        "shield",
+                        "Check Cloud Connection",
+                        Message::CheckCloudConnection,
+                        ButtonKind::Nav
+                    ),
+                    compact_button(
+                        "auth",
+                        "Sync Customer Metadata",
+                        Message::SyncCustomerMetadata,
+                        ButtonKind::Nav
+                    ),
+                    compact_button(
+                        "vehicle",
+                        "Sync Vehicle Metadata",
+                        Message::SyncVehicleMetadata,
+                        ButtonKind::Nav
+                    ),
+                    compact_button(
+                        "key",
+                        "Sync Key Fob Metadata",
+                        Message::SyncKeyFobMetadata,
+                        ButtonKind::Nav
+                    ),
+                    compact_button(
+                        "terminal",
+                        "Sync Demo Metadata",
+                        Message::SyncDemoMetadata,
+                        ButtonKind::Nav
+                    ),
+                ]
+                .spacing(8),
+            )
+            .width(Length::FillPortion(2))
+            .height(Length::Fill)
+            .padding(14)
+            .style(container_style(PanelKind::Elevated)),
+        ]
+        .spacing(10)
+        .height(Length::Fill)
+        .into()
+    }
+
     fn view_logs_report_tab(&self) -> Element<'_, Message> {
         column![
             row![self.view_event_log(), self.view_protocol_trace_panel(),]
@@ -1649,7 +1798,7 @@ impl AIACSApp {
                     ("Status", self.certificate_artifact_status().to_string()),
                     ("Subject ID", TECH_KEY_FOB_ID.to_string()),
                     ("Issuer", "AIACS-Demo-CA".to_string()),
-                    ("Certificate Path", "certs/fob_FOB-GUI-001.json".to_string()),
+                    ("Certificate Path", "certs/fob_FOB-0001.json".to_string()),
                     (
                         "Public Key",
                         "Fingerprint only; see credential storage".to_string(),
@@ -1896,6 +2045,21 @@ impl AIACSApp {
         message: Message,
     ) -> Element<'a, Message> {
         styled_button(icon_name, label, message, ButtonKind::Nav)
+    }
+
+    fn record_metadata_sync(&mut self, message: String) {
+        self.cloud_status = "Connected".to_string();
+        self.last_metadata_sync_status = message.clone();
+        self.last_metadata_sync_time = Local::now().format("%H:%M:%S").to_string();
+        self.selected_detail = message;
+    }
+
+    fn record_metadata_sync_error(&mut self, error: AppControllerError) {
+        self.cloud_status = "Error".to_string();
+        self.last_metadata_sync_status = format!("Metadata sync failed: {}", error);
+        self.last_metadata_sync_time = Local::now().format("%H:%M:%S").to_string();
+        self.selected_detail = self.last_metadata_sync_status.clone();
+        self.push_log("[DB]", self.last_metadata_sync_status.clone());
     }
 
     fn push_log(&mut self, tag: &str, message: impl AsRef<str>) {

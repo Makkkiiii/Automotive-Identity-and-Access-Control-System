@@ -6,6 +6,23 @@ const ENV_FILE: &str = ".env.local";
 const DATABASE_URL_ENV: &str = "DATABASE_URL";
 const HEALTHY_MESSAGE: &str = "Cloud database connection healthy";
 const SCHEMA_INITIALIZED_MESSAGE: &str = "Cloud database schema initialized";
+const CUSTOMER_SYNCED_MESSAGE: &str = "Customer metadata synced";
+const VEHICLE_SYNCED_MESSAGE: &str = "Vehicle metadata synced";
+const KEY_FOB_SYNCED_MESSAGE: &str = "Key fob metadata synced";
+const DEMO_METADATA_SYNCED_MESSAGE: &str = "Demo metadata synced to cloud database";
+
+pub const DEMO_CUSTOMER_ID: &str = "CUST-0001";
+pub const DEMO_OWNER_NAME: &str = "Dennis Maharjan";
+pub const DEMO_EMAIL: &str = "dennis.m@example.com";
+pub const DEMO_VEHICLE_ID: &str = "VEH-0001";
+pub const DEMO_VEHICLE_DISPLAY_NAME: &str = "Nissan Magnite 2021";
+pub const DEMO_VEHICLE_MAKE: &str = "Nissan";
+pub const DEMO_VEHICLE_MODEL: &str = "Magnite";
+pub const DEMO_VEHICLE_YEAR: i32 = 2021;
+pub const DEMO_FOB_ID: &str = "FOB-0001";
+pub const DEMO_FOB_LABEL: &str = "Primary Key Fob";
+pub const DEFAULT_PROVISIONING_STATUS: &str = "In Progress";
+pub const DEFAULT_CERTIFICATE_STATUS: &str = "Pending";
 
 const SCHEMA_STATEMENTS: &[&str] = &[
     r#"
@@ -112,6 +129,135 @@ CREATE TABLE IF NOT EXISTS diagnostic_results (
 "#,
 ];
 
+const UPSERT_CUSTOMER_SQL: &str = r#"
+INSERT INTO customers (
+    customer_id,
+    owner_name,
+    email,
+    phone,
+    created_at
+) VALUES ($1, $2, $3, $4, NOW())
+ON CONFLICT (customer_id) DO UPDATE SET
+    owner_name = EXCLUDED.owner_name,
+    email = EXCLUDED.email,
+    phone = EXCLUDED.phone;
+"#;
+
+const UPSERT_VEHICLE_SQL: &str = r#"
+INSERT INTO vehicles (
+    vehicle_id,
+    customer_id,
+    vehicle_display_name,
+    make,
+    model,
+    year,
+    vin,
+    registration_number,
+    provisioning_status,
+    created_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+ON CONFLICT (vehicle_id) DO UPDATE SET
+    customer_id = EXCLUDED.customer_id,
+    vehicle_display_name = EXCLUDED.vehicle_display_name,
+    make = EXCLUDED.make,
+    model = EXCLUDED.model,
+    year = EXCLUDED.year,
+    vin = EXCLUDED.vin,
+    registration_number = EXCLUDED.registration_number,
+    provisioning_status = EXCLUDED.provisioning_status;
+"#;
+
+const UPSERT_KEY_FOB_SQL: &str = r#"
+INSERT INTO key_fobs (
+    fob_id,
+    vehicle_id,
+    customer_id,
+    fob_label,
+    public_key_fingerprint,
+    certificate_status,
+    provisioning_status,
+    created_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+ON CONFLICT (fob_id) DO UPDATE SET
+    vehicle_id = EXCLUDED.vehicle_id,
+    customer_id = EXCLUDED.customer_id,
+    fob_label = EXCLUDED.fob_label,
+    public_key_fingerprint = EXCLUDED.public_key_fingerprint,
+    certificate_status = EXCLUDED.certificate_status,
+    provisioning_status = EXCLUDED.provisioning_status;
+"#;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomerMetadata {
+    pub customer_id: String,
+    pub owner_name: String,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VehicleMetadata {
+    pub vehicle_id: String,
+    pub customer_id: String,
+    pub vehicle_display_name: String,
+    pub make: Option<String>,
+    pub model: Option<String>,
+    pub year: Option<i32>,
+    pub vin: Option<String>,
+    pub registration_number: Option<String>,
+    pub provisioning_status: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyFobMetadata {
+    pub fob_id: String,
+    pub vehicle_id: String,
+    pub customer_id: String,
+    pub fob_label: String,
+    pub public_key_fingerprint: Option<String>,
+    pub certificate_status: Option<String>,
+    pub provisioning_status: Option<String>,
+}
+
+pub fn demo_customer_metadata() -> CustomerMetadata {
+    CustomerMetadata {
+        customer_id: DEMO_CUSTOMER_ID.to_string(),
+        owner_name: DEMO_OWNER_NAME.to_string(),
+        email: Some(DEMO_EMAIL.to_string()),
+        phone: None,
+    }
+}
+
+pub fn demo_vehicle_metadata(provisioning_status: impl Into<String>) -> VehicleMetadata {
+    VehicleMetadata {
+        vehicle_id: DEMO_VEHICLE_ID.to_string(),
+        customer_id: DEMO_CUSTOMER_ID.to_string(),
+        vehicle_display_name: DEMO_VEHICLE_DISPLAY_NAME.to_string(),
+        make: Some(DEMO_VEHICLE_MAKE.to_string()),
+        model: Some(DEMO_VEHICLE_MODEL.to_string()),
+        year: Some(DEMO_VEHICLE_YEAR),
+        vin: None,
+        registration_number: None,
+        provisioning_status: Some(provisioning_status.into()),
+    }
+}
+
+pub fn demo_key_fob_metadata(
+    public_key_fingerprint: Option<String>,
+    certificate_status: impl Into<String>,
+    provisioning_status: impl Into<String>,
+) -> KeyFobMetadata {
+    KeyFobMetadata {
+        fob_id: DEMO_FOB_ID.to_string(),
+        vehicle_id: DEMO_VEHICLE_ID.to_string(),
+        customer_id: DEMO_CUSTOMER_ID.to_string(),
+        fob_label: DEMO_FOB_LABEL.to_string(),
+        public_key_fingerprint,
+        certificate_status: Some(certificate_status.into()),
+        provisioning_status: Some(provisioning_status.into()),
+    }
+}
+
 pub struct CloudStorageConfig {
     database_url: String,
 }
@@ -174,6 +320,76 @@ impl CloudStorageClient {
 
         Ok(schema_initialized_message().to_string())
     }
+
+    pub async fn upsert_customer(
+        &self,
+        metadata: &CustomerMetadata,
+    ) -> Result<String, CloudStorageError> {
+        sqlx::query(UPSERT_CUSTOMER_SQL)
+            .bind(&metadata.customer_id)
+            .bind(&metadata.owner_name)
+            .bind(metadata.email.as_deref())
+            .bind(metadata.phone.as_deref())
+            .execute(&self.pool)
+            .await
+            .map_err(|_| CloudStorageError::MetadataSyncFailed)?;
+
+        Ok(CUSTOMER_SYNCED_MESSAGE.to_string())
+    }
+
+    pub async fn upsert_vehicle(
+        &self,
+        metadata: &VehicleMetadata,
+    ) -> Result<String, CloudStorageError> {
+        sqlx::query(UPSERT_VEHICLE_SQL)
+            .bind(&metadata.vehicle_id)
+            .bind(&metadata.customer_id)
+            .bind(&metadata.vehicle_display_name)
+            .bind(metadata.make.as_deref())
+            .bind(metadata.model.as_deref())
+            .bind(metadata.year)
+            .bind(metadata.vin.as_deref())
+            .bind(metadata.registration_number.as_deref())
+            .bind(metadata.provisioning_status.as_deref())
+            .execute(&self.pool)
+            .await
+            .map_err(|_| CloudStorageError::MetadataSyncFailed)?;
+
+        Ok(VEHICLE_SYNCED_MESSAGE.to_string())
+    }
+
+    pub async fn upsert_key_fob(
+        &self,
+        metadata: &KeyFobMetadata,
+    ) -> Result<String, CloudStorageError> {
+        sqlx::query(UPSERT_KEY_FOB_SQL)
+            .bind(&metadata.fob_id)
+            .bind(&metadata.vehicle_id)
+            .bind(&metadata.customer_id)
+            .bind(&metadata.fob_label)
+            .bind(metadata.public_key_fingerprint.as_deref())
+            .bind(metadata.certificate_status.as_deref())
+            .bind(metadata.provisioning_status.as_deref())
+            .execute(&self.pool)
+            .await
+            .map_err(|_| CloudStorageError::MetadataSyncFailed)?;
+
+        Ok(KEY_FOB_SYNCED_MESSAGE.to_string())
+    }
+
+    pub async fn sync_demo_metadata(&self) -> Result<String, CloudStorageError> {
+        self.upsert_customer(&demo_customer_metadata()).await?;
+        self.upsert_vehicle(&demo_vehicle_metadata(DEFAULT_PROVISIONING_STATUS))
+            .await?;
+        self.upsert_key_fob(&demo_key_fob_metadata(
+            None,
+            DEFAULT_CERTIFICATE_STATUS,
+            DEFAULT_PROVISIONING_STATUS,
+        ))
+        .await?;
+
+        Ok(DEMO_METADATA_SYNCED_MESSAGE.to_string())
+    }
 }
 
 impl fmt::Debug for CloudStorageClient {
@@ -190,6 +406,7 @@ pub enum CloudStorageError {
     ConnectionFailed,
     HealthCheckFailed,
     SchemaInitializationFailed,
+    MetadataSyncFailed,
 }
 
 impl fmt::Display for CloudStorageError {
@@ -203,6 +420,7 @@ impl fmt::Display for CloudStorageError {
             CloudStorageError::SchemaInitializationFailed => {
                 f.write_str("Cloud database schema initialization failed")
             }
+            CloudStorageError::MetadataSyncFailed => f.write_str("Cloud metadata sync failed"),
         }
     }
 }
@@ -216,6 +434,11 @@ fn schema_initialized_message() -> &'static str {
 #[cfg(test)]
 fn schema_sql() -> String {
     SCHEMA_STATEMENTS.join("\n")
+}
+
+#[cfg(test)]
+fn metadata_sync_sql() -> String {
+    [UPSERT_CUSTOMER_SQL, UPSERT_VEHICLE_SQL, UPSERT_KEY_FOB_SQL].join("\n")
 }
 
 #[cfg(test)]
@@ -327,6 +550,95 @@ mod tests {
         assert!(!message.contains("postgresql://"));
     }
 
+    #[test]
+    fn metadata_upsert_sql_uses_on_conflict() {
+        let sql = metadata_sync_sql();
+
+        assert!(sql.contains("ON CONFLICT (customer_id) DO UPDATE"));
+        assert!(sql.contains("ON CONFLICT (vehicle_id) DO UPDATE"));
+        assert!(sql.contains("ON CONFLICT (fob_id) DO UPDATE"));
+    }
+
+    #[test]
+    fn metadata_sync_sql_does_not_contain_secret_env_names() {
+        let sql = metadata_sync_sql();
+
+        assert!(!sql.contains("DATABASE_URL"));
+        assert!(!sql.contains("AIACS_MASTER_KEY"));
+        assert!(!sql.contains(SAMPLE_DATABASE_URL));
+    }
+
+    #[test]
+    fn metadata_sync_sql_does_not_upload_key_or_session_secret_fields() {
+        let sql = metadata_sync_sql().to_lowercase();
+
+        assert!(!sql.contains("private_key"));
+        assert!(!sql.contains("raw_key"));
+        assert!(!sql.contains("session_key"));
+        assert!(!sql.contains("shared_secret"));
+        assert!(!sql.contains("encrypted_key_blob"));
+        assert!(!sql.contains("certificate_json"));
+    }
+
+    #[test]
+    fn safe_sync_messages_do_not_contain_secrets() {
+        for message in [
+            CUSTOMER_SYNCED_MESSAGE,
+            VEHICLE_SYNCED_MESSAGE,
+            KEY_FOB_SYNCED_MESSAGE,
+            DEMO_METADATA_SYNCED_MESSAGE,
+        ] {
+            assert!(!message.contains("DATABASE_URL"));
+            assert!(!message.contains("AIACS_MASTER_KEY"));
+            assert!(!message.contains("postgresql://"));
+            assert!(!message.contains("private_key"));
+        }
+    }
+
+    #[test]
+    fn demo_metadata_uses_generic_realistic_values() {
+        let customer = demo_customer_metadata();
+        let vehicle = demo_vehicle_metadata(DEFAULT_PROVISIONING_STATUS);
+        let key_fob = demo_key_fob_metadata(
+            Some("SHA256:abcd1234".to_string()),
+            DEFAULT_CERTIFICATE_STATUS,
+            DEFAULT_PROVISIONING_STATUS,
+        );
+        let combined = format!("{customer:?}\n{vehicle:?}\n{key_fob:?}");
+
+        assert!(combined.contains("CUST-0001"));
+        assert!(combined.contains("VEH-0001"));
+        assert!(combined.contains("FOB-0001"));
+        assert!(combined.contains("Dennis Maharjan"));
+        assert!(combined.contains("Nissan Magnite 2021"));
+        assert!(combined.contains("Primary Key Fob"));
+        assert!(combined.contains("dennis.m@example.com"));
+    }
+
+    #[test]
+    fn demo_metadata_does_not_use_gui_specific_values() {
+        let customer = demo_customer_metadata();
+        let vehicle = demo_vehicle_metadata(DEFAULT_PROVISIONING_STATUS);
+        let key_fob = demo_key_fob_metadata(
+            None,
+            DEFAULT_CERTIFICATE_STATUS,
+            DEFAULT_PROVISIONING_STATUS,
+        );
+        let combined = format!("{customer:?}\n{vehicle:?}\n{key_fob:?}");
+
+        for disallowed in [
+            "CUST-GUI-001",
+            "VEH-GUI-001",
+            "FOB-GUI-001",
+            "SESSION-GUI-001",
+            "demo@example.com",
+            "Vehicle 1",
+            "Vehicle 2",
+        ] {
+            assert!(!combined.contains(disallowed));
+        }
+    }
+
     #[tokio::test]
     async fn live_cloud_database_health_check_is_opt_in() {
         if env::var("AIACS_RUN_LIVE_DB_TESTS").ok().as_deref() != Some("1") {
@@ -340,12 +652,40 @@ mod tests {
             .initialize_schema()
             .await
             .expect("live DB schema initialization should succeed");
+        let sync = client
+            .sync_demo_metadata()
+            .await
+            .expect("live DB demo metadata sync should succeed");
         let health = client
             .health_check()
             .await
             .expect("live DB health check should succeed");
 
         assert_eq!(schema, SCHEMA_INITIALIZED_MESSAGE);
+        assert_eq!(sync, DEMO_METADATA_SYNCED_MESSAGE);
         assert_eq!(health, HEALTHY_MESSAGE);
+
+        let customer_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM customers WHERE customer_id = $1);")
+                .bind(DEMO_CUSTOMER_ID)
+                .fetch_one(&client.pool)
+                .await
+                .expect("customer verification should query");
+        let vehicle_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM vehicles WHERE vehicle_id = $1);")
+                .bind(DEMO_VEHICLE_ID)
+                .fetch_one(&client.pool)
+                .await
+                .expect("vehicle verification should query");
+        let key_fob_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM key_fobs WHERE fob_id = $1);")
+                .bind(DEMO_FOB_ID)
+                .fetch_one(&client.pool)
+                .await
+                .expect("key fob verification should query");
+
+        assert!(customer_exists);
+        assert!(vehicle_exists);
+        assert!(key_fob_exists);
     }
 }
