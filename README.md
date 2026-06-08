@@ -61,18 +61,18 @@ AIACS is an academic prototype. It is designed to demonstrate protocol structure
 
 ## Key Features
 
-| Area | Capability |
-| --- | --- |
-| Vehicle provisioning | Dealer/technician-side flow for customer, vehicle, and digital key fob setup |
-| Certificate authority | Root trust initialization and CA-signed key fob certificate issuance |
-| Authentication | Ed25519 challenge-response authentication with PKI validation |
-| Replay protection | Nonce freshness, nonce reuse detection, and timestamp validation |
-| Secure session | X25519 key agreement, HKDF-SHA256 derivation, and AES-GCM authenticated encryption |
-| Access decisions | Structured grant/reject decisions with displayable denial reasons |
-| Diagnostics | Separate adversarial validation tool for controlled protocol testing |
-| Audit reporting | Human-readable provisioning report with redacted secrets |
-| Cloud metadata | Neon PostgreSQL schema creation and safe customer/vehicle/key fob metadata sync |
-| Secret handling | Public debug/log/report output redacts private keys and session secrets |
+| Area                  | Capability                                                                         |
+| --------------------- | ---------------------------------------------------------------------------------- |
+| Vehicle provisioning  | Dealer/technician-side flow for customer, vehicle, and digital key fob setup       |
+| Certificate authority | Root trust initialization and CA-signed key fob certificate issuance               |
+| Authentication        | Ed25519 challenge-response authentication with PKI validation                      |
+| Replay protection     | Nonce freshness, nonce reuse detection, and timestamp validation                   |
+| Secure session        | X25519 key agreement, HKDF-SHA256 derivation, and AES-GCM authenticated encryption |
+| Access decisions      | Structured grant/reject decisions with displayable denial reasons                  |
+| Diagnostics           | Separate adversarial validation tool for controlled protocol testing               |
+| Audit reporting       | Human-readable provisioning report with redacted secrets                           |
+| Cloud metadata        | Neon PostgreSQL schema creation and safe customer/vehicle/key fob metadata sync    |
+| Secret handling       | Public debug/log/report output redacts private keys and session secrets            |
 
 ---
 
@@ -106,19 +106,19 @@ The GUI calls `AppController` only. `AppController` is the safe application faca
 
 ### Module Map
 
-| Module | Purpose |
-| --- | --- |
-| `src/app_controller/mod.rs` | GUI-safe facade for provisioning, diagnostics launch, reports, logs, and cloud metadata operations |
-| `src/ca/mod.rs` | Certificate authority initialization, certificate issuance, and chain validation |
-| `src/crypto/mod.rs` | Ed25519, AES-GCM, hashing, nonce generation, and key helpers |
-| `src/keyfob/mod.rs` | Digital key fob identity, key generation, challenge signing, certificate storage |
-| `src/vehicle/mod.rs` | Vehicle nonce generation, replay tracking, and freshness checks |
-| `src/auth/mod.rs` | Authentication proof validation and `AuthResult` generation |
-| `src/session/mod.rs` | X25519, HKDF-SHA256, AES-GCM session establishment and validation |
-| `src/access/mod.rs` | Access grant/reject decision evaluation |
-| `src/attacks/mod.rs` | Adversarial validation scenarios |
-| `src/cloud_storage/mod.rs` | Neon/PostgreSQL connection, schema creation, and safe metadata sync |
-| `src/bin/aiacs_diagnostics.rs` | Separate diagnostics executable |
+| Module                         | Purpose                                                                                            |
+| ------------------------------ | -------------------------------------------------------------------------------------------------- |
+| `src/app_controller/mod.rs`    | GUI-safe facade for provisioning, diagnostics launch, reports, logs, and cloud metadata operations |
+| `src/ca/mod.rs`                | Certificate authority initialization, certificate issuance, and chain validation                   |
+| `src/crypto/mod.rs`            | Ed25519, AES-GCM, hashing, nonce generation, and key helpers                                       |
+| `src/keyfob/mod.rs`            | Digital key fob identity, key generation, challenge signing, certificate storage                   |
+| `src/vehicle/mod.rs`           | Vehicle nonce generation, replay tracking, and freshness checks                                    |
+| `src/auth/mod.rs`              | Authentication proof validation and `AuthResult` generation                                        |
+| `src/session/mod.rs`           | X25519, HKDF-SHA256, AES-GCM session establishment and validation                                  |
+| `src/access/mod.rs`            | Access grant/reject decision evaluation                                                            |
+| `src/attacks/mod.rs`           | Adversarial validation scenarios                                                                   |
+| `src/cloud_storage/mod.rs`     | Neon/PostgreSQL connection, schema creation, and safe metadata sync                                |
+| `src/bin/aiacs_diagnostics.rs` | Separate diagnostics executable                                                                    |
 
 ### Cloud Data Model
 
@@ -168,14 +168,14 @@ sequenceDiagram
 
 ### Provisioning Stages
 
-| Stage | Actions |
-| --- | --- |
-| Vehicle Connection | Connect vehicle |
-| Key Fob Setup | Detect key fob, register key fob |
-| Certificate Provisioning | Initialize vehicle trust, issue access certificate, view certificate details |
-| Authentication Verification | Generate challenge, sign canonical payload, verify authentication |
-| Secure Session | Activate secure session |
-| Finalize | Export provisioning report, sync safe metadata |
+| Stage                       | Actions                                                                      |
+| --------------------------- | ---------------------------------------------------------------------------- |
+| Vehicle Connection          | Connect vehicle                                                              |
+| Key Fob Setup               | Detect key fob, register key fob                                             |
+| Certificate Provisioning    | Initialize vehicle trust, issue access certificate, view certificate details |
+| Authentication Verification | Generate challenge, sign canonical payload, verify authentication            |
+| Secure Session              | Activate secure session                                                      |
+| Finalize                    | Export provisioning report, sync safe metadata                               |
 
 ---
 
@@ -185,33 +185,33 @@ The GUI uses stable demonstration records suitable for academic presentation and
 
 ### Customer
 
-| Field | Value |
-| --- | --- |
-| `customer_id` | `CUST-0001` |
-| `owner_name` | `Dennis Maharjan` |
-| `email` | `dennis.m@example.com` |
+| Field         | Value                |
+| ------------- | -------------------- |
+| `customer_id` | `CUST-0001`          |
+| `owner_name`  | `XYZ `               |
+| `email`       | `XYZZ.m@example.com` |
 
 ### Vehicle
 
-| Field | Value |
-| --- | --- |
-| `vehicle_id` | `VEH-0001` |
-| `vehicle_display_name` | `Nissan Magnite 2021` |
-| `make` | `Nissan` |
-| `model` | `Magnite` |
-| `year` | `2021` |
+| Field                  | Value      |
+| ---------------------- | ---------- |
+| `vehicle_id`           | `VEH-0001` |
+| `vehicle_display_name` | `Nissan`   |
+| `make`                 | `Nissan`   |
+| `model`                | `Magnite`  |
+| `year`                 | `2023`     |
 
 ### Key Fob
 
-| Field | Value |
-| --- | --- |
-| `fob_id` | `FOB-0001` |
+| Field       | Value             |
+| ----------- | ----------------- |
+| `fob_id`    | `FOB-0001`        |
 | `fob_label` | `Primary Key Fob` |
 
 ### Session
 
-| Field | Value |
-| --- | --- |
+| Field        | Value          |
+| ------------ | -------------- |
 | `session_id` | `SESSION-0001` |
 
 The README uses only the current generic demo records shown above.
@@ -222,18 +222,18 @@ The README uses only the current generic demo records shown above.
 
 The desktop GUI is organized as a multi-page vehicle provisioning console.
 
-| Page | Purpose |
-| --- | --- |
-| Dashboard | High-level overview of active customer, selected vehicle, registered key fob, and provisioning status |
-| Customers | Demo customer/owner details and GUI-only customer actions |
-| Vehicles | Selected vehicle details, technical ID, make/model/year, and owner association |
-| Key Fobs | Digital key fob details, certificate state, public fingerprint, and redacted private key state |
-| Provisioning | Primary staged workflow for normal vehicle access provisioning |
+| Page               | Purpose                                                                                                                                  |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Dashboard          | High-level overview of active customer, selected vehicle, registered key fob, and provisioning status                                    |
+| Customers          | Demo customer/owner details and GUI-only customer actions                                                                                |
+| Vehicles           | Selected vehicle details, technical ID, make/model/year, and owner association                                                           |
+| Key Fobs           | Digital key fob details, certificate state, public fingerprint, and redacted private key state                                           |
+| Provisioning       | Primary staged workflow for normal vehicle access provisioning                                                                           |
 | Protocol Artifacts | Selectable protocol artifacts such as challenge message, authentication proof, certificate details, session summary, and access decision |
-| Credential Storage | Safe credential paths, fingerprints, storage mode, and `[REDACTED]` private key values |
-| Logs / Report | Event log, protocol trace, export report action, and clear log action |
-| Diagnostics | Launch page for the separate diagnostics tool |
-| Cloud Storage | Neon connection health check and safe metadata sync controls |
+| Credential Storage | Safe credential paths, fingerprints, storage mode, and `[REDACTED]` private key values                                                   |
+| Logs / Report      | Event log, protocol trace, export report action, and clear log action                                                                    |
+| Diagnostics        | Launch page for the separate diagnostics tool                                                                                            |
+| Cloud Storage      | Neon connection health check and safe metadata sync controls                                                                             |
 
 Diagnostics are not part of the normal provisioning workflow. The main GUI launches diagnostics separately and does not show attack buttons inside the provisioning page.
 
@@ -255,14 +255,14 @@ flowchart TD
 
 ### Authentication Checks
 
-| Check | Expected Success Condition |
-| --- | --- |
-| Certificate chain | The trusted CA returns `Ok(true)` for the key fob certificate |
-| Certificate validity | Certificate is within its validity window |
-| Subject binding | Authentication proof subject matches certificate subject |
-| Signature | Ed25519 verification succeeds over the canonical payload |
-| Freshness | Nonce timestamp is inside the configured freshness window |
-| Replay protection | Nonce has not already been used |
+| Check                 | Expected Success Condition                                                         |
+| --------------------- | ---------------------------------------------------------------------------------- |
+| Certificate chain     | The trusted CA returns `Ok(true)` for the key fob certificate                      |
+| Certificate validity  | Certificate is within its validity window                                          |
+| Subject binding       | Authentication proof subject matches certificate subject                           |
+| Signature             | Ed25519 verification succeeds over the canonical payload                           |
+| Freshness             | Nonce timestamp is inside the configured freshness window                          |
+| Replay protection     | Nonce has not already been used                                                    |
 | Session establishment | X25519/HKDF/AES-GCM session material is established without exposing raw key bytes |
 
 Certificate validation is strict: only `Ok(true)` from CA validation is accepted. `Ok(false)` and `Err(_)` are rejected.
@@ -277,17 +277,17 @@ Diagnostics are run through the separate binary:
 cargo run --bin aiacs_diagnostics
 ```
 
-| Attack | Expected Outcome |
-| --- | --- |
-| Replay Attack | Rejected because reused nonce is detected |
-| Forged Signature | Rejected because Ed25519 verification fails |
-| Fake Certificate | Rejected because CA validation fails |
-| Identity Mismatch | Rejected because proof subject and certificate subject do not match |
-| Delayed Relay | Rejected because freshness timeout fails |
-| Packet Tampering | Rejected because payload/signature binding fails |
-| Unauthorized Key Fob | Rejected because identity is not authorized |
-| Tampered Ciphertext | Rejected because AES-GCM integrity check fails |
-| Wrong Session Key | Rejected because session decryption/integrity validation fails |
+| Attack               | Expected Outcome                                                    |
+| -------------------- | ------------------------------------------------------------------- |
+| Replay Attack        | Rejected because reused nonce is detected                           |
+| Forged Signature     | Rejected because Ed25519 verification fails                         |
+| Fake Certificate     | Rejected because CA validation fails                                |
+| Identity Mismatch    | Rejected because proof subject and certificate subject do not match |
+| Delayed Relay        | Rejected because freshness timeout fails                            |
+| Packet Tampering     | Rejected because payload/signature binding fails                    |
+| Unauthorized Key Fob | Rejected because identity is not authorized                         |
+| Tampered Ciphertext  | Rejected because AES-GCM integrity check fails                      |
+| Wrong Session Key    | Rejected because session decryption/integrity validation fails      |
 
 The diagnostics tool exercises the real protocol path through `AppController`. It does not bypass the authentication engine or duplicate CA validation logic.
 
@@ -299,25 +299,25 @@ AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metada
 
 ### Completed Cloud Phases
 
-| Phase | Status | Scope |
-| --- | --- | --- |
-| Cloud Phase 1 | Complete | Environment safety, `.env.example`, dependency setup |
-| Cloud Phase 2 | Complete | Neon/PostgreSQL connection and health check |
+| Phase         | Status   | Scope                                                       |
+| ------------- | -------- | ----------------------------------------------------------- |
+| Cloud Phase 1 | Complete | Environment safety, `.env.example`, dependency setup        |
+| Cloud Phase 2 | Complete | Neon/PostgreSQL connection and health check                 |
 | Cloud Phase 3 | Complete | Automatic schema creation with `CREATE TABLE IF NOT EXISTS` |
-| Cloud Phase 4 | Complete | Safe customer, vehicle, and key fob metadata sync |
+| Cloud Phase 4 | Complete | Safe customer, vehicle, and key fob metadata sync           |
 
 ### Tables
 
-| Table | Purpose |
-| --- | --- |
-| `customers` | Owner/customer metadata |
-| `vehicles` | Vehicle metadata and provisioning status |
-| `key_fobs` | Key fob labels, fingerprints, certificate status, provisioning status |
-| `certificates` | Certificate metadata for future cloud sync |
-| `encrypted_keys` | Future encrypted private key blobs only, never plaintext private keys |
-| `provisioning_sessions` | Future provisioning session records |
-| `audit_logs` | Future cloud audit log records |
-| `diagnostic_results` | Future diagnostics result records |
+| Table                   | Purpose                                                               |
+| ----------------------- | --------------------------------------------------------------------- |
+| `customers`             | Owner/customer metadata                                               |
+| `vehicles`              | Vehicle metadata and provisioning status                              |
+| `key_fobs`              | Key fob labels, fingerprints, certificate status, provisioning status |
+| `certificates`          | Certificate metadata for future cloud sync                            |
+| `encrypted_keys`        | Future encrypted private key blobs only, never plaintext private keys |
+| `provisioning_sessions` | Future provisioning session records                                   |
+| `audit_logs`            | Future cloud audit log records                                        |
+| `diagnostic_results`    | Future diagnostics result records                                     |
 
 ### Current Behavior
 
@@ -329,11 +329,11 @@ AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metada
 
 ### Planned Cloud Work
 
-| Planned Phase | Scope |
-| --- | --- |
-| Cloud Phase 5 | Client-side encrypted private key blob upload |
+| Planned Phase | Scope                                                  |
+| ------------- | ------------------------------------------------------ |
+| Cloud Phase 5 | Client-side encrypted private key blob upload          |
 | Cloud Phase 6 | Certificate, session, audit, and diagnostic cloud sync |
-| Cloud Phase 7 | Cloud GUI polish and richer metadata views |
+| Cloud Phase 7 | Cloud GUI polish and richer metadata views             |
 
 ---
 
@@ -414,11 +414,11 @@ SELECT * FROM key_fobs;
 
 Expected demo records:
 
-| Table | Expected Record |
-| --- | --- |
-| `customers` | `CUST-0001` / `Dennis Maharjan` |
-| `vehicles` | `VEH-0001` / `Nissan Magnite 2021` |
-| `key_fobs` | `FOB-0001` / `Primary Key Fob` |
+| Table       | Expected Record                |
+| ----------- | ------------------------------ |
+| `customers` | `CUST-0001` / `XYZ`            |
+| `vehicles`  | `VEH-0001` / `Nissan `         |
+| `key_fobs`  | `FOB-0001` / `Primary Key Fob` |
 
 ---
 
@@ -515,13 +515,13 @@ AIACS_RUN_LIVE_DB_TESTS=1 cargo test cloud -- --nocapture
 
 Current validation status:
 
-| Area | Status |
-| --- | --- |
-| Unit tests | 147+ tests |
-| Diagnostics | Separate from main provisioning console |
-| Cloud tests | Normal tests do not require a live database |
+| Area                    | Status                                       |
+| ----------------------- | -------------------------------------------- |
+| Unit tests              | 147+ tests                                   |
+| Diagnostics             | Separate from main provisioning console      |
+| Cloud tests             | Normal tests do not require a live database  |
 | Live cloud verification | Available behind `AIACS_RUN_LIVE_DB_TESTS=1` |
-| Secret redaction | Covered by Debug/log/report tests |
+| Secret redaction        | Covered by Debug/log/report tests            |
 
 ---
 
@@ -571,13 +571,7 @@ All secrets must remain redacted. Reports may include safe metadata, certificate
 
 ## Screenshots
 
-> Add screenshots to `docs/screenshots/` and update the links below.
-
-![Dashboard](docs/screenshots/dashboard.png)
-![Provisioning Workflow](docs/screenshots/provisioning.png)
-![Protocol Artifacts](docs/screenshots/protocol-artifacts.png)
-![Cloud Storage](docs/screenshots/cloud-storage.png)
-![Diagnostics Tool](docs/screenshots/diagnostics.png)
+> Yet to be added.
 
 ---
 
@@ -615,19 +609,19 @@ Allowed in GUI, logs, reports, or cloud metadata:
 
 ## Development Status
 
-| Area | Status |
-| --- | --- |
-| Core cryptography | Implemented for prototype use |
-| Certificate authority | Implemented |
-| Authentication engine | Implemented with strict certificate validation |
-| Secure session | Implemented with X25519, HKDF-SHA256, and AES-GCM |
-| Access decisions | Implemented |
-| Main GUI | Implemented as Vehicle Access Provisioning Console |
-| Diagnostics binary | Implemented separately |
-| Audit reports | Implemented with redaction |
-| Cloud schema | Implemented |
-| Safe cloud metadata sync | Implemented |
-| Encrypted private key cloud upload | Planned |
+| Area                               | Status                                             |
+| ---------------------------------- | -------------------------------------------------- |
+| Core cryptography                  | Implemented for prototype use                      |
+| Certificate authority              | Implemented                                        |
+| Authentication engine              | Implemented with strict certificate validation     |
+| Secure session                     | Implemented with X25519, HKDF-SHA256, and AES-GCM  |
+| Access decisions                   | Implemented                                        |
+| Main GUI                           | Implemented as Vehicle Access Provisioning Console |
+| Diagnostics binary                 | Implemented separately                             |
+| Audit reports                      | Implemented with redaction                         |
+| Cloud schema                       | Implemented                                        |
+| Safe cloud metadata sync           | Implemented                                        |
+| Encrypted private key cloud upload | Planned                                            |
 
 ---
 
