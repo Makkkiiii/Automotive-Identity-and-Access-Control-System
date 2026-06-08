@@ -124,82 +124,49 @@ AIACS is an academic prototype. It is designed to demonstrate protocol structure
 
 AIACS is organized around a GUI-safe controller facade and backend modules for cryptographic provisioning, authentication, session handling, diagnostics, and cloud metadata storage.
 
-<table>
-  <thead>
-    <tr>
-      <th>Area</th>
-      <th>Path</th>
-      <th>Role</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img width="16" src="https://api.iconify.design/lucide/package.svg?color=%23d3869b" alt="package" /> Project manifest</td>
-      <td><code>Cargo.toml</code>, <code>Cargo.lock</code></td>
-      <td>Rust package metadata and reproducible dependency lockfile</td>
-    </tr>
-    <tr>
-      <td><img width="16" src="https://api.iconify.design/lucide/file-text.svg?color=%237da9d8" alt="document" /> Documentation</td>
-      <td><code>README.md</code>, <code>LICENSE</code>, <code>.env.example</code></td>
-      <td>Project documentation, license, and safe environment placeholders</td>
-    </tr>
-    <tr>
-      <td><img width="16" src="https://api.iconify.design/lucide/image.svg?color=%23d3869b" alt="assets" /> GUI assets</td>
-      <td><code>assets/icons/</code></td>
-      <td>Local SVG icons used by the desktop interface</td>
-    </tr>
-    <tr>
-      <td><img width="16" src="https://api.iconify.design/lucide/monitor.svg?color=%237da9d8" alt="monitor" /> GUI entry point</td>
-      <td><code>src/main.rs</code></td>
-      <td>Iced desktop GUI presentation layer</td>
-    </tr>
-    <tr>
-      <td><img width="16" src="https://api.iconify.design/lucide/library.svg?color=%23a7d28d" alt="library" /> Library root</td>
-      <td><code>src/lib.rs</code></td>
-      <td>Exports backend modules for the application and diagnostics binary</td>
-    </tr>
-    <tr>
-      <td><img width="16" src="https://api.iconify.design/lucide/route.svg?color=%23e6c384" alt="controller" /> Controller facade</td>
-      <td><code>src/app_controller/</code></td>
-      <td>Safe application facade used by the GUI and diagnostics tool</td>
-    </tr>
-    <tr>
-      <td><img width="16" src="https://api.iconify.design/lucide/shield-check.svg?color=%23a7d28d" alt="certificate authority" /> Trust and certificates</td>
-      <td><code>src/ca/</code>, <code>src/auth/</code></td>
-      <td>Certificate authority, certificate validation, and PKI authentication</td>
-    </tr>
-    <tr>
-      <td><img width="16" src="https://api.iconify.design/lucide/key-round.svg?color=%23d3869b" alt="key" /> Key fob and crypto</td>
-      <td><code>src/keyfob/</code>, <code>src/crypto/</code></td>
-      <td>Digital key fob identity, keys, signatures, hashing, and encryption helpers</td>
-    </tr>
-    <tr>
-      <td><img width="16" src="https://api.iconify.design/lucide/car.svg?color=%237da9d8" alt="vehicle" /> Vehicle access</td>
-      <td><code>src/vehicle/</code>, <code>src/access/</code></td>
-      <td>Vehicle nonce management and access decision evaluation</td>
-    </tr>
-    <tr>
-      <td><img width="16" src="https://api.iconify.design/lucide/lock.svg?color=%23a7d28d" alt="session" /> Secure session</td>
-      <td><code>src/session/</code></td>
-      <td>Secure session establishment and validation</td>
-    </tr>
-    <tr>
-      <td><img width="16" src="https://api.iconify.design/lucide/radar.svg?color=%23e06c75" alt="diagnostics" /> Diagnostics</td>
-      <td><code>src/attacks/</code>, <code>src/bin/aiacs_diagnostics.rs</code></td>
-      <td>Adversarial validation scenarios and separate diagnostics executable</td>
-    </tr>
-    <tr>
-      <td><img width="16" src="https://api.iconify.design/lucide/database.svg?color=%2300e599" alt="database" /> Cloud storage</td>
-      <td><code>src/cloud_storage/</code></td>
-      <td>Neon/PostgreSQL connection, schema, and safe metadata sync</td>
-    </tr>
-    <tr>
-      <td><img width="16" src="https://api.iconify.design/lucide/archive.svg?color=%238f7f82" alt="runtime artifacts" /> Runtime artifacts</td>
-      <td><code>certs/</code>, <code>keys/</code>, <code>logs/</code>, <code>target/</code></td>
-      <td>Generated certificates, local keys, logs, reports, and build outputs</td>
-    </tr>
-  </tbody>
-</table>
+<div>
+  <p><img width="17" src="https://api.iconify.design/lucide/folder-root.svg?color=%23d3869b" alt="root" /> <strong><code>Cryptography/</code></strong></p>
+  <ul>
+    <li><img width="15" src="https://api.iconify.design/lucide/file-cog.svg?color=%23e6c384" alt="manifest" /> <code>Cargo.toml</code></li>
+    <li><img width="15" src="https://api.iconify.design/lucide/file-lock-2.svg?color=%23e6c384" alt="lockfile" /> <code>Cargo.lock</code></li>
+    <li><img width="15" src="https://api.iconify.design/lucide/file-text.svg?color=%237da9d8" alt="readme" /> <code>README.md</code></li>
+    <li><img width="15" src="https://api.iconify.design/lucide/scale.svg?color=%237da9d8" alt="license" /> <code>LICENSE</code></li>
+    <li><img width="15" src="https://api.iconify.design/lucide/file-key-2.svg?color=%238f7f82" alt="env example" /> <code>.env.example</code></li>
+    <li>
+      <img width="15" src="https://api.iconify.design/lucide/folder.svg?color=%23d3869b" alt="folder" /> <code>assets/</code>
+      <ul>
+        <li><img width="15" src="https://api.iconify.design/lucide/image.svg?color=%23d3869b" alt="icons" /> <code>icons/</code></li>
+      </ul>
+    </li>
+    <li>
+      <img width="15" src="https://api.iconify.design/lucide/folder-code.svg?color=%237da9d8" alt="source" /> <code>src/</code>
+      <ul>
+        <li><img width="15" src="https://api.iconify.design/lucide/monitor.svg?color=%237da9d8" alt="gui" /> <code>main.rs</code></li>
+        <li><img width="15" src="https://api.iconify.design/lucide/library.svg?color=%23a7d28d" alt="library" /> <code>lib.rs</code></li>
+        <li><img width="15" src="https://api.iconify.design/lucide/route.svg?color=%23e6c384" alt="controller" /> <code>app_controller/</code></li>
+        <li><img width="15" src="https://api.iconify.design/lucide/badge-check.svg?color=%23a7d28d" alt="access" /> <code>access/</code></li>
+        <li><img width="15" src="https://api.iconify.design/lucide/radar.svg?color=%23e06c75" alt="attacks" /> <code>attacks/</code></li>
+        <li><img width="15" src="https://api.iconify.design/lucide/fingerprint.svg?color=%23d3869b" alt="auth" /> <code>auth/</code></li>
+        <li><img width="15" src="https://api.iconify.design/lucide/shield-check.svg?color=%23a7d28d" alt="certificate authority" /> <code>ca/</code></li>
+        <li><img width="15" src="https://api.iconify.design/lucide/database.svg?color=%2300e599" alt="cloud storage" /> <code>cloud_storage/</code></li>
+        <li><img width="15" src="https://api.iconify.design/lucide/key-round.svg?color=%23d3869b" alt="crypto" /> <code>crypto/</code></li>
+        <li><img width="15" src="https://api.iconify.design/lucide/key-square.svg?color=%23d3869b" alt="keyfob" /> <code>keyfob/</code></li>
+        <li><img width="15" src="https://api.iconify.design/lucide/lock.svg?color=%23a7d28d" alt="session" /> <code>session/</code></li>
+        <li><img width="15" src="https://api.iconify.design/lucide/car.svg?color=%237da9d8" alt="vehicle" /> <code>vehicle/</code></li>
+        <li>
+          <img width="15" src="https://api.iconify.design/lucide/folder-terminal.svg?color=%23e6c384" alt="binary" /> <code>bin/</code>
+          <ul>
+            <li><img width="15" src="https://api.iconify.design/lucide/terminal.svg?color=%23e6c384" alt="diagnostics binary" /> <code>aiacs_diagnostics.rs</code></li>
+          </ul>
+        </li>
+      </ul>
+    </li>
+    <li><img width="15" src="https://api.iconify.design/lucide/folder-check.svg?color=%23a7d28d" alt="certificates" /> <code>certs/</code></li>
+    <li><img width="15" src="https://api.iconify.design/lucide/folder-key.svg?color=%23d3869b" alt="keys" /> <code>keys/</code></li>
+    <li><img width="15" src="https://api.iconify.design/lucide/folder-clock.svg?color=%237da9d8" alt="logs" /> <code>logs/</code></li>
+    <li><img width="15" src="https://api.iconify.design/lucide/folder-git-2.svg?color=%238f7f82" alt="target" /> <code>target/</code></li>
+  </ul>
+</div>
 
 Folder structure is documented here instead of in the banner so the top section stays focused on project identity.
 
