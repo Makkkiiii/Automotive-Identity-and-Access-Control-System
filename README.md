@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://skillicons.dev/icons?i=rust,postgres,github" />
+  <img src="https://skillicons.dev/icons?i=rust" />
 </p>
 
 <p align="center"><strong>Core Stack</strong></p>
@@ -154,20 +154,20 @@ Cryptography/
 `-- target/
 ```
 
-| Path | Role |
-| --- | --- |
-| `src/main.rs` | Iced desktop GUI presentation layer |
-| `src/app_controller/` | Safe application facade used by the GUI and diagnostics tool |
-| `src/ca/` | Certificate authority and certificate validation |
-| `src/keyfob/` | Digital key fob identity, keys, certificates, and authentication proofs |
-| `src/auth/` | Authentication engine and PKI challenge-response validation |
-| `src/session/` | Secure session establishment and validation |
-| `src/access/` | Access decision evaluation |
-| `src/attacks/` | Adversarial validation scenarios |
-| `src/cloud_storage/` | Neon/PostgreSQL connection, schema, and safe metadata sync |
-| `src/bin/aiacs_diagnostics.rs` | Separate diagnostics executable |
-| `assets/icons/` | Local SVG icons used by the GUI |
-| `certs/`, `keys/`, `logs/` | Runtime-generated local artifacts |
+| Path                           | Role                                                                    |
+| ------------------------------ | ----------------------------------------------------------------------- |
+| `src/main.rs`                  | Iced desktop GUI presentation layer                                     |
+| `src/app_controller/`          | Safe application facade used by the GUI and diagnostics tool            |
+| `src/ca/`                      | Certificate authority and certificate validation                        |
+| `src/keyfob/`                  | Digital key fob identity, keys, certificates, and authentication proofs |
+| `src/auth/`                    | Authentication engine and PKI challenge-response validation             |
+| `src/session/`                 | Secure session establishment and validation                             |
+| `src/access/`                  | Access decision evaluation                                              |
+| `src/attacks/`                 | Adversarial validation scenarios                                        |
+| `src/cloud_storage/`           | Neon/PostgreSQL connection, schema, and safe metadata sync              |
+| `src/bin/aiacs_diagnostics.rs` | Separate diagnostics executable                                         |
+| `assets/icons/`                | Local SVG icons used by the GUI                                         |
+| `certs/`, `keys/`, `logs/`     | Runtime-generated local artifacts                                       |
 
 Folder structure is documented here instead of in the banner so the top section stays focused on project identity.
 
@@ -394,15 +394,6 @@ The diagnostics tool exercises the real protocol path through `AppController`. I
 
 AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metadata.
 
-### Completed Cloud Phases
-
-| Phase         | Status   | Scope                                                       |
-| ------------- | -------- | ----------------------------------------------------------- |
-| Cloud Phase 1 | Complete | Environment safety, `.env.example`, dependency setup        |
-| Cloud Phase 2 | Complete | Neon/PostgreSQL connection and health check                 |
-| Cloud Phase 3 | Complete | Automatic schema creation with `CREATE TABLE IF NOT EXISTS` |
-| Cloud Phase 4 | Complete | Safe customer, vehicle, and key fob metadata sync           |
-
 ### Tables
 
 | Table                   | Purpose                                                               |
@@ -423,14 +414,6 @@ AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metada
 - Raw private keys are not uploaded.
 - Certificate JSON, session records, audit logs, diagnostics, and encrypted key blobs are not uploaded in the current metadata phase.
 - Encrypted private key blob upload is planned for a future cloud phase.
-
-### Planned Cloud Work
-
-| Planned Phase | Scope                                                  |
-| ------------- | ------------------------------------------------------ |
-| Cloud Phase 5 | Client-side encrypted private key blob upload          |
-| Cloud Phase 6 | Certificate, session, audit, and diagnostic cloud sync |
-| Cloud Phase 7 | Cloud GUI polish and richer metadata views             |
 
 ---
 
