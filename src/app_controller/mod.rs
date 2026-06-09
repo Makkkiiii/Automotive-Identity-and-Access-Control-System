@@ -3,9 +3,11 @@ use crate::attacks::{AdversarialValidationEngine, AttackResult, AttackType};
 use crate::auth::{AuthResult, AuthenticationEngine};
 use crate::ca::{CAError, Certificate, CertificateAuthority};
 use crate::cloud_storage::{
-    demo_customer_metadata, demo_key_fob_metadata, demo_vehicle_metadata, CloudStorageClient,
-    CloudStorageError, CustomerMetadata, KeyFobMetadata, VehicleMetadata,
-    DEFAULT_CERTIFICATE_STATUS, DEMO_FOB_ID, DEMO_VEHICLE_ID,
+    demo_customer_metadata, demo_key_fob_metadata, demo_vehicle_metadata,
+    encrypt_private_key_for_cloud, parse_master_key_from_env, CloudStorageClient,
+    CloudStorageError, CustomerMetadata, EncryptedKeyRecord, KeyFobMetadata, VehicleMetadata,
+    CA_ENCRYPTED_KEY_ID, CA_KEY_PURPOSE, DEFAULT_CERTIFICATE_STATUS, DEMO_FOB_ID, DEMO_VEHICLE_ID,
+    ENCRYPTED_KEY_STORAGE_STATUS, KEY_FOB_ENCRYPTED_KEY_ID, KEY_FOB_KEY_PURPOSE,
 };
 use crate::keyfob::{DigitalKeyFob, KeyFobError};
 use crate::session::{SessionState, SessionValidationEngine};
@@ -870,6 +872,85 @@ impl AppController {
         Ok(message)
     }
 
+    pub fn sync_ca_encrypted_key_blob(&mut self) -> Result<String, AppControllerError> {
+        self.ca_private_key_material()?;
+        let master_key = parse_master_key_from_env().map_err(Self::map_cloud_error)?;
+        let record = self.ca_encrypted_key_record(&master_key)?;
+        let runtime = Self::cloud_runtime()?;
+        let message = runtime
+            .block_on(async {
+                let client = CloudStorageClient::connect_from_env().await?;
+                client.upsert_encrypted_key(&record).await
+            })
+            .map_err(Self::map_cloud_error)?;
+
+        self.save_log_entry(
+            "[DB]",
+            format!("CA encrypted key blob uploaded: {}", CA_ENCRYPTED_KEY_ID),
+        )?;
+        self.save_log_entry("[DB]", "Raw private key material: [REDACTED]")?;
+        self.save_log_entry(
+            "[DB]",
+            "Protection: Client-side AES-256-GCM encryption before upload",
+        )?;
+        Ok(message)
+    }
+
+    pub fn sync_key_fob_encrypted_key_blob(&mut self) -> Result<String, AppControllerError> {
+        self.key_fob_private_key_material()?;
+        let master_key = parse_master_key_from_env().map_err(Self::map_cloud_error)?;
+        let record = self.key_fob_encrypted_key_record(&master_key)?;
+        let runtime = Self::cloud_runtime()?;
+        let message = runtime
+            .block_on(async {
+                let client = CloudStorageClient::connect_from_env().await?;
+                client.upsert_encrypted_key(&record).await
+            })
+            .map_err(Self::map_cloud_error)?;
+
+        self.save_log_entry(
+            "[DB]",
+            format!(
+                "Key fob encrypted key blob uploaded: {}",
+                KEY_FOB_ENCRYPTED_KEY_ID
+            ),
+        )?;
+        self.save_log_entry("[DB]", "Raw private key material: [REDACTED]")?;
+        self.save_log_entry(
+            "[DB]",
+            "Protection: Client-side AES-256-GCM encryption before upload",
+        )?;
+        Ok(message)
+    }
+
+    pub fn sync_encrypted_key_blobs(&mut self) -> Result<String, AppControllerError> {
+        self.ca_private_key_material()?;
+        self.key_fob_private_key_material()?;
+        let master_key = parse_master_key_from_env().map_err(Self::map_cloud_error)?;
+        let ca_record = self.ca_encrypted_key_record(&master_key)?;
+        let key_fob_record = self.key_fob_encrypted_key_record(&master_key)?;
+        let runtime = Self::cloud_runtime()?;
+        let message = runtime
+            .block_on(async {
+                let client = CloudStorageClient::connect_from_env().await?;
+                client
+                    .sync_demo_encrypted_key_blobs(&ca_record, &key_fob_record)
+                    .await
+            })
+            .map_err(Self::map_cloud_error)?;
+
+        self.save_log_entry(
+            "[DB]",
+            "Encrypted key blobs synced to company cloud database",
+        )?;
+        self.save_log_entry("[DB]", "Raw private key material: [REDACTED]")?;
+        self.save_log_entry(
+            "[DB]",
+            "Protection: Client-side AES-256-GCM encryption before upload",
+        )?;
+        Ok(message)
+    }
+
     pub fn get_safe_crypto_summary(&self) -> String {
         let ca_public = self
             .ca
@@ -943,6 +1024,78 @@ impl AppController {
             .as_ref()
             .and_then(|keyfob| keyfob.public_key.as_ref())
             .map(|public_key| fingerprint(public_key))
+    }
+
+    fn ca_private_key_material(&self) -> Result<&[u8], AppControllerError> {
+        self.ca
+            .as_ref()
+            .and_then(|ca| ca.root_private_key.as_deref())
+            .ok_or_else(|| {
+                AppControllerError::Backend(
+                    "Private key material is not available for encrypted cloud upload".to_string(),
+                )
+            })
+    }
+
+    fn key_fob_private_key_material(&self) -> Result<&[u8], AppControllerError> {
+        self.keyfob
+            .as_ref()
+            .and_then(|keyfob| keyfob.private_key.as_deref())
+            .ok_or_else(|| {
+                AppControllerError::Backend(
+                    "Private key material is not available for encrypted cloud upload".to_string(),
+                )
+            })
+    }
+
+    fn ca_encrypted_key_record(
+        &self,
+        master_key: &[u8; 32],
+    ) -> Result<EncryptedKeyRecord, AppControllerError> {
+        let ca = self.ca.as_ref().ok_or_else(|| {
+            AppControllerError::Backend(
+                "Private key material is not available for encrypted cloud upload".to_string(),
+            )
+        })?;
+        let private_key = self.ca_private_key_material()?;
+        let public_fingerprint = ca.root_public_key.as_ref().map(|key| fingerprint(key));
+        let encrypted_key = encrypt_private_key_for_cloud(private_key, master_key)
+            .map_err(Self::map_cloud_error)?;
+
+        Ok(EncryptedKeyRecord {
+            key_id: CA_ENCRYPTED_KEY_ID.to_string(),
+            owner_type: "ca".to_string(),
+            owner_id: DEFAULT_CA_NAME.to_string(),
+            public_key_fingerprint: public_fingerprint,
+            key_purpose: CA_KEY_PURPOSE.to_string(),
+            storage_status: ENCRYPTED_KEY_STORAGE_STATUS.to_string(),
+            encrypted_key,
+        })
+    }
+
+    fn key_fob_encrypted_key_record(
+        &self,
+        master_key: &[u8; 32],
+    ) -> Result<EncryptedKeyRecord, AppControllerError> {
+        let keyfob = self.keyfob.as_ref().ok_or_else(|| {
+            AppControllerError::Backend(
+                "Private key material is not available for encrypted cloud upload".to_string(),
+            )
+        })?;
+        let private_key = self.key_fob_private_key_material()?;
+        let public_fingerprint = keyfob.public_key.as_ref().map(|key| fingerprint(key));
+        let encrypted_key = encrypt_private_key_for_cloud(private_key, master_key)
+            .map_err(Self::map_cloud_error)?;
+
+        Ok(EncryptedKeyRecord {
+            key_id: KEY_FOB_ENCRYPTED_KEY_ID.to_string(),
+            owner_type: "key_fob".to_string(),
+            owner_id: DEFAULT_FOB_ID.to_string(),
+            public_key_fingerprint: public_fingerprint,
+            key_purpose: KEY_FOB_KEY_PURPOSE.to_string(),
+            storage_status: ENCRYPTED_KEY_STORAGE_STATUS.to_string(),
+            encrypted_key,
+        })
     }
 
     fn certificate_status_label(&self) -> &'static str {
@@ -1727,6 +1880,91 @@ mod tests {
         ] {
             assert!(!combined.contains(secret_marker));
         }
+    }
+
+    #[test]
+    fn test_encrypted_key_sync_methods_return_safe_error_without_key_material() {
+        let mut controller = AppController::new();
+
+        for result in [
+            controller.sync_ca_encrypted_key_blob(),
+            controller.sync_key_fob_encrypted_key_blob(),
+            controller.sync_encrypted_key_blobs(),
+        ] {
+            let message = result
+                .expect_err("missing key material should fail")
+                .to_string();
+
+            assert_eq!(
+                message,
+                "Private key material is not available for encrypted cloud upload"
+            );
+            assert!(!message.contains("DATABASE_URL"));
+            assert!(!message.contains("AIACS_MASTER_KEY"));
+            assert!(!message.contains("private_key"));
+            assert!(!message.contains("encrypted_key_blob"));
+            assert!(!message.contains("encryption_nonce"));
+        }
+    }
+
+    #[test]
+    fn test_app_controller_encrypted_key_records_are_safe() {
+        let mut controller = AppController::new();
+        let master_key = [11u8; 32];
+
+        controller.initialize_ca().expect("CA init failed");
+        controller
+            .issue_keyfob_certificate()
+            .expect("certificate issuance failed");
+
+        let ca_private_key_debug = format!(
+            "{:?}",
+            controller
+                .ca
+                .as_ref()
+                .unwrap()
+                .root_private_key
+                .as_ref()
+                .unwrap()
+        );
+        let fob_private_key_debug = format!(
+            "{:?}",
+            controller
+                .keyfob
+                .as_ref()
+                .unwrap()
+                .private_key
+                .as_ref()
+                .unwrap()
+        );
+
+        let ca_record = controller
+            .ca_encrypted_key_record(&master_key)
+            .expect("CA encrypted key record should build");
+        let fob_record = controller
+            .key_fob_encrypted_key_record(&master_key)
+            .expect("key fob encrypted key record should build");
+        let debug = format!("{ca_record:?}\n{fob_record:?}");
+
+        assert_eq!(ca_record.key_id, CA_ENCRYPTED_KEY_ID);
+        assert_eq!(ca_record.owner_type, "ca");
+        assert_eq!(ca_record.owner_id, DEFAULT_CA_NAME);
+        assert_eq!(ca_record.key_purpose, CA_KEY_PURPOSE);
+        assert_eq!(fob_record.key_id, KEY_FOB_ENCRYPTED_KEY_ID);
+        assert_eq!(fob_record.owner_type, "key_fob");
+        assert_eq!(fob_record.owner_id, DEFAULT_FOB_ID);
+        assert_eq!(fob_record.key_purpose, KEY_FOB_KEY_PURPOSE);
+        assert_eq!(ca_record.encrypted_key.encryption_algorithm, "AES-256-GCM");
+        assert_eq!(fob_record.encrypted_key.encryption_algorithm, "AES-256-GCM");
+        assert!(!ca_record.encrypted_key.encrypted_key_blob.is_empty());
+        assert!(!fob_record.encrypted_key.encrypted_key_blob.is_empty());
+        assert_eq!(ca_record.encrypted_key.encryption_nonce.len(), 12);
+        assert_eq!(fob_record.encrypted_key.encryption_nonce.len(), 12);
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains(&ca_private_key_debug));
+        assert!(!debug.contains(&fob_private_key_debug));
+        assert!(!debug.contains("AIACS_MASTER_KEY"));
+        assert!(!debug.contains("DATABASE_URL"));
     }
 
     #[test]

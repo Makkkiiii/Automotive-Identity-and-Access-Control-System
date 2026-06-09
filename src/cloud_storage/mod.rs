@@ -1,15 +1,26 @@
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Nonce,
+};
+use base64::{engine::general_purpose, Engine as _};
+use rand::{rngs::OsRng, RngCore};
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use std::env;
 use std::fmt;
 
 const ENV_FILE: &str = ".env.local";
 const DATABASE_URL_ENV: &str = "DATABASE_URL";
+const MASTER_KEY_ENV: &str = "AIACS_MASTER_KEY";
 const HEALTHY_MESSAGE: &str = "Cloud database connection healthy";
 const SCHEMA_INITIALIZED_MESSAGE: &str = "Cloud database schema initialized";
 const CUSTOMER_SYNCED_MESSAGE: &str = "Customer metadata synced";
 const VEHICLE_SYNCED_MESSAGE: &str = "Vehicle metadata synced";
 const KEY_FOB_SYNCED_MESSAGE: &str = "Key fob metadata synced";
 const DEMO_METADATA_SYNCED_MESSAGE: &str = "Demo metadata synced to cloud database";
+pub const CA_ENCRYPTED_KEY_SYNCED_MESSAGE: &str = "CA encrypted key blob uploaded";
+pub const KEY_FOB_ENCRYPTED_KEY_SYNCED_MESSAGE: &str = "Key fob encrypted key blob uploaded";
+pub const ENCRYPTED_KEY_BLOBS_SYNCED_MESSAGE: &str =
+    "Encrypted key blobs synced to company cloud database";
 
 pub const DEMO_CUSTOMER_ID: &str = "CUST-0001";
 pub const DEMO_OWNER_NAME: &str = "Dennis Maharjan";
@@ -23,6 +34,12 @@ pub const DEMO_FOB_ID: &str = "FOB-0001";
 pub const DEMO_FOB_LABEL: &str = "Primary Key Fob";
 pub const DEFAULT_PROVISIONING_STATUS: &str = "In Progress";
 pub const DEFAULT_CERTIFICATE_STATUS: &str = "Pending";
+pub const CA_ENCRYPTED_KEY_ID: &str = "KEY-CA-0001";
+pub const KEY_FOB_ENCRYPTED_KEY_ID: &str = "KEY-FOB-0001";
+pub const ENCRYPTED_KEY_ALGORITHM: &str = "AES-256-GCM";
+pub const ENCRYPTED_KEY_STORAGE_STATUS: &str = "Client-side encrypted cloud blob";
+pub const CA_KEY_PURPOSE: &str = "certificate_authority_signing";
+pub const KEY_FOB_KEY_PURPOSE: &str = "key_fob_authentication_signing";
 
 const SCHEMA_STATEMENTS: &[&str] = &[
     r#"
@@ -187,6 +204,30 @@ ON CONFLICT (fob_id) DO UPDATE SET
     provisioning_status = EXCLUDED.provisioning_status;
 "#;
 
+const UPSERT_ENCRYPTED_KEY_SQL: &str = r#"
+INSERT INTO encrypted_keys (
+    key_id,
+    owner_type,
+    owner_id,
+    public_key_fingerprint,
+    encrypted_key_blob,
+    encryption_nonce,
+    encryption_algorithm,
+    key_purpose,
+    storage_status,
+    created_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+ON CONFLICT (key_id) DO UPDATE SET
+    owner_type = EXCLUDED.owner_type,
+    owner_id = EXCLUDED.owner_id,
+    public_key_fingerprint = EXCLUDED.public_key_fingerprint,
+    encrypted_key_blob = EXCLUDED.encrypted_key_blob,
+    encryption_nonce = EXCLUDED.encryption_nonce,
+    encryption_algorithm = EXCLUDED.encryption_algorithm,
+    key_purpose = EXCLUDED.key_purpose,
+    storage_status = EXCLUDED.storage_status;
+"#;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CustomerMetadata {
     pub customer_id: String,
@@ -217,6 +258,54 @@ pub struct KeyFobMetadata {
     pub public_key_fingerprint: Option<String>,
     pub certificate_status: Option<String>,
     pub provisioning_status: Option<String>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct EncryptedKeyBlob {
+    pub encrypted_key_blob: Vec<u8>,
+    pub encryption_nonce: Vec<u8>,
+    pub encryption_algorithm: String,
+}
+
+impl fmt::Debug for EncryptedKeyBlob {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EncryptedKeyBlob")
+            .field(
+                "encrypted_key_blob",
+                &format!("{} bytes [REDACTED]", self.encrypted_key_blob.len()),
+            )
+            .field(
+                "encryption_nonce",
+                &format!("{} bytes [REDACTED]", self.encryption_nonce.len()),
+            )
+            .field("encryption_algorithm", &self.encryption_algorithm)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct EncryptedKeyRecord {
+    pub key_id: String,
+    pub owner_type: String,
+    pub owner_id: String,
+    pub public_key_fingerprint: Option<String>,
+    pub key_purpose: String,
+    pub storage_status: String,
+    pub encrypted_key: EncryptedKeyBlob,
+}
+
+impl fmt::Debug for EncryptedKeyRecord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EncryptedKeyRecord")
+            .field("key_id", &self.key_id)
+            .field("owner_type", &self.owner_type)
+            .field("owner_id", &self.owner_id)
+            .field("public_key_fingerprint", &self.public_key_fingerprint)
+            .field("key_purpose", &self.key_purpose)
+            .field("storage_status", &self.storage_status)
+            .field("encrypted_key", &self.encrypted_key)
+            .finish()
+    }
 }
 
 pub fn demo_customer_metadata() -> CustomerMetadata {
@@ -256,6 +345,43 @@ pub fn demo_key_fob_metadata(
         certificate_status: Some(certificate_status.into()),
         provisioning_status: Some(provisioning_status.into()),
     }
+}
+
+pub fn parse_master_key_from_env() -> Result<[u8; 32], CloudStorageError> {
+    let _ = dotenvy::from_filename(ENV_FILE);
+    parse_master_key_from_value(env::var(MASTER_KEY_ENV).ok().as_deref())
+}
+
+fn parse_master_key_from_value(master_key: Option<&str>) -> Result<[u8; 32], CloudStorageError> {
+    let encoded = master_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(CloudStorageError::MissingMasterKey)?;
+    let decoded = general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| CloudStorageError::InvalidMasterKeyBase64)?;
+    decoded
+        .try_into()
+        .map_err(|_| CloudStorageError::InvalidMasterKeySize)
+}
+
+pub fn encrypt_private_key_for_cloud(
+    plaintext: &[u8],
+    master_key: &[u8; 32],
+) -> Result<EncryptedKeyBlob, CloudStorageError> {
+    let cipher = Aes256Gcm::new_from_slice(master_key)
+        .map_err(|_| CloudStorageError::PrivateKeyEncryptionFailed)?;
+    let mut nonce = [0u8; 12];
+    OsRng.fill_bytes(&mut nonce);
+    let encrypted_key_blob = cipher
+        .encrypt(Nonce::from_slice(&nonce), plaintext)
+        .map_err(|_| CloudStorageError::PrivateKeyEncryptionFailed)?;
+
+    Ok(EncryptedKeyBlob {
+        encrypted_key_blob,
+        encryption_nonce: nonce.to_vec(),
+        encryption_algorithm: ENCRYPTED_KEY_ALGORITHM.to_string(),
+    })
 }
 
 pub struct CloudStorageConfig {
@@ -390,6 +516,38 @@ impl CloudStorageClient {
 
         Ok(DEMO_METADATA_SYNCED_MESSAGE.to_string())
     }
+
+    pub async fn upsert_encrypted_key(
+        &self,
+        record: &EncryptedKeyRecord,
+    ) -> Result<String, CloudStorageError> {
+        sqlx::query(UPSERT_ENCRYPTED_KEY_SQL)
+            .bind(&record.key_id)
+            .bind(&record.owner_type)
+            .bind(&record.owner_id)
+            .bind(record.public_key_fingerprint.as_deref())
+            .bind(&record.encrypted_key.encrypted_key_blob)
+            .bind(&record.encrypted_key.encryption_nonce)
+            .bind(&record.encrypted_key.encryption_algorithm)
+            .bind(&record.key_purpose)
+            .bind(&record.storage_status)
+            .execute(&self.pool)
+            .await
+            .map_err(|_| CloudStorageError::EncryptedKeySyncFailed)?;
+
+        Ok(encrypted_key_sync_message(&record.key_id).to_string())
+    }
+
+    pub async fn sync_demo_encrypted_key_blobs(
+        &self,
+        ca_record: &EncryptedKeyRecord,
+        key_fob_record: &EncryptedKeyRecord,
+    ) -> Result<String, CloudStorageError> {
+        self.upsert_encrypted_key(ca_record).await?;
+        self.upsert_encrypted_key(key_fob_record).await?;
+
+        Ok(ENCRYPTED_KEY_BLOBS_SYNCED_MESSAGE.to_string())
+    }
 }
 
 impl fmt::Debug for CloudStorageClient {
@@ -403,16 +561,30 @@ impl fmt::Debug for CloudStorageClient {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CloudStorageError {
     MissingDatabaseUrl,
+    MissingMasterKey,
+    InvalidMasterKeyBase64,
+    InvalidMasterKeySize,
     ConnectionFailed,
     HealthCheckFailed,
     SchemaInitializationFailed,
     MetadataSyncFailed,
+    PrivateKeyEncryptionFailed,
+    EncryptedKeySyncFailed,
 }
 
 impl fmt::Display for CloudStorageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CloudStorageError::MissingDatabaseUrl => f.write_str("DATABASE_URL is not configured"),
+            CloudStorageError::MissingMasterKey => {
+                f.write_str("AIACS_MASTER_KEY is not configured")
+            }
+            CloudStorageError::InvalidMasterKeyBase64 => {
+                f.write_str("AIACS_MASTER_KEY is not valid base64")
+            }
+            CloudStorageError::InvalidMasterKeySize => {
+                f.write_str("AIACS_MASTER_KEY must decode to 32 bytes")
+            }
             CloudStorageError::ConnectionFailed => f.write_str("Cloud database connection failed"),
             CloudStorageError::HealthCheckFailed => {
                 f.write_str("Cloud database health check failed")
@@ -421,6 +593,12 @@ impl fmt::Display for CloudStorageError {
                 f.write_str("Cloud database schema initialization failed")
             }
             CloudStorageError::MetadataSyncFailed => f.write_str("Cloud metadata sync failed"),
+            CloudStorageError::PrivateKeyEncryptionFailed => {
+                f.write_str("Private key encryption failed")
+            }
+            CloudStorageError::EncryptedKeySyncFailed => {
+                f.write_str("Encrypted key blob sync failed")
+            }
         }
     }
 }
@@ -431,6 +609,14 @@ fn schema_initialized_message() -> &'static str {
     SCHEMA_INITIALIZED_MESSAGE
 }
 
+fn encrypted_key_sync_message(key_id: &str) -> &'static str {
+    match key_id {
+        CA_ENCRYPTED_KEY_ID => CA_ENCRYPTED_KEY_SYNCED_MESSAGE,
+        KEY_FOB_ENCRYPTED_KEY_ID => KEY_FOB_ENCRYPTED_KEY_SYNCED_MESSAGE,
+        _ => "Encrypted key blob uploaded",
+    }
+}
+
 #[cfg(test)]
 fn schema_sql() -> String {
     SCHEMA_STATEMENTS.join("\n")
@@ -439,6 +625,11 @@ fn schema_sql() -> String {
 #[cfg(test)]
 fn metadata_sync_sql() -> String {
     [UPSERT_CUSTOMER_SQL, UPSERT_VEHICLE_SQL, UPSERT_KEY_FOB_SQL].join("\n")
+}
+
+#[cfg(test)]
+fn encrypted_key_sync_sql() -> &'static str {
+    UPSERT_ENCRYPTED_KEY_SQL
 }
 
 #[cfg(test)]
@@ -639,6 +830,185 @@ mod tests {
         }
     }
 
+    fn test_master_key() -> [u8; 32] {
+        [7u8; 32]
+    }
+
+    fn decrypt_test_blob(
+        blob: &EncryptedKeyBlob,
+        master_key: &[u8; 32],
+    ) -> Result<Vec<u8>, CloudStorageError> {
+        let cipher = Aes256Gcm::new_from_slice(master_key)
+            .map_err(|_| CloudStorageError::PrivateKeyEncryptionFailed)?;
+        cipher
+            .decrypt(
+                Nonce::from_slice(&blob.encryption_nonce),
+                blob.encrypted_key_blob.as_slice(),
+            )
+            .map_err(|_| CloudStorageError::PrivateKeyEncryptionFailed)
+    }
+
+    fn test_encrypted_key_record(
+        key_id: &str,
+        owner_type: &str,
+        owner_id: &str,
+        key_purpose: &str,
+        plaintext: &[u8],
+        master_key: &[u8; 32],
+    ) -> EncryptedKeyRecord {
+        EncryptedKeyRecord {
+            key_id: key_id.to_string(),
+            owner_type: owner_type.to_string(),
+            owner_id: owner_id.to_string(),
+            public_key_fingerprint: Some("SHA256:test-fingerprint".to_string()),
+            key_purpose: key_purpose.to_string(),
+            storage_status: ENCRYPTED_KEY_STORAGE_STATUS.to_string(),
+            encrypted_key: encrypt_private_key_for_cloud(plaintext, master_key)
+                .expect("test key material should encrypt"),
+        }
+    }
+
+    #[test]
+    fn master_key_parsing_rejects_missing_value() {
+        let error = parse_master_key_from_value(None).expect_err("missing key should fail");
+
+        assert_eq!(error, CloudStorageError::MissingMasterKey);
+        assert_eq!(error.to_string(), "AIACS_MASTER_KEY is not configured");
+    }
+
+    #[test]
+    fn master_key_parsing_rejects_invalid_base64() {
+        let error = parse_master_key_from_value(Some("not-valid-base64!"))
+            .expect_err("invalid base64 should fail");
+
+        assert_eq!(error, CloudStorageError::InvalidMasterKeyBase64);
+        assert_eq!(error.to_string(), "AIACS_MASTER_KEY is not valid base64");
+    }
+
+    #[test]
+    fn master_key_parsing_rejects_wrong_decoded_size() {
+        let encoded = general_purpose::STANDARD.encode([3u8; 31]);
+        let error =
+            parse_master_key_from_value(Some(&encoded)).expect_err("wrong key size should fail");
+
+        assert_eq!(error, CloudStorageError::InvalidMasterKeySize);
+        assert_eq!(
+            error.to_string(),
+            "AIACS_MASTER_KEY must decode to 32 bytes"
+        );
+    }
+
+    #[test]
+    fn master_key_parsing_accepts_32_byte_base64_value() {
+        let encoded = general_purpose::STANDARD.encode(test_master_key());
+        let parsed =
+            parse_master_key_from_value(Some(&encoded)).expect("valid 32-byte key should parse");
+
+        assert_eq!(parsed, test_master_key());
+    }
+
+    #[test]
+    fn encrypted_private_key_blob_differs_from_plaintext() {
+        let plaintext = b"prototype private key bytes";
+        let encrypted = encrypt_private_key_for_cloud(plaintext, &test_master_key())
+            .expect("encryption should succeed");
+
+        assert_ne!(encrypted.encrypted_key_blob, plaintext);
+        assert_eq!(encrypted.encryption_nonce.len(), 12);
+        assert_eq!(encrypted.encryption_algorithm, ENCRYPTED_KEY_ALGORITHM);
+    }
+
+    #[test]
+    fn encrypted_private_key_blob_uses_fresh_nonce() {
+        let plaintext = b"same private key material";
+        let first = encrypt_private_key_for_cloud(plaintext, &test_master_key())
+            .expect("first encryption should succeed");
+        let second = encrypt_private_key_for_cloud(plaintext, &test_master_key())
+            .expect("second encryption should succeed");
+
+        assert_ne!(first.encryption_nonce, second.encryption_nonce);
+        assert_ne!(first.encrypted_key_blob, second.encrypted_key_blob);
+    }
+
+    #[test]
+    fn encrypted_private_key_blob_decrypts_with_same_key() {
+        let plaintext = b"private key material for test";
+        let encrypted = encrypt_private_key_for_cloud(plaintext, &test_master_key())
+            .expect("encryption should succeed");
+        let decrypted =
+            decrypt_test_blob(&encrypted, &test_master_key()).expect("decryption should succeed");
+
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn encrypted_private_key_blob_rejects_wrong_key() {
+        let plaintext = b"private key material for test";
+        let encrypted = encrypt_private_key_for_cloud(plaintext, &test_master_key())
+            .expect("encryption should succeed");
+        let wrong_key = [9u8; 32];
+
+        assert!(decrypt_test_blob(&encrypted, &wrong_key).is_err());
+    }
+
+    #[test]
+    fn encrypted_key_debug_redacts_blob_and_nonce_bytes() {
+        let plaintext = b"private key material for debug redaction";
+        let encrypted = encrypt_private_key_for_cloud(plaintext, &test_master_key())
+            .expect("encryption should succeed");
+        let blob_debug = format!("{:?}", encrypted.encrypted_key_blob);
+        let nonce_debug = format!("{:?}", encrypted.encryption_nonce);
+        let debug = format!("{:?}", encrypted);
+
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains(&blob_debug));
+        assert!(!debug.contains(&nonce_debug));
+        assert!(!debug.contains("private key material"));
+    }
+
+    #[test]
+    fn encrypted_key_safe_messages_do_not_contain_secret_material() {
+        for message in [
+            CA_ENCRYPTED_KEY_SYNCED_MESSAGE,
+            KEY_FOB_ENCRYPTED_KEY_SYNCED_MESSAGE,
+            ENCRYPTED_KEY_BLOBS_SYNCED_MESSAGE,
+        ] {
+            assert!(!message.contains("private key"));
+            assert!(!message.contains("AIACS_MASTER_KEY"));
+            assert!(!message.contains("DATABASE_URL"));
+            assert!(!message.contains("postgresql://"));
+            assert!(!message.contains("encrypted_key_blob"));
+            assert!(!message.contains("encryption_nonce"));
+            assert!(!message.contains("[1, 2, 3]"));
+        }
+    }
+
+    #[test]
+    fn encrypted_key_upsert_sql_uses_ciphertext_and_nonce_columns() {
+        let sql = encrypted_key_sync_sql();
+
+        assert!(sql.contains("INSERT INTO encrypted_keys"));
+        assert!(sql.contains("ON CONFLICT (key_id) DO UPDATE"));
+        assert!(sql.contains("encrypted_key_blob"));
+        assert!(sql.contains("encryption_nonce"));
+        assert!(sql.contains("encryption_algorithm"));
+    }
+
+    #[test]
+    fn encrypted_key_upsert_sql_does_not_include_plaintext_secret_columns() {
+        let sql = encrypted_key_sync_sql().to_lowercase();
+
+        for disallowed in [
+            "private_key",
+            "raw_key",
+            "session_key",
+            "shared_secret",
+            "master_key",
+        ] {
+            assert!(!sql.contains(disallowed));
+        }
+    }
+
     #[tokio::test]
     async fn live_cloud_database_health_check_is_opt_in() {
         if env::var("AIACS_RUN_LIVE_DB_TESTS").ok().as_deref() != Some("1") {
@@ -656,6 +1026,28 @@ mod tests {
             .sync_demo_metadata()
             .await
             .expect("live DB demo metadata sync should succeed");
+        let master_key = parse_master_key_from_env()
+            .expect("live encrypted key upload requires AIACS_MASTER_KEY");
+        let ca_record = test_encrypted_key_record(
+            CA_ENCRYPTED_KEY_ID,
+            "ca",
+            "AIACS-Demo-CA",
+            CA_KEY_PURPOSE,
+            b"test-only CA private key material",
+            &master_key,
+        );
+        let key_fob_record = test_encrypted_key_record(
+            KEY_FOB_ENCRYPTED_KEY_ID,
+            "key_fob",
+            DEMO_FOB_ID,
+            KEY_FOB_KEY_PURPOSE,
+            b"test-only key fob private key material",
+            &master_key,
+        );
+        let encrypted_key_sync = client
+            .sync_demo_encrypted_key_blobs(&ca_record, &key_fob_record)
+            .await
+            .expect("live DB encrypted key upload should succeed");
         let health = client
             .health_check()
             .await
@@ -663,6 +1055,7 @@ mod tests {
 
         assert_eq!(schema, SCHEMA_INITIALIZED_MESSAGE);
         assert_eq!(sync, DEMO_METADATA_SYNCED_MESSAGE);
+        assert_eq!(encrypted_key_sync, ENCRYPTED_KEY_BLOBS_SYNCED_MESSAGE);
         assert_eq!(health, HEALTHY_MESSAGE);
 
         let customer_exists: bool =
@@ -687,5 +1080,33 @@ mod tests {
         assert!(customer_exists);
         assert!(vehicle_exists);
         assert!(key_fob_exists);
+
+        for key_id in [CA_ENCRYPTED_KEY_ID, KEY_FOB_ENCRYPTED_KEY_ID] {
+            let encrypted_key_blob_len: i32 = sqlx::query_scalar(
+                "SELECT octet_length(encrypted_key_blob) FROM encrypted_keys WHERE key_id = $1;",
+            )
+            .bind(key_id)
+            .fetch_one(&client.pool)
+            .await
+            .expect("encrypted key blob length should query");
+            let encryption_nonce_len: i32 = sqlx::query_scalar(
+                "SELECT octet_length(encryption_nonce) FROM encrypted_keys WHERE key_id = $1;",
+            )
+            .bind(key_id)
+            .fetch_one(&client.pool)
+            .await
+            .expect("encryption nonce length should query");
+            let encryption_algorithm: String = sqlx::query_scalar(
+                "SELECT encryption_algorithm FROM encrypted_keys WHERE key_id = $1;",
+            )
+            .bind(key_id)
+            .fetch_one(&client.pool)
+            .await
+            .expect("encryption algorithm should query");
+
+            assert!(encrypted_key_blob_len > 0);
+            assert!(encryption_nonce_len > 0);
+            assert_eq!(encryption_algorithm, ENCRYPTED_KEY_ALGORITHM);
+        }
     }
 }

@@ -59,6 +59,8 @@ struct AIACSApp {
     cloud_status: String,
     last_metadata_sync_status: String,
     last_metadata_sync_time: String,
+    last_encrypted_key_sync_status: String,
+    last_encrypted_key_sync_time: String,
     selected_detail: String,
     event_log: Vec<String>,
 }
@@ -170,6 +172,9 @@ enum Message {
     SyncVehicleMetadata,
     SyncKeyFobMetadata,
     SyncDemoMetadata,
+    SyncCaEncryptedKeyBlob,
+    SyncKeyFobEncryptedKeyBlob,
+    SyncEncryptedKeyBlobs,
     ClearLog,
     ExportLogs,
     ExportProvisioningReport,
@@ -200,6 +205,8 @@ impl Sandbox for AIACSApp {
             cloud_status: "Disconnected".to_string(),
             last_metadata_sync_status: "Not synced".to_string(),
             last_metadata_sync_time: "N/A".to_string(),
+            last_encrypted_key_sync_status: "Not uploaded".to_string(),
+            last_encrypted_key_sync_time: "N/A".to_string(),
             selected_detail: "Provisioning console ready. Initialize vehicle trust to begin."
                 .to_string(),
             event_log: initial_messages
@@ -516,6 +523,47 @@ impl Sandbox for AIACSApp {
                     self.push_log("[DB]", "Demo metadata synced to company cloud database");
                 }
                 Err(error) => self.record_metadata_sync_error(error),
+            },
+            Message::SyncCaEncryptedKeyBlob => match self.controller.sync_ca_encrypted_key_blob() {
+                Ok(message) => {
+                    self.record_encrypted_key_sync(message.clone());
+                    self.push_log("[DB]", "CA encrypted key blob uploaded: KEY-CA-0001");
+                    self.push_log("[DB]", "Raw private key material: [REDACTED]");
+                    self.push_log(
+                        "[DB]",
+                        "Protection: Client-side AES-256-GCM encryption before upload",
+                    );
+                }
+                Err(error) => self.record_encrypted_key_sync_error(error),
+            },
+            Message::SyncKeyFobEncryptedKeyBlob => {
+                match self.controller.sync_key_fob_encrypted_key_blob() {
+                    Ok(message) => {
+                        self.record_encrypted_key_sync(message.clone());
+                        self.push_log("[DB]", "Key fob encrypted key blob uploaded: KEY-FOB-0001");
+                        self.push_log("[DB]", "Raw private key material: [REDACTED]");
+                        self.push_log(
+                            "[DB]",
+                            "Protection: Client-side AES-256-GCM encryption before upload",
+                        );
+                    }
+                    Err(error) => self.record_encrypted_key_sync_error(error),
+                }
+            }
+            Message::SyncEncryptedKeyBlobs => match self.controller.sync_encrypted_key_blobs() {
+                Ok(message) => {
+                    self.record_encrypted_key_sync(message.clone());
+                    self.push_log(
+                        "[DB]",
+                        "Encrypted key blobs synced to company cloud database",
+                    );
+                    self.push_log("[DB]", "Raw private key material: [REDACTED]");
+                    self.push_log(
+                        "[DB]",
+                        "Protection: Client-side AES-256-GCM encryption before upload",
+                    );
+                }
+                Err(error) => self.record_encrypted_key_sync_error(error),
             },
             Message::ClearLog => match self.controller.clear_logs() {
                 Ok(message) => {
@@ -1505,6 +1553,21 @@ impl AIACSApp {
                     self.artifact_detail_row("Provider", "Neon PostgreSQL"),
                     self.artifact_detail_row("Storage Mode", "Company Cloud DB"),
                     self.artifact_detail_row("Sync Scope", "Customer / Vehicle / Key Fob Metadata"),
+                    text("Cloud Credential Protection")
+                        .size(14)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(ACCENT_PINK)),
+                    self.artifact_detail_row(
+                        "Private Key Storage",
+                        "Client-side encrypted cloud blob"
+                    ),
+                    self.artifact_detail_row("Encryption", "AES-256-GCM"),
+                    self.artifact_detail_row(
+                        "Master Key",
+                        "Environment variable, external to database"
+                    ),
+                    self.artifact_detail_row("Raw Private Keys in Cloud", "No"),
+                    self.artifact_detail_row("Raw Private Key Material", "[REDACTED]"),
                     self.artifact_detail_row(
                         "Last Metadata Sync Status",
                         self.last_metadata_sync_status.clone()
@@ -1512,6 +1575,14 @@ impl AIACSApp {
                     self.artifact_detail_row(
                         "Last Metadata Sync Time",
                         self.last_metadata_sync_time.clone()
+                    ),
+                    self.artifact_detail_row(
+                        "Last Encrypted Key Upload",
+                        self.last_encrypted_key_sync_status.clone()
+                    ),
+                    self.artifact_detail_row(
+                        "Last Encrypted Key Upload Time",
+                        self.last_encrypted_key_sync_time.clone()
                     ),
                 ]
                 .spacing(8),
@@ -1526,7 +1597,7 @@ impl AIACSApp {
                         .size(18)
                         .font(Font::MONOSPACE)
                         .style(theme::Text::Color(ACCENT_PINK)),
-                    text("No keys, sessions, certificates, audit logs, or diagnostics are uploaded in this phase.")
+                    text("Safe metadata sync never uploads plaintext secrets.")
                         .size(12)
                         .font(Font::MONOSPACE)
                         .style(theme::Text::Color(SECONDARY_TEXT)),
@@ -1558,6 +1629,32 @@ impl AIACSApp {
                         "terminal",
                         "Sync Demo Metadata",
                         Message::SyncDemoMetadata,
+                        ButtonKind::Nav
+                    ),
+                    text("Encrypted Key Blob Controls")
+                        .size(18)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(ACCENT_PINK)),
+                    text("Private key material is encrypted locally before upload. Ciphertext and nonce bytes are never displayed.")
+                        .size(12)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(SECONDARY_TEXT)),
+                    compact_button(
+                        "shield",
+                        "Upload CA Encrypted Key Blob",
+                        Message::SyncCaEncryptedKeyBlob,
+                        ButtonKind::Nav
+                    ),
+                    compact_button(
+                        "key",
+                        "Upload Key Fob Encrypted Key Blob",
+                        Message::SyncKeyFobEncryptedKeyBlob,
+                        ButtonKind::Nav
+                    ),
+                    compact_button(
+                        "lock",
+                        "Upload All Encrypted Key Blobs",
+                        Message::SyncEncryptedKeyBlobs,
                         ButtonKind::Nav
                     ),
                 ]
@@ -2060,6 +2157,21 @@ impl AIACSApp {
         self.last_metadata_sync_time = Local::now().format("%H:%M:%S").to_string();
         self.selected_detail = self.last_metadata_sync_status.clone();
         self.push_log("[DB]", self.last_metadata_sync_status.clone());
+    }
+
+    fn record_encrypted_key_sync(&mut self, message: String) {
+        self.cloud_status = "Connected".to_string();
+        self.last_encrypted_key_sync_status = message.clone();
+        self.last_encrypted_key_sync_time = Local::now().format("%H:%M:%S").to_string();
+        self.selected_detail = message;
+    }
+
+    fn record_encrypted_key_sync_error(&mut self, error: AppControllerError) {
+        self.cloud_status = "Error".to_string();
+        self.last_encrypted_key_sync_status = format!("Encrypted key upload failed: {}", error);
+        self.last_encrypted_key_sync_time = Local::now().format("%H:%M:%S").to_string();
+        self.selected_detail = self.last_encrypted_key_sync_status.clone();
+        self.push_log("[DB]", self.last_encrypted_key_sync_status.clone());
     }
 
     fn push_log(&mut self, tag: &str, message: impl AsRef<str>) {
