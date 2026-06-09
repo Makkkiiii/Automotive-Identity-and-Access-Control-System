@@ -141,6 +141,38 @@ CREATE TABLE IF NOT EXISTS provisioning_sessions (
 );
 "#,
     r#"
+ALTER TABLE provisioning_sessions
+ADD COLUMN IF NOT EXISTS certificate_id TEXT;
+"#,
+    r#"
+ALTER TABLE provisioning_sessions
+ADD COLUMN IF NOT EXISTS auth_status TEXT;
+"#,
+    r#"
+ALTER TABLE provisioning_sessions
+ADD COLUMN IF NOT EXISTS session_status TEXT;
+"#,
+    r#"
+ALTER TABLE provisioning_sessions
+ADD COLUMN IF NOT EXISTS access_decision TEXT;
+"#,
+    r#"
+ALTER TABLE provisioning_sessions
+ADD COLUMN IF NOT EXISTS session_algorithm TEXT;
+"#,
+    r#"
+ALTER TABLE provisioning_sessions
+ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
+"#,
+    r#"
+ALTER TABLE provisioning_sessions
+ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+"#,
+    r#"
+ALTER TABLE provisioning_sessions
+ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+"#,
+    r#"
 CREATE TABLE IF NOT EXISTS audit_logs (
     log_id UUID PRIMARY KEY,
     event_tag TEXT NOT NULL,
@@ -841,12 +873,33 @@ mod tests {
     }
 
     #[test]
+    fn schema_sql_includes_provisioning_session_metadata_migrations() {
+        let schema = schema_sql();
+
+        assert!(schema.contains("ALTER TABLE provisioning_sessions"));
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS certificate_id TEXT"));
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS auth_status TEXT"));
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS session_status TEXT"));
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS access_decision TEXT"));
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS session_algorithm TEXT"));
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ"));
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ"));
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()"));
+    }
+
+    #[test]
     fn schema_sql_does_not_include_plaintext_key_columns() {
         let schema = schema_sql().to_lowercase();
 
         assert!(!schema.contains("private_key"));
         assert!(!schema.contains("raw_key"));
         assert!(!schema.contains("plaintext"));
+        assert!(!schema.contains("session_key"));
+        assert!(!schema.contains("shared_secret"));
+        assert!(!schema.contains("master_key"));
+        assert!(!schema.contains("database_url"));
+        assert!(!schema.contains("hkdf_output"));
+        assert!(!schema.contains("x25519_private_key"));
     }
 
     #[test]
