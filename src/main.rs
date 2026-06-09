@@ -59,6 +59,8 @@ struct AIACSApp {
     cloud_status: String,
     last_metadata_sync_status: String,
     last_metadata_sync_time: String,
+    last_certificate_sync_status: String,
+    last_certificate_sync_time: String,
     last_encrypted_key_sync_status: String,
     last_encrypted_key_sync_time: String,
     selected_detail: String,
@@ -172,6 +174,7 @@ enum Message {
     SyncVehicleMetadata,
     SyncKeyFobMetadata,
     SyncDemoMetadata,
+    SyncCertificateMetadata,
     SyncCaEncryptedKeyBlob,
     SyncKeyFobEncryptedKeyBlob,
     SyncEncryptedKeyBlobs,
@@ -205,6 +208,8 @@ impl Sandbox for AIACSApp {
             cloud_status: "Disconnected".to_string(),
             last_metadata_sync_status: "Not synced".to_string(),
             last_metadata_sync_time: "N/A".to_string(),
+            last_certificate_sync_status: "Not synced".to_string(),
+            last_certificate_sync_time: "N/A".to_string(),
             last_encrypted_key_sync_status: "Not uploaded".to_string(),
             last_encrypted_key_sync_time: "N/A".to_string(),
             selected_detail: "Provisioning console ready. Initialize vehicle trust to begin."
@@ -523,6 +528,14 @@ impl Sandbox for AIACSApp {
                     self.push_log("[DB]", "Demo metadata synced to company cloud database");
                 }
                 Err(error) => self.record_metadata_sync_error(error),
+            },
+            Message::SyncCertificateMetadata => match self.controller.sync_certificate_metadata() {
+                Ok(message) => {
+                    self.record_certificate_sync(message.clone());
+                    self.push_log("[DB]", "Certificate metadata synced: CERT-FOB-0001");
+                    self.push_log("[DB]", "Certificate private material: [REDACTED]");
+                }
+                Err(error) => self.record_certificate_sync_error(error),
             },
             Message::SyncCaEncryptedKeyBlob => match self.controller.sync_ca_encrypted_key_blob() {
                 Ok(message) => {
@@ -1577,6 +1590,14 @@ impl AIACSApp {
                         self.last_metadata_sync_time.clone()
                     ),
                     self.artifact_detail_row(
+                        "Last Certificate Metadata Sync",
+                        self.last_certificate_sync_status.clone()
+                    ),
+                    self.artifact_detail_row(
+                        "Last Certificate Metadata Sync Time",
+                        self.last_certificate_sync_time.clone()
+                    ),
+                    self.artifact_detail_row(
                         "Last Encrypted Key Upload",
                         self.last_encrypted_key_sync_status.clone()
                     ),
@@ -1631,6 +1652,16 @@ impl AIACSApp {
                         Message::SyncDemoMetadata,
                         ButtonKind::Nav
                     ),
+                    compact_button(
+                        "certificate",
+                        "Sync Certificate Metadata",
+                        Message::SyncCertificateMetadata,
+                        ButtonKind::Nav
+                    ),
+                    text("Certificate private material: [REDACTED]")
+                        .size(11)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(SECONDARY_TEXT)),
                     text("Encrypted Key Blob Controls")
                         .size(18)
                         .font(Font::MONOSPACE)
@@ -2157,6 +2188,21 @@ impl AIACSApp {
         self.last_metadata_sync_time = Local::now().format("%H:%M:%S").to_string();
         self.selected_detail = self.last_metadata_sync_status.clone();
         self.push_log("[DB]", self.last_metadata_sync_status.clone());
+    }
+
+    fn record_certificate_sync(&mut self, message: String) {
+        self.cloud_status = "Connected".to_string();
+        self.last_certificate_sync_status = message.clone();
+        self.last_certificate_sync_time = Local::now().format("%H:%M:%S").to_string();
+        self.selected_detail = message;
+    }
+
+    fn record_certificate_sync_error(&mut self, error: AppControllerError) {
+        self.cloud_status = "Error".to_string();
+        self.last_certificate_sync_status = format!("Certificate metadata sync failed: {}", error);
+        self.last_certificate_sync_time = Local::now().format("%H:%M:%S").to_string();
+        self.selected_detail = self.last_certificate_sync_status.clone();
+        self.push_log("[DB]", self.last_certificate_sync_status.clone());
     }
 
     fn record_encrypted_key_sync(&mut self, message: String) {

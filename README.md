@@ -398,8 +398,8 @@ AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metada
 | `customers`             | Owner/customer metadata                                               |
 | `vehicles`              | Vehicle metadata and provisioning status                              |
 | `key_fobs`              | Key fob labels, fingerprints, certificate status, provisioning status |
-| `certificates`          | Certificate metadata for future cloud sync                            |
-| `encrypted_keys`        | Future encrypted private key blobs only, never plaintext private keys |
+| `certificates`          | Safe certificate metadata sync                                        |
+| `encrypted_keys`        | Client-side encrypted private key blobs, never plaintext private keys |
 | `provisioning_sessions` | Future provisioning session records                                   |
 | `audit_logs`            | Future cloud audit log records                                        |
 | `diagnostic_results`    | Future diagnostics result records                                     |
@@ -408,9 +408,11 @@ AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metada
 
 - Schema can be created automatically.
 - Safe customer, vehicle, and key fob metadata can be synced.
+- Safe certificate metadata can be synced.
+- Private key blobs can be encrypted locally before cloud upload.
 - Raw private keys are not uploaded.
-- Certificate JSON, session records, audit logs, diagnostics, and encrypted key blobs are not uploaded in the current metadata phase.
-- Encrypted private key blob upload is planned for a future cloud phase.
+- Certificate JSON, session records, audit logs, and diagnostics are not uploaded in the current metadata phase.
+- Cloud Phase 6A adds certificate metadata sync only; provisioning sessions, audit logs, and diagnostic results remain planned future work.
 
 ---
 

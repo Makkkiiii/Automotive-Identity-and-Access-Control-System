@@ -3,17 +3,18 @@ use crate::attacks::{AdversarialValidationEngine, AttackResult, AttackType};
 use crate::auth::{AuthResult, AuthenticationEngine};
 use crate::ca::{CAError, Certificate, CertificateAuthority};
 use crate::cloud_storage::{
-    demo_customer_metadata, demo_key_fob_metadata, demo_vehicle_metadata,
-    encrypt_private_key_for_cloud, parse_master_key_from_env, CloudStorageClient,
-    CloudStorageError, CustomerMetadata, EncryptedKeyRecord, KeyFobMetadata, VehicleMetadata,
-    CA_ENCRYPTED_KEY_ID, CA_KEY_PURPOSE, DEFAULT_CERTIFICATE_STATUS, DEMO_FOB_ID, DEMO_VEHICLE_ID,
-    ENCRYPTED_KEY_STORAGE_STATUS, KEY_FOB_ENCRYPTED_KEY_ID, KEY_FOB_KEY_PURPOSE,
+    demo_certificate_metadata, demo_customer_metadata, demo_key_fob_metadata,
+    demo_vehicle_metadata, encrypt_private_key_for_cloud, parse_master_key_from_env,
+    CertificateMetadata, CloudStorageClient, CloudStorageError, CustomerMetadata,
+    EncryptedKeyRecord, KeyFobMetadata, VehicleMetadata, CA_ENCRYPTED_KEY_ID, CA_KEY_PURPOSE,
+    DEFAULT_CERTIFICATE_STATUS, DEMO_FOB_ID, DEMO_VEHICLE_ID, ENCRYPTED_KEY_STORAGE_STATUS,
+    KEY_FOB_ENCRYPTED_KEY_ID, KEY_FOB_KEY_PURPOSE,
 };
 use crate::keyfob::{DigitalKeyFob, KeyFobError};
 use crate::session::{SessionState, SessionValidationEngine};
 use crate::vehicle::{VehicleControlModule, VehicleError};
 use base64::{engine::general_purpose, Engine as _};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fs::{self, OpenOptions};
@@ -872,6 +873,24 @@ impl AppController {
         Ok(message)
     }
 
+    pub fn sync_certificate_metadata(&mut self) -> Result<String, AppControllerError> {
+        let metadata = self.certificate_metadata()?;
+        let runtime = Self::cloud_runtime()?;
+        let message = runtime
+            .block_on(async {
+                let client = CloudStorageClient::connect_from_env().await?;
+                client.upsert_certificate_metadata(&metadata).await
+            })
+            .map_err(Self::map_cloud_error)?;
+
+        self.save_log_entry(
+            "[DB]",
+            format!("Certificate metadata synced: {}", metadata.certificate_id),
+        )?;
+        self.save_log_entry("[DB]", "Certificate private material: [REDACTED]")?;
+        Ok(message)
+    }
+
     pub fn sync_ca_encrypted_key_blob(&mut self) -> Result<String, AppControllerError> {
         self.ca_private_key_material()?;
         let master_key = parse_master_key_from_env().map_err(Self::map_cloud_error)?;
@@ -1017,6 +1036,22 @@ impl AppController {
             self.certificate_status_label(),
             self.provisioning_status_label(),
         )
+    }
+
+    fn certificate_metadata(&self) -> Result<CertificateMetadata, AppControllerError> {
+        let certificate = self.current_certificate().ok_or_else(|| {
+            AppControllerError::Backend(
+                "Certificate metadata is not available for cloud sync".to_string(),
+            )
+        })?;
+        let issued_at = parse_certificate_timestamp(&certificate.issued_at)?;
+        let expires_at = parse_certificate_timestamp(&certificate.expires_at)?;
+
+        Ok(demo_certificate_metadata(
+            Some(fingerprint(&certificate.public_key)),
+            Some(issued_at),
+            Some(expires_at),
+        ))
     }
 
     fn key_fob_public_key_fingerprint(&self) -> Option<String> {
@@ -1406,6 +1441,16 @@ fn canonical_auth_payload(
 fn fingerprint(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     format!("SHA256:{}", hex_preview(&digest, 8))
+}
+
+fn parse_certificate_timestamp(value: &str) -> Result<DateTime<Utc>, AppControllerError> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|timestamp| timestamp.with_timezone(&Utc))
+        .map_err(|_| {
+            AppControllerError::Backend(
+                "Certificate metadata is not available for cloud sync".to_string(),
+            )
+        })
 }
 
 fn hex_preview(bytes: &[u8], take: usize) -> String {
@@ -1879,6 +1924,64 @@ mod tests {
             "certificate_json",
         ] {
             assert!(!combined.contains(secret_marker));
+        }
+    }
+
+    #[test]
+    fn test_certificate_metadata_sync_returns_safe_error_without_certificate() {
+        let mut controller = AppController::new();
+        let message = controller
+            .sync_certificate_metadata()
+            .expect_err("missing certificate should fail safely")
+            .to_string();
+
+        assert_eq!(
+            message,
+            "Certificate metadata is not available for cloud sync"
+        );
+        assert!(!message.contains("DATABASE_URL"));
+        assert!(!message.contains("AIACS_MASTER_KEY"));
+        assert!(!message.contains("private_key"));
+        assert!(!message.contains("encrypted_key_blob"));
+        assert!(!message.contains("encryption_nonce"));
+    }
+
+    #[test]
+    fn test_app_controller_certificate_metadata_is_safe() {
+        let mut controller = AppController::new();
+        controller
+            .issue_keyfob_certificate()
+            .expect("certificate issuance failed");
+
+        let metadata = controller
+            .certificate_metadata()
+            .expect("certificate metadata should build");
+        let debug = format!("{metadata:?}");
+
+        assert_eq!(
+            metadata.certificate_id,
+            crate::cloud_storage::DEMO_CERTIFICATE_ID
+        );
+        assert_eq!(metadata.fob_id, DEFAULT_FOB_ID);
+        assert_eq!(metadata.subject_id, DEFAULT_FOB_ID);
+        assert_eq!(metadata.issuer, DEFAULT_CA_NAME);
+        assert_eq!(metadata.signature_algorithm, "Ed25519");
+        assert_eq!(metadata.certificate_status, "issued");
+        assert!(metadata.public_key_fingerprint.is_some());
+        assert!(metadata.issued_at.is_some());
+        assert!(metadata.expires_at.is_some());
+
+        for disallowed in [
+            "private_key",
+            "root_private_key",
+            "AIACS_MASTER_KEY",
+            "DATABASE_URL",
+            "encrypted_key_blob",
+            "encryption_nonce",
+            "shared_secret",
+            "session_key",
+        ] {
+            assert!(!debug.contains(disallowed));
         }
     }
 

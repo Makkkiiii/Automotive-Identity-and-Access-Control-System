@@ -3,6 +3,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use base64::{engine::general_purpose, Engine as _};
+use chrono::{DateTime, Utc};
 use rand::{rngs::OsRng, RngCore};
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use std::env;
@@ -17,6 +18,7 @@ const CUSTOMER_SYNCED_MESSAGE: &str = "Customer metadata synced";
 const VEHICLE_SYNCED_MESSAGE: &str = "Vehicle metadata synced";
 const KEY_FOB_SYNCED_MESSAGE: &str = "Key fob metadata synced";
 const DEMO_METADATA_SYNCED_MESSAGE: &str = "Demo metadata synced to cloud database";
+pub const CERTIFICATE_METADATA_SYNCED_MESSAGE: &str = "Certificate metadata synced";
 pub const CA_ENCRYPTED_KEY_SYNCED_MESSAGE: &str = "CA encrypted key blob uploaded";
 pub const KEY_FOB_ENCRYPTED_KEY_SYNCED_MESSAGE: &str = "Key fob encrypted key blob uploaded";
 pub const ENCRYPTED_KEY_BLOBS_SYNCED_MESSAGE: &str =
@@ -34,6 +36,9 @@ pub const DEMO_FOB_ID: &str = "FOB-0001";
 pub const DEMO_FOB_LABEL: &str = "Primary Key Fob";
 pub const DEFAULT_PROVISIONING_STATUS: &str = "In Progress";
 pub const DEFAULT_CERTIFICATE_STATUS: &str = "Pending";
+pub const DEMO_CERTIFICATE_ID: &str = "CERT-FOB-0001";
+pub const CERTIFICATE_SIGNATURE_ALGORITHM: &str = "Ed25519";
+pub const ISSUED_CERTIFICATE_STATUS: &str = "issued";
 pub const CA_ENCRYPTED_KEY_ID: &str = "KEY-CA-0001";
 pub const KEY_FOB_ENCRYPTED_KEY_ID: &str = "KEY-FOB-0001";
 pub const ENCRYPTED_KEY_ALGORITHM: &str = "AES-256-GCM";
@@ -88,10 +93,24 @@ CREATE TABLE IF NOT EXISTS certificates (
     expires_at TIMESTAMPTZ,
     certificate_status TEXT,
     public_key_fingerprint TEXT,
+    signature_algorithm TEXT,
     certificate_signature_fingerprint TEXT,
     certificate_json JSONB,
-    created_at TIMESTAMPTZ NOT NULL
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
 );
+"#,
+    r#"
+ALTER TABLE certificates
+ADD COLUMN IF NOT EXISTS signature_algorithm TEXT;
+"#,
+    r#"
+ALTER TABLE certificates
+ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+"#,
+    r#"
+ALTER TABLE certificates
+ADD COLUMN IF NOT EXISTS public_key_fingerprint TEXT;
 "#,
     r#"
 CREATE TABLE IF NOT EXISTS encrypted_keys (
@@ -204,6 +223,32 @@ ON CONFLICT (fob_id) DO UPDATE SET
     provisioning_status = EXCLUDED.provisioning_status;
 "#;
 
+const UPSERT_CERTIFICATE_METADATA_SQL: &str = r#"
+INSERT INTO certificates (
+    certificate_id,
+    fob_id,
+    subject_id,
+    issuer,
+    issued_at,
+    expires_at,
+    public_key_fingerprint,
+    signature_algorithm,
+    certificate_status,
+    created_at,
+    updated_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+ON CONFLICT (certificate_id) DO UPDATE SET
+    fob_id = EXCLUDED.fob_id,
+    subject_id = EXCLUDED.subject_id,
+    issuer = EXCLUDED.issuer,
+    issued_at = EXCLUDED.issued_at,
+    expires_at = EXCLUDED.expires_at,
+    public_key_fingerprint = EXCLUDED.public_key_fingerprint,
+    signature_algorithm = EXCLUDED.signature_algorithm,
+    certificate_status = EXCLUDED.certificate_status,
+    updated_at = NOW();
+"#;
+
 const UPSERT_ENCRYPTED_KEY_SQL: &str = r#"
 INSERT INTO encrypted_keys (
     key_id,
@@ -258,6 +303,19 @@ pub struct KeyFobMetadata {
     pub public_key_fingerprint: Option<String>,
     pub certificate_status: Option<String>,
     pub provisioning_status: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CertificateMetadata {
+    pub certificate_id: String,
+    pub fob_id: String,
+    pub subject_id: String,
+    pub issuer: String,
+    pub issued_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub public_key_fingerprint: Option<String>,
+    pub signature_algorithm: String,
+    pub certificate_status: String,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -344,6 +402,24 @@ pub fn demo_key_fob_metadata(
         public_key_fingerprint,
         certificate_status: Some(certificate_status.into()),
         provisioning_status: Some(provisioning_status.into()),
+    }
+}
+
+pub fn demo_certificate_metadata(
+    public_key_fingerprint: Option<String>,
+    issued_at: Option<DateTime<Utc>>,
+    expires_at: Option<DateTime<Utc>>,
+) -> CertificateMetadata {
+    CertificateMetadata {
+        certificate_id: DEMO_CERTIFICATE_ID.to_string(),
+        fob_id: DEMO_FOB_ID.to_string(),
+        subject_id: DEMO_FOB_ID.to_string(),
+        issuer: "AIACS-Demo-CA".to_string(),
+        issued_at,
+        expires_at,
+        public_key_fingerprint,
+        signature_algorithm: CERTIFICATE_SIGNATURE_ALGORITHM.to_string(),
+        certificate_status: ISSUED_CERTIFICATE_STATUS.to_string(),
     }
 }
 
@@ -517,6 +593,38 @@ impl CloudStorageClient {
         Ok(DEMO_METADATA_SYNCED_MESSAGE.to_string())
     }
 
+    pub async fn upsert_certificate_metadata(
+        &self,
+        metadata: &CertificateMetadata,
+    ) -> Result<String, CloudStorageError> {
+        sqlx::query(UPSERT_CERTIFICATE_METADATA_SQL)
+            .bind(&metadata.certificate_id)
+            .bind(&metadata.fob_id)
+            .bind(&metadata.subject_id)
+            .bind(&metadata.issuer)
+            .bind(metadata.issued_at)
+            .bind(metadata.expires_at)
+            .bind(metadata.public_key_fingerprint.as_deref())
+            .bind(&metadata.signature_algorithm)
+            .bind(&metadata.certificate_status)
+            .execute(&self.pool)
+            .await
+            .map_err(|_| CloudStorageError::CertificateMetadataSyncFailed)?;
+
+        Ok(CERTIFICATE_METADATA_SYNCED_MESSAGE.to_string())
+    }
+
+    pub async fn sync_demo_certificate_metadata(&self) -> Result<String, CloudStorageError> {
+        let issued_at = Utc::now();
+        let expires_at = issued_at + chrono::Duration::days(365);
+        self.upsert_certificate_metadata(&demo_certificate_metadata(
+            None,
+            Some(issued_at),
+            Some(expires_at),
+        ))
+        .await
+    }
+
     pub async fn upsert_encrypted_key(
         &self,
         record: &EncryptedKeyRecord,
@@ -568,6 +676,7 @@ pub enum CloudStorageError {
     HealthCheckFailed,
     SchemaInitializationFailed,
     MetadataSyncFailed,
+    CertificateMetadataSyncFailed,
     PrivateKeyEncryptionFailed,
     EncryptedKeySyncFailed,
 }
@@ -593,6 +702,9 @@ impl fmt::Display for CloudStorageError {
                 f.write_str("Cloud database schema initialization failed")
             }
             CloudStorageError::MetadataSyncFailed => f.write_str("Cloud metadata sync failed"),
+            CloudStorageError::CertificateMetadataSyncFailed => {
+                f.write_str("Certificate metadata sync failed")
+            }
             CloudStorageError::PrivateKeyEncryptionFailed => {
                 f.write_str("Private key encryption failed")
             }
@@ -625,6 +737,11 @@ fn schema_sql() -> String {
 #[cfg(test)]
 fn metadata_sync_sql() -> String {
     [UPSERT_CUSTOMER_SQL, UPSERT_VEHICLE_SQL, UPSERT_KEY_FOB_SQL].join("\n")
+}
+
+#[cfg(test)]
+fn certificate_metadata_sync_sql() -> &'static str {
+    UPSERT_CERTIFICATE_METADATA_SQL
 }
 
 #[cfg(test)]
@@ -714,6 +831,16 @@ mod tests {
     }
 
     #[test]
+    fn schema_sql_includes_phase_6a_certificate_metadata_migrations() {
+        let schema = schema_sql();
+
+        assert!(schema.contains("ALTER TABLE certificates"));
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS signature_algorithm TEXT"));
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()"));
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS public_key_fingerprint TEXT"));
+    }
+
+    #[test]
     fn schema_sql_does_not_include_plaintext_key_columns() {
         let schema = schema_sql().to_lowercase();
 
@@ -778,11 +905,85 @@ mod tests {
             VEHICLE_SYNCED_MESSAGE,
             KEY_FOB_SYNCED_MESSAGE,
             DEMO_METADATA_SYNCED_MESSAGE,
+            CERTIFICATE_METADATA_SYNCED_MESSAGE,
         ] {
             assert!(!message.contains("DATABASE_URL"));
             assert!(!message.contains("AIACS_MASTER_KEY"));
             assert!(!message.contains("postgresql://"));
             assert!(!message.contains("private_key"));
+        }
+    }
+
+    #[test]
+    fn certificate_metadata_uses_safe_demo_values() {
+        let issued_at = Utc::now();
+        let expires_at = issued_at + chrono::Duration::days(365);
+        let metadata = demo_certificate_metadata(
+            Some("SHA256:certificate-public-key".to_string()),
+            Some(issued_at),
+            Some(expires_at),
+        );
+        let debug = format!("{metadata:?}");
+
+        assert_eq!(metadata.certificate_id, DEMO_CERTIFICATE_ID);
+        assert_eq!(metadata.fob_id, DEMO_FOB_ID);
+        assert_eq!(metadata.subject_id, DEMO_FOB_ID);
+        assert_eq!(metadata.issuer, "AIACS-Demo-CA");
+        assert_eq!(
+            metadata.signature_algorithm,
+            CERTIFICATE_SIGNATURE_ALGORITHM
+        );
+        assert_eq!(metadata.certificate_status, ISSUED_CERTIFICATE_STATUS);
+
+        for disallowed in [
+            "private_key",
+            "raw_key",
+            "AIACS_MASTER_KEY",
+            "DATABASE_URL",
+            "postgresql://",
+            "encrypted_key_blob",
+            "encryption_nonce",
+            "shared_secret",
+            "session_key",
+        ] {
+            assert!(!debug.contains(disallowed));
+        }
+    }
+
+    #[test]
+    fn certificate_metadata_upsert_sql_uses_safe_columns() {
+        let sql = certificate_metadata_sync_sql();
+
+        assert!(sql.contains("INSERT INTO certificates"));
+        assert!(sql.contains("ON CONFLICT (certificate_id) DO UPDATE"));
+        assert!(sql.contains("certificate_id"));
+        assert!(sql.contains("fob_id"));
+        assert!(sql.contains("subject_id"));
+        assert!(sql.contains("issuer"));
+        assert!(sql.contains("issued_at"));
+        assert!(sql.contains("expires_at"));
+        assert!(sql.contains("public_key_fingerprint"));
+        assert!(sql.contains("signature_algorithm"));
+        assert!(sql.contains("certificate_status"));
+        assert!(sql.contains("created_at"));
+        assert!(sql.contains("updated_at"));
+    }
+
+    #[test]
+    fn certificate_metadata_upsert_sql_excludes_secret_columns() {
+        let sql = certificate_metadata_sync_sql().to_lowercase();
+
+        for disallowed in [
+            "private_key",
+            "raw_key",
+            "master_key",
+            "session_key",
+            "shared_secret",
+            "certificate_json",
+            "encrypted_key_blob",
+            "encryption_nonce",
+        ] {
+            assert!(!sql.contains(disallowed));
         }
     }
 
@@ -1026,6 +1227,10 @@ mod tests {
             .sync_demo_metadata()
             .await
             .expect("live DB demo metadata sync should succeed");
+        let certificate_sync = client
+            .sync_demo_certificate_metadata()
+            .await
+            .expect("live DB certificate metadata sync should succeed");
         let master_key = parse_master_key_from_env()
             .expect("live encrypted key upload requires AIACS_MASTER_KEY");
         let ca_record = test_encrypted_key_record(
@@ -1055,6 +1260,7 @@ mod tests {
 
         assert_eq!(schema, SCHEMA_INITIALIZED_MESSAGE);
         assert_eq!(sync, DEMO_METADATA_SYNCED_MESSAGE);
+        assert_eq!(certificate_sync, CERTIFICATE_METADATA_SYNCED_MESSAGE);
         assert_eq!(encrypted_key_sync, ENCRYPTED_KEY_BLOBS_SYNCED_MESSAGE);
         assert_eq!(health, HEALTHY_MESSAGE);
 
@@ -1080,6 +1286,32 @@ mod tests {
         assert!(customer_exists);
         assert!(vehicle_exists);
         assert!(key_fob_exists);
+
+        let certificate_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM certificates WHERE certificate_id = $1);",
+        )
+        .bind(DEMO_CERTIFICATE_ID)
+        .fetch_one(&client.pool)
+        .await
+        .expect("certificate verification should query");
+        let signature_algorithm: String = sqlx::query_scalar(
+            "SELECT signature_algorithm FROM certificates WHERE certificate_id = $1;",
+        )
+        .bind(DEMO_CERTIFICATE_ID)
+        .fetch_one(&client.pool)
+        .await
+        .expect("certificate signature algorithm should query");
+        let certificate_status: String = sqlx::query_scalar(
+            "SELECT certificate_status FROM certificates WHERE certificate_id = $1;",
+        )
+        .bind(DEMO_CERTIFICATE_ID)
+        .fetch_one(&client.pool)
+        .await
+        .expect("certificate status should query");
+
+        assert!(certificate_exists);
+        assert_eq!(signature_algorithm, CERTIFICATE_SIGNATURE_ALGORITHM);
+        assert_eq!(certificate_status, ISSUED_CERTIFICATE_STATUS);
 
         for key_id in [CA_ENCRYPTED_KEY_ID, KEY_FOB_ENCRYPTED_KEY_ID] {
             let encrypted_key_blob_len: i32 = sqlx::query_scalar(
