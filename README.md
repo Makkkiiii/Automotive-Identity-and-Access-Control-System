@@ -319,10 +319,10 @@ The desktop GUI is organized as a multi-page vehicle provisioning console.
 | Page               | Purpose                                                                                                                                  |
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | Dashboard          | High-level overview of active customer, selected vehicle, registered key fob, and provisioning status                                    |
-| Customers          | Demo customer/owner details and GUI-only customer actions                                                                                |
+| Customers          | Demo customer/owner details and view-only demo profile actions                                                                           |
 | Vehicles           | Selected vehicle details, technical ID, make/model/year, and owner association                                                           |
 | Key Fobs           | Digital key fob details, certificate state, public fingerprint, and redacted private key state                                           |
-| Provisioning       | Primary staged workflow for normal vehicle access provisioning                                                                           |
+| Provisioning       | Primary guided workflow for normal vehicle access provisioning                                                                           |
 | Protocol Artifacts | Selectable protocol artifacts such as challenge message, authentication proof, certificate details, session summary, and access decision |
 | Credential Storage | Safe credential paths, fingerprints, storage mode, and `[REDACTED]` private key values                                                   |
 | Logs / Report      | Event log, protocol trace, export report action, and clear log action                                                                    |
@@ -412,12 +412,15 @@ AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metada
 - Safe provisioning session metadata can be synced after secure session activation.
 - Safe provisioning workflow audit events can be synced with `[REDACTED]` markers.
 - Safe diagnostic result records can be synced for adversarial validation outcomes.
+- Cloud Auto Sync can push safe records after successful GUI workflow actions when explicitly enabled.
 - Private key blobs can be encrypted locally before cloud upload.
 - Raw private keys are not uploaded.
 - Raw session keys, shared secrets, HKDF output, AES keys, and X25519 private keys are not uploaded.
 - Raw attack payloads, raw ciphertext, and raw nonces are not uploaded.
 - Certificate JSON is not uploaded in the current metadata phase.
 - Cloud Phase 6D adds diagnostic result sync for rejected malicious scenarios.
+- Cloud Phase 7 adds automatic GUI workflow-to-cloud sync while preserving manual sync buttons for verification and recovery.
+- GUI cloud operations continue to call `AppController` only; the GUI does not call cloud storage or cryptographic modules directly.
 
 ---
 
@@ -595,7 +598,7 @@ Run the release binary on Linux/macOS:
 2. Review the Dashboard page.
 3. Open Customers, Vehicles, and Key Fobs to view the selected demo records.
 4. Open Provisioning.
-5. Complete the staged vehicle access workflow.
+5. Complete the guided vehicle access workflow.
 6. Review Protocol Artifacts.
 7. Review Credential Storage and confirm private key values are redacted.
 8. Open Cloud Storage and run safe metadata sync if `.env.local` is configured.

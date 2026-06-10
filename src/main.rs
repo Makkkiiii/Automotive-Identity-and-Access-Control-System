@@ -61,6 +61,13 @@ struct AIACSApp {
     selected_tab: MainTab,
     selected_artifact: ArtifactSection,
     cloud_status: String,
+    cloud_auto_sync_status: String,
+    cloud_sync_metadata_status: String,
+    cloud_sync_certificate_status: String,
+    cloud_sync_encrypted_key_status: String,
+    cloud_sync_session_status: String,
+    cloud_sync_audit_status: String,
+    cloud_sync_diagnostic_status: String,
     last_metadata_sync_status: String,
     last_metadata_sync_time: String,
     last_certificate_sync_status: String,
@@ -180,6 +187,8 @@ enum Message {
     ActivateSecureChannel,
     LaunchDiagnosticsTool,
     CheckCloudConnection,
+    EnableCloudAutoSync,
+    DisableCloudAutoSync,
     SyncCustomerMetadata,
     SyncVehicleMetadata,
     SyncKeyFobMetadata,
@@ -219,6 +228,13 @@ impl Sandbox for AIACSApp {
             selected_tab: MainTab::Dashboard,
             selected_artifact: ArtifactSection::ChallengeMessage,
             cloud_status: "Disconnected".to_string(),
+            cloud_auto_sync_status: "Disabled".to_string(),
+            cloud_sync_metadata_status: "Pending".to_string(),
+            cloud_sync_certificate_status: "Pending".to_string(),
+            cloud_sync_encrypted_key_status: "Pending".to_string(),
+            cloud_sync_session_status: "Pending".to_string(),
+            cloud_sync_audit_status: "Pending".to_string(),
+            cloud_sync_diagnostic_status: "Pending".to_string(),
             last_metadata_sync_status: "Not synced".to_string(),
             last_metadata_sync_time: "N/A".to_string(),
             last_certificate_sync_status: "Not synced".to_string(),
@@ -274,27 +290,32 @@ impl Sandbox for AIACSApp {
             }
             Message::AddCustomer => {
                 self.management_state.customer_note =
-                    "Add Customer is staged as a GUI-only demo action.".to_string();
+                    "View-only demo profile; database-backed customer creation is not enabled in this phase."
+                        .to_string();
                 self.selected_detail = self.management_state.customer_note.clone();
-                self.push_log("[INFO]", "Customer add placeholder selected");
+                self.push_log("[INFO]", "View-only demo customer profile selected");
             }
             Message::SelectCustomer => {
                 self.management_state.customer_note =
                     format!("Active customer selected: {}", OWNER_NAME);
                 self.selected_detail = self.management_state.customer_note.clone();
                 self.push_log("[INFO]", format!("Customer selected: {}", OWNER_NAME));
+                let auto_sync = self.controller.auto_sync_after_metadata_ready();
+                self.record_auto_sync_result("Metadata", auto_sync);
             }
             Message::EditCustomer => {
                 self.management_state.customer_note =
-                    "Edit Customer is staged as a GUI-only demo action.".to_string();
+                    "View-only demo profile; customer edits are not persisted in this phase."
+                        .to_string();
                 self.selected_detail = self.management_state.customer_note.clone();
-                self.push_log("[INFO]", "Customer edit placeholder selected");
+                self.push_log("[INFO]", "View-only demo customer edit selected");
             }
             Message::AddVehicle => {
                 self.management_state.vehicle_note =
-                    "Add Vehicle is staged as a GUI-only demo action.".to_string();
+                    "Static demo vehicle profile; database-backed vehicle creation is not enabled in this phase."
+                        .to_string();
                 self.selected_detail = self.management_state.vehicle_note.clone();
-                self.push_log("[INFO]", "Vehicle add placeholder selected");
+                self.push_log("[INFO]", "Static demo vehicle profile selected");
             }
             Message::SelectVehicle => {
                 self.management_state.vehicle_note =
@@ -304,6 +325,8 @@ impl Sandbox for AIACSApp {
                     "[INFO]",
                     format!("Vehicle selected: {}", VEHICLE_DISPLAY_NAME),
                 );
+                let auto_sync = self.controller.auto_sync_after_metadata_ready();
+                self.record_auto_sync_result("Metadata", auto_sync);
             }
             Message::LinkVehicleToOwner => {
                 self.management_state.vehicle_note =
@@ -316,13 +339,20 @@ impl Sandbox for AIACSApp {
                         VEHICLE_DISPLAY_NAME, OWNER_NAME
                     ),
                 );
+                let auto_sync = self.controller.auto_sync_after_metadata_ready();
+                self.record_auto_sync_result("Metadata", auto_sync);
             }
-            Message::RotateCredential => {
-                self.management_state.keyfob_note =
-                    "Credential rotation is a placeholder; no keys were changed.".to_string();
-                self.selected_detail = self.management_state.keyfob_note.clone();
-                self.push_log("[INFO]", "Credential rotation placeholder selected");
-            }
+            Message::RotateCredential => match self.controller.rotate_key_fob_credential() {
+                Ok(message) => {
+                    self.management_state.keyfob_note = message.clone();
+                    self.selected_detail = message.clone();
+                    self.push_log("[INFO]", message);
+                }
+                Err(error) => {
+                    self.selected_detail = format!("Credential rotation failed: {}", error);
+                    self.push_log("[ERROR]", format!("Credential rotation failed: {}", error));
+                }
+            },
             Message::ConnectVehicle => match self.controller.connect_vehicle() {
                 Ok(message) => {
                     self.workflow_state.vehicle_connected = true;
@@ -354,6 +384,8 @@ impl Sandbox for AIACSApp {
                     self.status.top_badge = "Trust Ready".to_string();
                     self.selected_detail = message.clone();
                     self.push_log("[INFO]", format!("Vehicle trust initialized: {}", message));
+                    let auto_sync = self.controller.auto_sync_after_trust_initialized();
+                    self.record_auto_sync_result("Encrypted Key Blob", auto_sync);
                 }
                 Err(error) => {
                     self.status.trust_status = "Error".to_string();
@@ -373,6 +405,8 @@ impl Sandbox for AIACSApp {
                     self.status.top_badge = "Key Fob Registered".to_string();
                     self.selected_detail = message.clone();
                     self.push_log("[INFO]", format!("Digital key fob registered: {}", message));
+                    let auto_sync = self.controller.auto_sync_after_key_fob_registered();
+                    self.record_auto_sync_result("Metadata", auto_sync);
                 }
                 Err(error) => {
                     self.status.key_fob_status = "Error".to_string();
@@ -395,6 +429,8 @@ impl Sandbox for AIACSApp {
                     self.status.top_badge = "Access Certificate Issued".to_string();
                     self.selected_detail = message.clone();
                     self.push_log("[INFO]", format!("Access certificate issued: {}", message));
+                    let auto_sync = self.controller.auto_sync_after_certificate_issued();
+                    self.record_auto_sync_result("Certificate", auto_sync);
                 }
                 Err(error) => {
                     self.status.certificate_status = "Error".to_string();
@@ -413,27 +449,32 @@ impl Sandbox for AIACSApp {
                     "Certificate details are shown in the Protocol Artifact Viewer.".to_string();
                 self.push_log("[INFO]", "Certificate details viewed");
             }
-            Message::GenerateChallenge => {
-                self.workflow_state.challenge_generated = true;
-                self.selected_detail =
-                    "Challenge generation staged. Nonce material is redacted; safe hash appears after authentication verification."
-                        .to_string();
-                let _ = self
-                    .controller
-                    .append_protocol_trace("[AUTH]", "Operator staged: Generate Challenge");
-                self.push_log("[AUTH]", "Generate Challenge staged");
-            }
-            Message::SignCanonicalPayload => {
-                self.workflow_state.payload_signed = true;
-                self.selected_detail =
-                    "Canonical payload signing staged with Ed25519; private key remains [REDACTED]."
-                        .to_string();
-                let _ = self.controller.append_protocol_trace(
-                    "[AUTH]",
-                    "Operator staged: Sign Canonical Payload using Ed25519",
-                );
-                self.push_log("[AUTH]", "Canonical payload signing staged");
-            }
+            Message::GenerateChallenge => match self.controller.generate_authentication_challenge()
+            {
+                Ok(message) => {
+                    self.workflow_state.challenge_generated = true;
+                    self.selected_detail = message.clone();
+                    self.push_log("[AUTH]", message);
+                }
+                Err(error) => {
+                    self.selected_detail = format!("Challenge generation failed: {}", error);
+                    self.push_log("[WARN]", format!("Challenge generation failed: {}", error));
+                }
+            },
+            Message::SignCanonicalPayload => match self.controller.sign_canonical_auth_payload() {
+                Ok(message) => {
+                    self.workflow_state.payload_signed = true;
+                    self.selected_detail = message.clone();
+                    self.push_log("[AUTH]", message);
+                }
+                Err(error) => {
+                    self.selected_detail = format!("Canonical payload signing failed: {}", error);
+                    self.push_log(
+                        "[WARN]",
+                        format!("Canonical payload signing failed: {}", error),
+                    );
+                }
+            },
             Message::VerifyAuthentication => {
                 match self.controller.run_legitimate_authentication_demo() {
                     Ok(message) => {
@@ -480,6 +521,9 @@ impl Sandbox for AIACSApp {
                             "[SESSION]",
                             "Secure access session activated for provisioned key fob",
                         );
+                        let auto_sync =
+                            self.controller.auto_sync_after_secure_session_established();
+                        self.record_auto_sync_result("Session", auto_sync);
                     }
                     Err(error) => {
                         self.status.session_status = "Error".to_string();
@@ -496,6 +540,8 @@ impl Sandbox for AIACSApp {
                 Ok(message) => {
                     self.selected_detail = message.clone();
                     self.push_log("[INFO]", message);
+                    let auto_sync = self.controller.auto_sync_after_diagnostics_completed();
+                    self.record_auto_sync_result("Diagnostic Results", auto_sync);
                 }
                 Err(error) => {
                     self.selected_detail = format!("Diagnostics launch failed: {}", error);
@@ -512,6 +558,33 @@ impl Sandbox for AIACSApp {
                     self.cloud_status = "Error".to_string();
                     self.selected_detail = format!("Cloud connection check failed: {}", error);
                     self.push_log("[DB]", format!("Cloud connection check failed: {}", error));
+                }
+            },
+            Message::EnableCloudAutoSync => match self.controller.enable_cloud_auto_sync() {
+                Ok(message) => {
+                    self.cloud_status = "Connected".to_string();
+                    self.cloud_auto_sync_status =
+                        self.controller.get_cloud_auto_sync_status().to_string();
+                    self.selected_detail = message.clone();
+                    self.push_log("[DB]", message);
+                    self.push_log("[SECURITY]", "Cloud secret material: [REDACTED]");
+                }
+                Err(error) => {
+                    self.cloud_auto_sync_status = "Disabled".to_string();
+                    self.selected_detail = format!("Cloud auto-sync enable failed: {}", error);
+                    self.push_log("[DB]", format!("Cloud auto-sync enable failed: {}", error));
+                }
+            },
+            Message::DisableCloudAutoSync => match self.controller.disable_cloud_auto_sync() {
+                Ok(message) => {
+                    self.cloud_auto_sync_status =
+                        self.controller.get_cloud_auto_sync_status().to_string();
+                    self.selected_detail = message.clone();
+                    self.push_log("[DB]", message);
+                }
+                Err(error) => {
+                    self.selected_detail = format!("Cloud auto-sync disable failed: {}", error);
+                    self.push_log("[DB]", format!("Cloud auto-sync disable failed: {}", error));
                 }
             },
             Message::SyncCustomerMetadata => match self.controller.sync_customer_metadata() {
@@ -665,6 +738,8 @@ impl Sandbox for AIACSApp {
                     self.workflow_state.report_exported = true;
                     self.selected_detail = message.clone();
                     self.push_log("[INFO]", message);
+                    let auto_sync = self.controller.auto_sync_after_provisioning_finalized();
+                    self.record_auto_sync_result("Audit Logs", auto_sync);
                 }
                 Err(error) => {
                     self.selected_detail = format!("Provisioning report export failed: {}", error);
@@ -1109,7 +1184,7 @@ impl AIACSApp {
                     self.workflow_step_card(WorkflowStep {
                         icon_name: "verify-auth",
                         title: "Sign Canonical Payload",
-                        description: "Stage Ed25519 payload signing; private key stays redacted.",
+                        description: "Sign Ed25519 payload; private key stays redacted.",
                         status: self.completed_status(
                             self.workflow_state.payload_signed,
                             "Signed",
@@ -1178,7 +1253,7 @@ impl AIACSApp {
 
         container(
             column![
-                text("Staged Vehicle Access Provisioning")
+                text("Vehicle Access Provisioning")
                     .size(16)
                     .font(Font::MONOSPACE)
                     .style(theme::Text::Color(ACCENT_PINK)),
@@ -1327,6 +1402,7 @@ impl AIACSApp {
                     .style(theme::Text::Color(ACCENT_PINK)),
                 self.provisioning_completion_card(),
                 self.view_compact_status_rows(),
+                self.view_cloud_sync_status_rows(),
                 self.compact_current_result_card(),
             ]
             .spacing(8),
@@ -1623,9 +1699,16 @@ impl AIACSApp {
                         .font(Font::MONOSPACE)
                         .style(theme::Text::Color(SECONDARY_TEXT)),
                     self.artifact_detail_row("Cloud DB Status", self.cloud_status.clone()),
+                    self.artifact_detail_row(
+                        "Cloud Auto Sync",
+                        self.cloud_auto_sync_status.clone()
+                    ),
                     self.artifact_detail_row("Provider", "Neon PostgreSQL"),
                     self.artifact_detail_row("Storage Mode", "Company Cloud DB"),
-                    self.artifact_detail_row("Sync Scope", "Customer / Vehicle / Key Fob Metadata"),
+                    self.artifact_detail_row("Cloud Provider", "Neon PostgreSQL"),
+                    self.artifact_detail_row("Cloud Sync Mode", "Manual + Automatic Workflow Sync"),
+                    self.artifact_detail_row("Secrets in Cloud", "[REDACTED]"),
+                    self.artifact_detail_row("Sync Scope", "Provisioning metadata and outcomes"),
                     text("Cloud Credential Protection")
                         .size(14)
                         .font(Font::MONOSPACE)
@@ -1641,6 +1724,25 @@ impl AIACSApp {
                     ),
                     self.artifact_detail_row("Raw Private Keys in Cloud", "No"),
                     self.artifact_detail_row("Raw Private Key Material", "[REDACTED]"),
+                    text("Automatic Workflow Sync")
+                        .size(14)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(ACCENT_PINK)),
+                    self.artifact_detail_row("Metadata", self.cloud_sync_metadata_status.clone()),
+                    self.artifact_detail_row(
+                        "Certificate",
+                        self.cloud_sync_certificate_status.clone()
+                    ),
+                    self.artifact_detail_row(
+                        "Encrypted Key Blob",
+                        self.cloud_sync_encrypted_key_status.clone()
+                    ),
+                    self.artifact_detail_row("Session", self.cloud_sync_session_status.clone()),
+                    self.artifact_detail_row("Audit Logs", self.cloud_sync_audit_status.clone()),
+                    self.artifact_detail_row(
+                        "Diagnostic Results",
+                        self.cloud_sync_diagnostic_status.clone()
+                    ),
                     self.artifact_detail_row(
                         "Last Metadata Sync Status",
                         self.last_metadata_sync_status.clone()
@@ -1725,6 +1827,22 @@ impl AIACSApp {
                         Message::CheckCloudConnection,
                         ButtonKind::Nav
                     ),
+                    compact_button(
+                        "lock",
+                        "Enable Cloud Auto Sync",
+                        Message::EnableCloudAutoSync,
+                        ButtonKind::Nav
+                    ),
+                    compact_button(
+                        "terminal",
+                        "Disable Cloud Auto Sync",
+                        Message::DisableCloudAutoSync,
+                        ButtonKind::Nav
+                    ),
+                    text("Manual sync buttons are available for verification and recovery. Automatic sync runs after successful provisioning workflow actions when Cloud Auto Sync is enabled.")
+                        .size(11)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(SECONDARY_TEXT)),
                     compact_button(
                         "auth",
                         "Sync Customer Metadata",
@@ -2221,6 +2339,41 @@ impl AIACSApp {
         .into()
     }
 
+    fn view_cloud_sync_status_rows(&self) -> Element<'_, Message> {
+        container(
+            column![
+                text("Cloud Sync Status")
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(ACCENT_BLUE)),
+                self.view_summary_row("terminal", "Auto Sync", &self.cloud_auto_sync_status),
+                self.view_summary_row("auth", "Metadata", &self.cloud_sync_metadata_status),
+                self.view_summary_row(
+                    "certificate",
+                    "Certificate",
+                    &self.cloud_sync_certificate_status
+                ),
+                self.view_summary_row(
+                    "shield",
+                    "Encrypted Key Blob",
+                    &self.cloud_sync_encrypted_key_status
+                ),
+                self.view_summary_row("lock", "Session", &self.cloud_sync_session_status),
+                self.view_summary_row("terminal", "Audit Logs", &self.cloud_sync_audit_status),
+                self.view_summary_row(
+                    "warning-shield",
+                    "Diagnostics",
+                    &self.cloud_sync_diagnostic_status
+                ),
+            ]
+            .spacing(7),
+        )
+        .width(Length::Fill)
+        .padding(8)
+        .style(container_style(PanelKind::Detail))
+        .into()
+    }
+
     fn compact_current_result_card(&self) -> Element<'_, Message> {
         container(
             column![
@@ -2328,6 +2481,7 @@ impl AIACSApp {
 
     fn record_metadata_sync(&mut self, message: String) {
         self.cloud_status = "Connected".to_string();
+        self.cloud_sync_metadata_status = "Synced".to_string();
         self.last_metadata_sync_status = message.clone();
         self.last_metadata_sync_time = Local::now().format("%H:%M:%S").to_string();
         self.selected_detail = message;
@@ -2335,6 +2489,7 @@ impl AIACSApp {
 
     fn record_metadata_sync_error(&mut self, error: AppControllerError) {
         self.cloud_status = "Error".to_string();
+        self.cloud_sync_metadata_status = "Failed".to_string();
         self.last_metadata_sync_status = format!("Metadata sync failed: {}", error);
         self.last_metadata_sync_time = Local::now().format("%H:%M:%S").to_string();
         self.selected_detail = self.last_metadata_sync_status.clone();
@@ -2343,6 +2498,7 @@ impl AIACSApp {
 
     fn record_certificate_sync(&mut self, message: String) {
         self.cloud_status = "Connected".to_string();
+        self.cloud_sync_certificate_status = "Synced".to_string();
         self.last_certificate_sync_status = message.clone();
         self.last_certificate_sync_time = Local::now().format("%H:%M:%S").to_string();
         self.selected_detail = message;
@@ -2350,6 +2506,7 @@ impl AIACSApp {
 
     fn record_certificate_sync_error(&mut self, error: AppControllerError) {
         self.cloud_status = "Error".to_string();
+        self.cloud_sync_certificate_status = "Failed".to_string();
         self.last_certificate_sync_status = format!("Certificate metadata sync failed: {}", error);
         self.last_certificate_sync_time = Local::now().format("%H:%M:%S").to_string();
         self.selected_detail = self.last_certificate_sync_status.clone();
@@ -2358,6 +2515,7 @@ impl AIACSApp {
 
     fn record_provisioning_session_sync(&mut self, message: String) {
         self.cloud_status = "Connected".to_string();
+        self.cloud_sync_session_status = "Synced".to_string();
         self.last_provisioning_session_sync_status = message.clone();
         self.last_provisioning_session_sync_time = Local::now().format("%H:%M:%S").to_string();
         self.selected_detail = message;
@@ -2365,6 +2523,7 @@ impl AIACSApp {
 
     fn record_provisioning_session_sync_error(&mut self, error: AppControllerError) {
         self.cloud_status = "Error".to_string();
+        self.cloud_sync_session_status = "Failed".to_string();
         self.last_provisioning_session_sync_status =
             format!("Provisioning session sync failed: {}", error);
         self.last_provisioning_session_sync_time = Local::now().format("%H:%M:%S").to_string();
@@ -2374,6 +2533,7 @@ impl AIACSApp {
 
     fn record_audit_log_sync(&mut self, message: String) {
         self.cloud_status = "Connected".to_string();
+        self.cloud_sync_audit_status = "Synced".to_string();
         self.last_audit_log_sync_status = message.clone();
         self.last_audit_log_sync_time = Local::now().format("%H:%M:%S").to_string();
         self.selected_detail = message;
@@ -2381,6 +2541,7 @@ impl AIACSApp {
 
     fn record_audit_log_sync_error(&mut self, error: AppControllerError) {
         self.cloud_status = "Error".to_string();
+        self.cloud_sync_audit_status = "Failed".to_string();
         self.last_audit_log_sync_status = format!("Audit log sync failed: {}", error);
         self.last_audit_log_sync_time = Local::now().format("%H:%M:%S").to_string();
         self.selected_detail = self.last_audit_log_sync_status.clone();
@@ -2389,6 +2550,7 @@ impl AIACSApp {
 
     fn record_diagnostic_result_sync(&mut self, message: String) {
         self.cloud_status = "Connected".to_string();
+        self.cloud_sync_diagnostic_status = "Synced".to_string();
         self.last_diagnostic_result_sync_status = message.clone();
         self.last_diagnostic_result_sync_time = Local::now().format("%H:%M:%S").to_string();
         self.selected_detail = message;
@@ -2396,6 +2558,7 @@ impl AIACSApp {
 
     fn record_diagnostic_result_sync_error(&mut self, error: AppControllerError) {
         self.cloud_status = "Error".to_string();
+        self.cloud_sync_diagnostic_status = "Failed".to_string();
         self.last_diagnostic_result_sync_status =
             format!("Diagnostic result sync failed: {}", error);
         self.last_diagnostic_result_sync_time = Local::now().format("%H:%M:%S").to_string();
@@ -2403,8 +2566,47 @@ impl AIACSApp {
         self.push_log("[DB]", self.last_diagnostic_result_sync_status.clone());
     }
 
+    fn record_auto_sync_result(
+        &mut self,
+        area: &'static str,
+        result: Result<String, AppControllerError>,
+    ) {
+        let message = match result {
+            Ok(message) => message,
+            Err(error) => format!("Cloud auto-sync failed: {}", error),
+        };
+        let status = if message.contains("completed") {
+            "Synced"
+        } else if message.contains("skipped") {
+            "Skipped"
+        } else if message.contains("failed") {
+            "Failed"
+        } else {
+            "Pending"
+        };
+
+        match area {
+            "Metadata" => self.cloud_sync_metadata_status = status.to_string(),
+            "Certificate" => self.cloud_sync_certificate_status = status.to_string(),
+            "Encrypted Key Blob" => self.cloud_sync_encrypted_key_status = status.to_string(),
+            "Session" => self.cloud_sync_session_status = status.to_string(),
+            "Audit Logs" => self.cloud_sync_audit_status = status.to_string(),
+            "Diagnostic Results" => self.cloud_sync_diagnostic_status = status.to_string(),
+            _ => {}
+        }
+
+        if status == "Synced" {
+            self.cloud_status = "Connected".to_string();
+        }
+        self.push_log("[DB]", message.clone());
+        if status == "Synced" {
+            self.push_log("[SECURITY]", "Cloud secret material: [REDACTED]");
+        }
+    }
+
     fn record_encrypted_key_sync(&mut self, message: String) {
         self.cloud_status = "Connected".to_string();
+        self.cloud_sync_encrypted_key_status = "Synced".to_string();
         self.last_encrypted_key_sync_status = message.clone();
         self.last_encrypted_key_sync_time = Local::now().format("%H:%M:%S").to_string();
         self.selected_detail = message;
@@ -2412,6 +2614,7 @@ impl AIACSApp {
 
     fn record_encrypted_key_sync_error(&mut self, error: AppControllerError) {
         self.cloud_status = "Error".to_string();
+        self.cloud_sync_encrypted_key_status = "Failed".to_string();
         self.last_encrypted_key_sync_status = format!("Encrypted key upload failed: {}", error);
         self.last_encrypted_key_sync_time = Local::now().format("%H:%M:%S").to_string();
         self.selected_detail = self.last_encrypted_key_sync_status.clone();
@@ -2773,7 +2976,9 @@ fn status_color(value: &str) -> Color {
         | "Valid"
         | "Complete"
         | "CA-signed certificate issued"
-        | "Trust root initialized" => SUCCESS_GREEN,
+        | "Trust root initialized"
+        | "Enabled"
+        | "Synced" => SUCCESS_GREEN,
         "Pending"
         | "Not Initialized"
         | "Not Registered"
@@ -2781,7 +2986,9 @@ fn status_color(value: &str) -> Color {
         | "Not Run"
         | "Not Established"
         | "N/A"
-        | "Provisioning In Progress" => PENDING_TEXT,
+        | "Provisioning In Progress"
+        | "Disabled"
+        | "Skipped" => PENDING_TEXT,
         "Error" | "Failed" | "Rejected" | "Access Rejected" | "Certificate trust error" => {
             DANGER_RED
         }
@@ -2866,5 +3073,84 @@ mod tests {
         assert!(!DIAGNOSTIC_SYNC_REDACTION_LINE.contains("raw_nonce"));
         assert!(!DIAGNOSTIC_SYNC_REDACTION_LINE.contains("encrypted_key_blob"));
         assert!(!DIAGNOSTIC_SYNC_REDACTION_LINE.contains("encryption_nonce"));
+    }
+
+    #[test]
+    fn cloud_auto_sync_gui_strings_are_safe() {
+        let source = include_str!("main.rs");
+
+        for expected in [
+            "Cloud Auto Sync",
+            "Enable Cloud Auto Sync",
+            "Disable Cloud Auto Sync",
+            "Manual + Automatic Workflow Sync",
+            "Secrets in Cloud",
+            "[REDACTED]",
+        ] {
+            assert!(source.contains(expected));
+        }
+
+        for disallowed in [
+            "DATABASE_URL",
+            "AIACS_MASTER_KEY",
+            "private_key",
+            "session_key",
+            "shared_secret",
+        ] {
+            assert!(!source.contains(&format!("{disallowed}=")));
+        }
+    }
+
+    #[test]
+    fn manual_cloud_buttons_remain_available() {
+        let source = include_str!("main.rs");
+
+        for expected in [
+            "Check Cloud Connection",
+            "Sync Customer Metadata",
+            "Sync Vehicle Metadata",
+            "Sync Key Fob Metadata",
+            "Sync Demo Metadata",
+            "Sync Certificate Metadata",
+            "Sync Provisioning Session",
+            "Sync Audit Logs",
+            "Sync Diagnostic Results",
+            "Upload CA Encrypted Key Blob",
+            "Upload Key Fob Encrypted Key Blob",
+            "Upload All Encrypted Key Blobs",
+        ] {
+            assert!(
+                source.contains(expected),
+                "missing manual cloud button: {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn security_workflow_buttons_are_not_labelled_gui_only_demo_actions() {
+        let source = include_str!("main.rs");
+
+        for forbidden in [
+            concat!("sta", "ged as a ", "GUI", "-only ", "demo ", "action"),
+            concat!("GUI", "-only ", "demo ", "action"),
+            concat!("place", "holder ", "selected"),
+        ] {
+            assert!(!source.contains(forbidden));
+        }
+        for security_label in [
+            "Connect Vehicle",
+            "Detect Key Fob",
+            "Register Key Fob",
+            "Initialize Trust",
+            "Issue Certificate",
+            "Generate",
+            "Sign Payload",
+            "Verify Authentication",
+            "Activate Session",
+            "Export Report",
+            "Sync Diagnostic Results",
+        ] {
+            assert!(source.contains(security_label));
+        }
     }
 }

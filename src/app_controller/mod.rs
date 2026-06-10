@@ -88,6 +88,7 @@ pub struct AppController {
     log_dir: PathBuf,
     vehicle_connected: bool,
     keyfob_detected: bool,
+    cloud_auto_sync_enabled: bool,
 }
 
 impl Default for AppController {
@@ -110,6 +111,7 @@ impl fmt::Debug for AppController {
             .field("log_dir", &self.log_dir)
             .field("vehicle_connected", &self.vehicle_connected)
             .field("keyfob_detected", &self.keyfob_detected)
+            .field("cloud_auto_sync_enabled", &self.cloud_auto_sync_enabled)
             .finish()
     }
 }
@@ -137,6 +139,7 @@ impl AppController {
             log_dir: log_dir.into(),
             vehicle_connected: false,
             keyfob_detected: false,
+            cloud_auto_sync_enabled: false,
         }
     }
 
@@ -157,6 +160,61 @@ impl AppController {
         self.keyfob_detected = true;
         let message = format!("Digital key fob detected: {}", DEFAULT_FOB_ID);
         self.append_protocol_trace("[KEYFOB]", format!("Detected fob ID: {}", DEFAULT_FOB_ID))?;
+        self.append_protocol_trace("[KEYFOB]", "Private key material: [REDACTED]")?;
+        self.log(message.clone());
+        Ok(message)
+    }
+
+    pub fn generate_authentication_challenge(&mut self) -> Result<String, AppControllerError> {
+        self.ensure_ready_for_authentication()?;
+        let challenge =
+            AuthenticationEngine::generate_challenge(&mut self.vehicle, DEFAULT_VEHICLE_ID)
+                .map_err(|e| AppControllerError::Backend(e.to_string()))?;
+        let nonce_fingerprint = fingerprint(&challenge.nonce);
+        let message = "Authentication challenge generated; raw nonce is [REDACTED]".to_string();
+
+        self.append_protocol_trace("[AUTH]", "Vehicle generated nonce challenge")?;
+        self.append_protocol_trace("[AUTH]", format!("Nonce hash: {}", nonce_fingerprint))?;
+        self.log(message.clone());
+        Ok(message)
+    }
+
+    pub fn sign_canonical_auth_payload(&mut self) -> Result<String, AppControllerError> {
+        self.ensure_ready_for_authentication()?;
+        let challenge =
+            AuthenticationEngine::generate_challenge(&mut self.vehicle, DEFAULT_VEHICLE_ID)
+                .map_err(|e| AppControllerError::Backend(e.to_string()))?;
+        let proof = {
+            let keyfob = self.keyfob.as_ref().expect("Key fob ready");
+            keyfob.create_auth_proof(DEFAULT_VEHICLE_ID, &challenge.nonce)?
+        };
+        let canonical_payload = canonical_auth_payload(
+            &proof.vehicle_id,
+            &proof.subject_id,
+            &proof.nonce,
+            &proof.timestamp,
+        );
+        let message =
+            "Canonical authentication payload signed; private key remains [REDACTED]".to_string();
+
+        self.append_protocol_trace("[AUTH]", "Key fob constructed canonical payload")?;
+        self.append_protocol_trace(
+            "[AUTH]",
+            format!("Canonical payload: {}", canonical_payload),
+        )?;
+        self.append_protocol_trace(
+            "[AUTH]",
+            format!("Signature fingerprint: {}", fingerprint(&proof.signature)),
+        )?;
+        self.append_protocol_trace("[AUTH]", "Key fob private key: [REDACTED]")?;
+        self.log(message.clone());
+        Ok(message)
+    }
+
+    pub fn rotate_key_fob_credential(&mut self) -> Result<String, AppControllerError> {
+        let message =
+            "Credential rotation is not available in this phase; no keys were changed".to_string();
+        self.append_protocol_trace("[KEYFOB]", "Credential rotation unavailable in this phase")?;
         self.append_protocol_trace("[KEYFOB]", "Private key material: [REDACTED]")?;
         self.log(message.clone());
         Ok(message)
@@ -802,6 +860,75 @@ impl AppController {
         Ok(message)
     }
 
+    pub fn is_cloud_auto_sync_enabled(&self) -> bool {
+        self.cloud_auto_sync_enabled
+    }
+
+    pub fn get_cloud_auto_sync_status(&self) -> &'static str {
+        if self.cloud_auto_sync_enabled {
+            "Enabled"
+        } else {
+            "Disabled"
+        }
+    }
+
+    pub fn enable_cloud_auto_sync(&mut self) -> Result<String, AppControllerError> {
+        self.check_cloud_connection()?;
+        self.cloud_auto_sync_enabled = true;
+        self.save_log_entry("[DB]", "Auto-sync enabled")?;
+        Ok("Cloud auto-sync enabled".to_string())
+    }
+
+    pub fn disable_cloud_auto_sync(&mut self) -> Result<String, AppControllerError> {
+        self.cloud_auto_sync_enabled = false;
+        self.save_log_entry("[DB]", "Auto-sync disabled")?;
+        Ok("Cloud auto-sync disabled".to_string())
+    }
+
+    pub fn auto_sync_after_metadata_ready(&mut self) -> Result<String, AppControllerError> {
+        self.run_auto_sync("metadata synced", |controller| {
+            controller.sync_demo_cloud_metadata()
+        })
+    }
+
+    pub fn auto_sync_after_key_fob_registered(&mut self) -> Result<String, AppControllerError> {
+        self.run_auto_sync("key fob metadata synced", |controller| {
+            controller.sync_key_fob_metadata()
+        })
+    }
+
+    pub fn auto_sync_after_trust_initialized(&mut self) -> Result<String, AppControllerError> {
+        self.run_auto_sync("encrypted key blob synced", |controller| {
+            controller.sync_ca_encrypted_key_blob()
+        })
+    }
+
+    pub fn auto_sync_after_certificate_issued(&mut self) -> Result<String, AppControllerError> {
+        self.run_auto_sync("certificate metadata synced", |controller| {
+            controller.sync_certificate_metadata()
+        })
+    }
+
+    pub fn auto_sync_after_secure_session_established(
+        &mut self,
+    ) -> Result<String, AppControllerError> {
+        self.run_auto_sync("provisioning session synced", |controller| {
+            controller.sync_provisioning_session_record()
+        })
+    }
+
+    pub fn auto_sync_after_provisioning_finalized(&mut self) -> Result<String, AppControllerError> {
+        self.run_auto_sync("audit logs synced", |controller| {
+            controller.sync_audit_log_records()
+        })
+    }
+
+    pub fn auto_sync_after_diagnostics_completed(&mut self) -> Result<String, AppControllerError> {
+        self.run_auto_sync("diagnostic results synced", |controller| {
+            controller.sync_diagnostic_result_records()
+        })
+    }
+
     pub fn sync_customer_metadata(&mut self) -> Result<String, AppControllerError> {
         let metadata = self.customer_metadata();
         let runtime = Self::cloud_runtime()?;
@@ -1245,7 +1372,37 @@ impl AppController {
             CloudStorageError::MissingDatabaseUrl => {
                 AppControllerError::Backend("Cloud database is not configured".to_string())
             }
+            CloudStorageError::MissingMasterKey
+            | CloudStorageError::InvalidMasterKeyBase64
+            | CloudStorageError::InvalidMasterKeySize => {
+                AppControllerError::Backend("Cloud encryption key is not configured".to_string())
+            }
             other => AppControllerError::Backend(other.to_string()),
+        }
+    }
+
+    fn run_auto_sync(
+        &mut self,
+        success_label: &'static str,
+        sync: impl FnOnce(&mut Self) -> Result<String, AppControllerError>,
+    ) -> Result<String, AppControllerError> {
+        if !self.cloud_auto_sync_enabled {
+            self.save_log_entry("[DB]", "Auto-sync skipped: disabled")?;
+            return Ok("Cloud auto-sync skipped: disabled".to_string());
+        }
+
+        match sync(self) {
+            Ok(_) => {
+                let message = format!("Cloud auto-sync completed: {}", success_label);
+                self.save_log_entry("[DB]", message.clone())?;
+                self.save_log_entry("[SECURITY]", "Cloud secret material: [REDACTED]")?;
+                Ok(message)
+            }
+            Err(error) => {
+                let message = format!("Cloud auto-sync failed: {}", error);
+                self.save_log_entry("[DB]", message.clone())?;
+                Ok(message)
+            }
         }
     }
 
@@ -1968,6 +2125,67 @@ mod tests {
         assert!(!message.contains("AIACS_MASTER_KEY"));
         assert!(!message.contains("postgresql://"));
         assert!(!message.contains("password"));
+    }
+
+    #[test]
+    fn test_cloud_master_key_errors_are_safe_for_gui() {
+        for error in [
+            CloudStorageError::MissingMasterKey,
+            CloudStorageError::InvalidMasterKeyBase64,
+            CloudStorageError::InvalidMasterKeySize,
+        ] {
+            let message = AppController::map_cloud_error(error).to_string();
+
+            assert_eq!(message, "Cloud encryption key is not configured");
+            assert!(!message.contains("AIACS_MASTER_KEY"));
+            assert!(!message.contains("DATABASE_URL"));
+            assert!(!message.contains("postgresql://"));
+        }
+    }
+
+    #[test]
+    fn test_cloud_auto_sync_default_is_disabled() {
+        let controller = AppController::new();
+
+        assert!(!controller.is_cloud_auto_sync_enabled());
+        assert_eq!(controller.get_cloud_auto_sync_status(), "Disabled");
+    }
+
+    #[test]
+    fn test_disable_cloud_auto_sync_returns_safe_message() {
+        let mut controller = AppController::new();
+        controller.cloud_auto_sync_enabled = true;
+
+        let message = controller
+            .disable_cloud_auto_sync()
+            .expect("disable should not require cloud connection");
+
+        assert_eq!(message, "Cloud auto-sync disabled");
+        assert!(!controller.is_cloud_auto_sync_enabled());
+        assert!(!message.contains("DATABASE_URL"));
+        assert!(!message.contains("AIACS_MASTER_KEY"));
+    }
+
+    #[test]
+    fn test_auto_sync_skipped_message_is_safe_when_disabled() {
+        let mut controller = AppController::new();
+
+        for result in [
+            controller.auto_sync_after_metadata_ready(),
+            controller.auto_sync_after_key_fob_registered(),
+            controller.auto_sync_after_trust_initialized(),
+            controller.auto_sync_after_certificate_issued(),
+            controller.auto_sync_after_secure_session_established(),
+            controller.auto_sync_after_provisioning_finalized(),
+            controller.auto_sync_after_diagnostics_completed(),
+        ] {
+            let message = result.expect("disabled auto-sync should skip safely");
+            assert_eq!(message, "Cloud auto-sync skipped: disabled");
+            assert!(!message.contains("DATABASE_URL"));
+            assert!(!message.contains("AIACS_MASTER_KEY"));
+            assert!(!message.contains("private_key"));
+            assert!(!message.contains("session_key"));
+        }
     }
 
     #[test]
