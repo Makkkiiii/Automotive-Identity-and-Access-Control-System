@@ -19,6 +19,7 @@ const VEHICLE_SYNCED_MESSAGE: &str = "Vehicle metadata synced";
 const KEY_FOB_SYNCED_MESSAGE: &str = "Key fob metadata synced";
 const DEMO_METADATA_SYNCED_MESSAGE: &str = "Demo metadata synced to cloud database";
 pub const CERTIFICATE_METADATA_SYNCED_MESSAGE: &str = "Certificate metadata synced";
+pub const PROVISIONING_SESSION_SYNCED_MESSAGE: &str = "Provisioning session record synced";
 pub const CA_ENCRYPTED_KEY_SYNCED_MESSAGE: &str = "CA encrypted key blob uploaded";
 pub const KEY_FOB_ENCRYPTED_KEY_SYNCED_MESSAGE: &str = "Key fob encrypted key blob uploaded";
 pub const ENCRYPTED_KEY_BLOBS_SYNCED_MESSAGE: &str =
@@ -36,9 +37,14 @@ pub const DEMO_FOB_ID: &str = "FOB-0001";
 pub const DEMO_FOB_LABEL: &str = "Primary Key Fob";
 pub const DEFAULT_PROVISIONING_STATUS: &str = "In Progress";
 pub const DEFAULT_CERTIFICATE_STATUS: &str = "Pending";
+pub const DEMO_SESSION_ID: &str = "SESSION-0001";
 pub const DEMO_CERTIFICATE_ID: &str = "CERT-FOB-0001";
 pub const CERTIFICATE_SIGNATURE_ALGORITHM: &str = "Ed25519";
 pub const ISSUED_CERTIFICATE_STATUS: &str = "issued";
+pub const AUTHENTICATED_STATUS: &str = "authenticated";
+pub const SECURE_SESSION_ESTABLISHED_STATUS: &str = "secure_session_established";
+pub const GRANT_ACCESS_DECISION: &str = "grant_access";
+pub const SESSION_ALGORITHM: &str = "X25519 + HKDF-SHA256 + AES-256-GCM";
 pub const CA_ENCRYPTED_KEY_ID: &str = "KEY-CA-0001";
 pub const KEY_FOB_ENCRYPTED_KEY_ID: &str = "KEY-FOB-0001";
 pub const ENCRYPTED_KEY_ALGORITHM: &str = "AES-256-GCM";
@@ -281,6 +287,36 @@ ON CONFLICT (certificate_id) DO UPDATE SET
     updated_at = NOW();
 "#;
 
+const UPSERT_PROVISIONING_SESSION_SQL: &str = r#"
+INSERT INTO provisioning_sessions (
+    session_id,
+    customer_id,
+    vehicle_id,
+    fob_id,
+    certificate_id,
+    auth_status,
+    session_status,
+    access_decision,
+    session_algorithm,
+    started_at,
+    completed_at,
+    created_at,
+    updated_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
+ON CONFLICT (session_id) DO UPDATE SET
+    customer_id = EXCLUDED.customer_id,
+    vehicle_id = EXCLUDED.vehicle_id,
+    fob_id = EXCLUDED.fob_id,
+    certificate_id = EXCLUDED.certificate_id,
+    auth_status = EXCLUDED.auth_status,
+    session_status = EXCLUDED.session_status,
+    access_decision = EXCLUDED.access_decision,
+    session_algorithm = EXCLUDED.session_algorithm,
+    started_at = EXCLUDED.started_at,
+    completed_at = EXCLUDED.completed_at,
+    updated_at = NOW();
+"#;
+
 const UPSERT_ENCRYPTED_KEY_SQL: &str = r#"
 INSERT INTO encrypted_keys (
     key_id,
@@ -348,6 +384,21 @@ pub struct CertificateMetadata {
     pub public_key_fingerprint: Option<String>,
     pub signature_algorithm: String,
     pub certificate_status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvisioningSessionMetadata {
+    pub session_id: String,
+    pub customer_id: String,
+    pub vehicle_id: String,
+    pub fob_id: String,
+    pub certificate_id: String,
+    pub auth_status: String,
+    pub session_status: String,
+    pub access_decision: String,
+    pub session_algorithm: String,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -452,6 +503,25 @@ pub fn demo_certificate_metadata(
         public_key_fingerprint,
         signature_algorithm: CERTIFICATE_SIGNATURE_ALGORITHM.to_string(),
         certificate_status: ISSUED_CERTIFICATE_STATUS.to_string(),
+    }
+}
+
+pub fn demo_provisioning_session_metadata(
+    started_at: Option<DateTime<Utc>>,
+    completed_at: Option<DateTime<Utc>>,
+) -> ProvisioningSessionMetadata {
+    ProvisioningSessionMetadata {
+        session_id: DEMO_SESSION_ID.to_string(),
+        customer_id: DEMO_CUSTOMER_ID.to_string(),
+        vehicle_id: DEMO_VEHICLE_ID.to_string(),
+        fob_id: DEMO_FOB_ID.to_string(),
+        certificate_id: DEMO_CERTIFICATE_ID.to_string(),
+        auth_status: AUTHENTICATED_STATUS.to_string(),
+        session_status: SECURE_SESSION_ESTABLISHED_STATUS.to_string(),
+        access_decision: GRANT_ACCESS_DECISION.to_string(),
+        session_algorithm: SESSION_ALGORITHM.to_string(),
+        started_at,
+        completed_at,
     }
 }
 
@@ -657,6 +727,39 @@ impl CloudStorageClient {
         .await
     }
 
+    pub async fn upsert_provisioning_session(
+        &self,
+        metadata: &ProvisioningSessionMetadata,
+    ) -> Result<String, CloudStorageError> {
+        sqlx::query(UPSERT_PROVISIONING_SESSION_SQL)
+            .bind(&metadata.session_id)
+            .bind(&metadata.customer_id)
+            .bind(&metadata.vehicle_id)
+            .bind(&metadata.fob_id)
+            .bind(&metadata.certificate_id)
+            .bind(&metadata.auth_status)
+            .bind(&metadata.session_status)
+            .bind(&metadata.access_decision)
+            .bind(&metadata.session_algorithm)
+            .bind(metadata.started_at)
+            .bind(metadata.completed_at)
+            .execute(&self.pool)
+            .await
+            .map_err(|_| CloudStorageError::ProvisioningSessionSyncFailed)?;
+
+        Ok(PROVISIONING_SESSION_SYNCED_MESSAGE.to_string())
+    }
+
+    pub async fn sync_demo_provisioning_session(&self) -> Result<String, CloudStorageError> {
+        let started_at = Utc::now();
+        let completed_at = started_at;
+        self.upsert_provisioning_session(&demo_provisioning_session_metadata(
+            Some(started_at),
+            Some(completed_at),
+        ))
+        .await
+    }
+
     pub async fn upsert_encrypted_key(
         &self,
         record: &EncryptedKeyRecord,
@@ -709,6 +812,7 @@ pub enum CloudStorageError {
     SchemaInitializationFailed,
     MetadataSyncFailed,
     CertificateMetadataSyncFailed,
+    ProvisioningSessionSyncFailed,
     PrivateKeyEncryptionFailed,
     EncryptedKeySyncFailed,
 }
@@ -736,6 +840,9 @@ impl fmt::Display for CloudStorageError {
             CloudStorageError::MetadataSyncFailed => f.write_str("Cloud metadata sync failed"),
             CloudStorageError::CertificateMetadataSyncFailed => {
                 f.write_str("Certificate metadata sync failed")
+            }
+            CloudStorageError::ProvisioningSessionSyncFailed => {
+                f.write_str("Provisioning session record could not be synced")
             }
             CloudStorageError::PrivateKeyEncryptionFailed => {
                 f.write_str("Private key encryption failed")
@@ -774,6 +881,11 @@ fn metadata_sync_sql() -> String {
 #[cfg(test)]
 fn certificate_metadata_sync_sql() -> &'static str {
     UPSERT_CERTIFICATE_METADATA_SQL
+}
+
+#[cfg(test)]
+fn provisioning_session_sync_sql() -> &'static str {
+    UPSERT_PROVISIONING_SESSION_SQL
 }
 
 #[cfg(test)]
@@ -900,6 +1012,9 @@ mod tests {
         assert!(!schema.contains("database_url"));
         assert!(!schema.contains("hkdf_output"));
         assert!(!schema.contains("x25519_private_key"));
+        assert!(!schema.contains("aes_key"));
+        assert!(!schema.contains("aes_gcm_key"));
+        assert!(!schema.contains("decrypted_payload"));
     }
 
     #[test]
@@ -959,6 +1074,7 @@ mod tests {
             KEY_FOB_SYNCED_MESSAGE,
             DEMO_METADATA_SYNCED_MESSAGE,
             CERTIFICATE_METADATA_SYNCED_MESSAGE,
+            PROVISIONING_SESSION_SYNCED_MESSAGE,
         ] {
             assert!(!message.contains("DATABASE_URL"));
             assert!(!message.contains("AIACS_MASTER_KEY"));
@@ -1038,6 +1154,79 @@ mod tests {
         ] {
             assert!(!sql.contains(disallowed));
         }
+    }
+
+    fn forbidden_session_secret_terms() -> [&'static str; 11] {
+        [
+            "session_key",
+            "shared_secret",
+            "raw_key",
+            "master_key",
+            "private_key",
+            "database_url",
+            "hkdf_output",
+            "x25519_private_key",
+            "aes_key",
+            "aes_gcm_key",
+            "decrypted_payload",
+        ]
+    }
+
+    #[test]
+    fn provisioning_session_metadata_uses_safe_demo_values() {
+        let started_at = Utc::now();
+        let completed_at = started_at + chrono::Duration::seconds(2);
+        let metadata = demo_provisioning_session_metadata(Some(started_at), Some(completed_at));
+        let debug = format!("{metadata:?}").to_lowercase();
+
+        assert_eq!(metadata.session_id, DEMO_SESSION_ID);
+        assert_eq!(metadata.customer_id, DEMO_CUSTOMER_ID);
+        assert_eq!(metadata.vehicle_id, DEMO_VEHICLE_ID);
+        assert_eq!(metadata.fob_id, DEMO_FOB_ID);
+        assert_eq!(metadata.certificate_id, DEMO_CERTIFICATE_ID);
+        assert_eq!(metadata.auth_status, AUTHENTICATED_STATUS);
+        assert_eq!(metadata.session_status, SECURE_SESSION_ESTABLISHED_STATUS);
+        assert_eq!(metadata.access_decision, GRANT_ACCESS_DECISION);
+        assert_eq!(metadata.session_algorithm, SESSION_ALGORITHM);
+
+        assert!(!debug.contains("AIACS_MASTER_KEY"));
+        assert!(!debug.contains("DATABASE_URL"));
+        for disallowed in forbidden_session_secret_terms() {
+            assert!(!debug.contains(disallowed));
+        }
+    }
+
+    #[test]
+    fn provisioning_session_upsert_sql_uses_on_conflict() {
+        let sql = provisioning_session_sync_sql();
+
+        assert!(sql.contains("INSERT INTO provisioning_sessions"));
+        assert!(sql.contains("ON CONFLICT (session_id) DO UPDATE"));
+        assert!(sql.contains("session_id"));
+        assert!(sql.contains("customer_id"));
+        assert!(sql.contains("vehicle_id"));
+        assert!(sql.contains("fob_id"));
+        assert!(sql.contains("certificate_id"));
+        assert!(sql.contains("auth_status"));
+        assert!(sql.contains("session_status"));
+        assert!(sql.contains("access_decision"));
+        assert!(sql.contains("session_algorithm"));
+        assert!(sql.contains("started_at"));
+        assert!(sql.contains("completed_at"));
+        assert!(sql.contains("updated_at = NOW()"));
+    }
+
+    #[test]
+    fn provisioning_session_upsert_sql_excludes_forbidden_secret_columns() {
+        let sql = provisioning_session_sync_sql().to_lowercase();
+
+        for disallowed in forbidden_session_secret_terms() {
+            assert!(!sql.contains(disallowed));
+        }
+        assert!(!sql.contains("AIACS_MASTER_KEY"));
+        assert!(!sql.contains("DATABASE_URL"));
+        assert!(!sql.contains("encrypted_key_blob"));
+        assert!(!sql.contains("encryption_nonce"));
     }
 
     #[test]
@@ -1284,6 +1473,10 @@ mod tests {
             .sync_demo_certificate_metadata()
             .await
             .expect("live DB certificate metadata sync should succeed");
+        let provisioning_session_sync = client
+            .sync_demo_provisioning_session()
+            .await
+            .expect("live DB provisioning session sync should succeed");
         let master_key = parse_master_key_from_env()
             .expect("live encrypted key upload requires AIACS_MASTER_KEY");
         let ca_record = test_encrypted_key_record(
@@ -1314,6 +1507,10 @@ mod tests {
         assert_eq!(schema, SCHEMA_INITIALIZED_MESSAGE);
         assert_eq!(sync, DEMO_METADATA_SYNCED_MESSAGE);
         assert_eq!(certificate_sync, CERTIFICATE_METADATA_SYNCED_MESSAGE);
+        assert_eq!(
+            provisioning_session_sync,
+            PROVISIONING_SESSION_SYNCED_MESSAGE
+        );
         assert_eq!(encrypted_key_sync, ENCRYPTED_KEY_BLOBS_SYNCED_MESSAGE);
         assert_eq!(health, HEALTHY_MESSAGE);
 
@@ -1365,6 +1562,79 @@ mod tests {
         assert!(certificate_exists);
         assert_eq!(signature_algorithm, CERTIFICATE_SIGNATURE_ALGORITHM);
         assert_eq!(certificate_status, ISSUED_CERTIFICATE_STATUS);
+
+        let provisioning_session_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM provisioning_sessions WHERE session_id = $1);",
+        )
+        .bind(DEMO_SESSION_ID)
+        .fetch_one(&client.pool)
+        .await
+        .expect("provisioning session verification should query");
+        let session_customer_id: String = sqlx::query_scalar(
+            "SELECT customer_id FROM provisioning_sessions WHERE session_id = $1;",
+        )
+        .bind(DEMO_SESSION_ID)
+        .fetch_one(&client.pool)
+        .await
+        .expect("provisioning session customer should query");
+        let session_vehicle_id: String = sqlx::query_scalar(
+            "SELECT vehicle_id FROM provisioning_sessions WHERE session_id = $1;",
+        )
+        .bind(DEMO_SESSION_ID)
+        .fetch_one(&client.pool)
+        .await
+        .expect("provisioning session vehicle should query");
+        let session_fob_id: String =
+            sqlx::query_scalar("SELECT fob_id FROM provisioning_sessions WHERE session_id = $1;")
+                .bind(DEMO_SESSION_ID)
+                .fetch_one(&client.pool)
+                .await
+                .expect("provisioning session fob should query");
+        let session_certificate_id: String = sqlx::query_scalar(
+            "SELECT certificate_id FROM provisioning_sessions WHERE session_id = $1;",
+        )
+        .bind(DEMO_SESSION_ID)
+        .fetch_one(&client.pool)
+        .await
+        .expect("provisioning session certificate should query");
+        let auth_status: String = sqlx::query_scalar(
+            "SELECT auth_status FROM provisioning_sessions WHERE session_id = $1;",
+        )
+        .bind(DEMO_SESSION_ID)
+        .fetch_one(&client.pool)
+        .await
+        .expect("provisioning session auth status should query");
+        let session_status: String = sqlx::query_scalar(
+            "SELECT session_status FROM provisioning_sessions WHERE session_id = $1;",
+        )
+        .bind(DEMO_SESSION_ID)
+        .fetch_one(&client.pool)
+        .await
+        .expect("provisioning session status should query");
+        let access_decision: String = sqlx::query_scalar(
+            "SELECT access_decision FROM provisioning_sessions WHERE session_id = $1;",
+        )
+        .bind(DEMO_SESSION_ID)
+        .fetch_one(&client.pool)
+        .await
+        .expect("provisioning session access decision should query");
+        let session_algorithm: String = sqlx::query_scalar(
+            "SELECT session_algorithm FROM provisioning_sessions WHERE session_id = $1;",
+        )
+        .bind(DEMO_SESSION_ID)
+        .fetch_one(&client.pool)
+        .await
+        .expect("provisioning session algorithm should query");
+
+        assert!(provisioning_session_exists);
+        assert_eq!(session_customer_id, DEMO_CUSTOMER_ID);
+        assert_eq!(session_vehicle_id, DEMO_VEHICLE_ID);
+        assert_eq!(session_fob_id, DEMO_FOB_ID);
+        assert_eq!(session_certificate_id, DEMO_CERTIFICATE_ID);
+        assert_eq!(auth_status, AUTHENTICATED_STATUS);
+        assert_eq!(session_status, SECURE_SESSION_ESTABLISHED_STATUS);
+        assert_eq!(access_decision, GRANT_ACCESS_DECISION);
+        assert_eq!(session_algorithm, SESSION_ALGORITHM);
 
         for key_id in [CA_ENCRYPTED_KEY_ID, KEY_FOB_ENCRYPTED_KEY_ID] {
             let encrypted_key_blob_len: i32 = sqlx::query_scalar(

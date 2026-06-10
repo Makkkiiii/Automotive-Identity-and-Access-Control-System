@@ -61,6 +61,8 @@ struct AIACSApp {
     last_metadata_sync_time: String,
     last_certificate_sync_status: String,
     last_certificate_sync_time: String,
+    last_provisioning_session_sync_status: String,
+    last_provisioning_session_sync_time: String,
     last_encrypted_key_sync_status: String,
     last_encrypted_key_sync_time: String,
     selected_detail: String,
@@ -175,6 +177,7 @@ enum Message {
     SyncKeyFobMetadata,
     SyncDemoMetadata,
     SyncCertificateMetadata,
+    SyncProvisioningSession,
     SyncCaEncryptedKeyBlob,
     SyncKeyFobEncryptedKeyBlob,
     SyncEncryptedKeyBlobs,
@@ -210,6 +213,8 @@ impl Sandbox for AIACSApp {
             last_metadata_sync_time: "N/A".to_string(),
             last_certificate_sync_status: "Not synced".to_string(),
             last_certificate_sync_time: "N/A".to_string(),
+            last_provisioning_session_sync_status: "Ready".to_string(),
+            last_provisioning_session_sync_time: "N/A".to_string(),
             last_encrypted_key_sync_status: "Not uploaded".to_string(),
             last_encrypted_key_sync_time: "N/A".to_string(),
             selected_detail: "Provisioning console ready. Initialize vehicle trust to begin."
@@ -537,6 +542,22 @@ impl Sandbox for AIACSApp {
                 }
                 Err(error) => self.record_certificate_sync_error(error),
             },
+            Message::SyncProvisioningSession => {
+                match self.controller.sync_provisioning_session_record() {
+                    Ok(message) => {
+                        self.record_provisioning_session_sync(message.clone());
+                        self.push_log("[DB]", "Provisioning session synced: SESSION-0001");
+                        self.push_log(
+                            "[DB]",
+                            "Session algorithm: X25519 + HKDF-SHA256 + AES-256-GCM",
+                        );
+                        self.push_log("[SECURITY]", "Raw session key: [REDACTED]");
+                        self.push_log("[SECURITY]", "Shared secret: [REDACTED]");
+                        self.push_log("[SECURITY]", "HKDF output: [REDACTED]");
+                    }
+                    Err(error) => self.record_provisioning_session_sync_error(error),
+                }
+            }
             Message::SyncCaEncryptedKeyBlob => match self.controller.sync_ca_encrypted_key_blob() {
                 Ok(message) => {
                     self.record_encrypted_key_sync(message.clone());
@@ -1598,6 +1619,21 @@ impl AIACSApp {
                         self.last_certificate_sync_time.clone()
                     ),
                     self.artifact_detail_row(
+                        "Provisioning Session",
+                        self.last_provisioning_session_sync_status.clone()
+                    ),
+                    self.artifact_detail_row(
+                        "Provisioning Session Sync Time",
+                        self.last_provisioning_session_sync_time.clone()
+                    ),
+                    self.artifact_detail_row(
+                        "Session Algorithm",
+                        "X25519 + HKDF-SHA256 + AES-256-GCM"
+                    ),
+                    self.artifact_detail_row("Raw Session Key", "[REDACTED]"),
+                    self.artifact_detail_row("Shared Secret", "[REDACTED]"),
+                    self.artifact_detail_row("HKDF Output", "[REDACTED]"),
+                    self.artifact_detail_row(
                         "Last Encrypted Key Upload",
                         self.last_encrypted_key_sync_status.clone()
                     ),
@@ -1659,6 +1695,24 @@ impl AIACSApp {
                         ButtonKind::Nav
                     ),
                     text("Certificate private material: [REDACTED]")
+                        .size(11)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(SECONDARY_TEXT)),
+                    text("Provisioning Session Sync")
+                        .size(18)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(ACCENT_PINK)),
+                    text("Stores safe operational session metadata only. Raw session material is never displayed or uploaded.")
+                        .size(12)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(SECONDARY_TEXT)),
+                    compact_button(
+                        "lock",
+                        "Sync Provisioning Session",
+                        Message::SyncProvisioningSession,
+                        ButtonKind::Nav
+                    ),
+                    text("Raw session key: [REDACTED] | Shared secret: [REDACTED] | HKDF output: [REDACTED]")
                         .size(11)
                         .font(Font::MONOSPACE)
                         .style(theme::Text::Color(SECONDARY_TEXT)),
@@ -2203,6 +2257,22 @@ impl AIACSApp {
         self.last_certificate_sync_time = Local::now().format("%H:%M:%S").to_string();
         self.selected_detail = self.last_certificate_sync_status.clone();
         self.push_log("[DB]", self.last_certificate_sync_status.clone());
+    }
+
+    fn record_provisioning_session_sync(&mut self, message: String) {
+        self.cloud_status = "Connected".to_string();
+        self.last_provisioning_session_sync_status = message.clone();
+        self.last_provisioning_session_sync_time = Local::now().format("%H:%M:%S").to_string();
+        self.selected_detail = message;
+    }
+
+    fn record_provisioning_session_sync_error(&mut self, error: AppControllerError) {
+        self.cloud_status = "Error".to_string();
+        self.last_provisioning_session_sync_status =
+            format!("Provisioning session sync failed: {}", error);
+        self.last_provisioning_session_sync_time = Local::now().format("%H:%M:%S").to_string();
+        self.selected_detail = self.last_provisioning_session_sync_status.clone();
+        self.push_log("[DB]", self.last_provisioning_session_sync_status.clone());
     }
 
     fn record_encrypted_key_sync(&mut self, message: String) {

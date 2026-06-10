@@ -4,11 +4,11 @@ use crate::auth::{AuthResult, AuthenticationEngine};
 use crate::ca::{CAError, Certificate, CertificateAuthority};
 use crate::cloud_storage::{
     demo_certificate_metadata, demo_customer_metadata, demo_key_fob_metadata,
-    demo_vehicle_metadata, encrypt_private_key_for_cloud, parse_master_key_from_env,
-    CertificateMetadata, CloudStorageClient, CloudStorageError, CustomerMetadata,
-    EncryptedKeyRecord, KeyFobMetadata, VehicleMetadata, CA_ENCRYPTED_KEY_ID, CA_KEY_PURPOSE,
-    DEFAULT_CERTIFICATE_STATUS, DEMO_FOB_ID, DEMO_VEHICLE_ID, ENCRYPTED_KEY_STORAGE_STATUS,
-    KEY_FOB_ENCRYPTED_KEY_ID, KEY_FOB_KEY_PURPOSE,
+    demo_provisioning_session_metadata, demo_vehicle_metadata, encrypt_private_key_for_cloud,
+    parse_master_key_from_env, CertificateMetadata, CloudStorageClient, CloudStorageError,
+    CustomerMetadata, EncryptedKeyRecord, KeyFobMetadata, ProvisioningSessionMetadata,
+    VehicleMetadata, CA_ENCRYPTED_KEY_ID, CA_KEY_PURPOSE, DEFAULT_CERTIFICATE_STATUS, DEMO_FOB_ID,
+    DEMO_VEHICLE_ID, ENCRYPTED_KEY_STORAGE_STATUS, KEY_FOB_ENCRYPTED_KEY_ID, KEY_FOB_KEY_PURPOSE,
 };
 use crate::keyfob::{DigitalKeyFob, KeyFobError};
 use crate::session::{SessionState, SessionValidationEngine};
@@ -891,6 +891,30 @@ impl AppController {
         Ok(message)
     }
 
+    pub fn sync_provisioning_session_record(&mut self) -> Result<String, AppControllerError> {
+        let metadata = self.provisioning_session_metadata()?;
+        let runtime = Self::cloud_runtime()?;
+        let message = runtime
+            .block_on(async {
+                let client = CloudStorageClient::connect_from_env().await?;
+                client.upsert_provisioning_session(&metadata).await
+            })
+            .map_err(Self::map_cloud_error)?;
+
+        self.save_log_entry(
+            "[DB]",
+            format!("Provisioning session synced: {}", metadata.session_id),
+        )?;
+        self.save_log_entry(
+            "[DB]",
+            format!("Session algorithm: {}", metadata.session_algorithm),
+        )?;
+        self.save_log_entry("[SECURITY]", "Raw session key: [REDACTED]")?;
+        self.save_log_entry("[SECURITY]", "Shared secret: [REDACTED]")?;
+        self.save_log_entry("[SECURITY]", "HKDF output: [REDACTED]")?;
+        Ok(message)
+    }
+
     pub fn sync_ca_encrypted_key_blob(&mut self) -> Result<String, AppControllerError> {
         self.ca_private_key_material()?;
         let master_key = parse_master_key_from_env().map_err(Self::map_cloud_error)?;
@@ -1051,6 +1075,28 @@ impl AppController {
             Some(fingerprint(&certificate.public_key)),
             Some(issued_at),
             Some(expires_at),
+        ))
+    }
+
+    fn provisioning_session_metadata(
+        &self,
+    ) -> Result<ProvisioningSessionMetadata, AppControllerError> {
+        let session = self.session.as_ref().ok_or_else(|| {
+            AppControllerError::Backend(
+                "Provisioning session metadata is not available".to_string(),
+            )
+        })?;
+        if !session.established {
+            return Err(AppControllerError::Backend(
+                "Provisioning session metadata is not available".to_string(),
+            ));
+        }
+        let started_at = parse_session_timestamp(&session.created_at)?;
+        let completed_at = Utc::now();
+
+        Ok(demo_provisioning_session_metadata(
+            Some(started_at),
+            Some(completed_at),
         ))
     }
 
@@ -1449,6 +1495,16 @@ fn parse_certificate_timestamp(value: &str) -> Result<DateTime<Utc>, AppControll
         .map_err(|_| {
             AppControllerError::Backend(
                 "Certificate metadata is not available for cloud sync".to_string(),
+            )
+        })
+}
+
+fn parse_session_timestamp(value: &str) -> Result<DateTime<Utc>, AppControllerError> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|timestamp| timestamp.with_timezone(&Utc))
+        .map_err(|_| {
+            AppControllerError::Backend(
+                "Provisioning session metadata is not available".to_string(),
             )
         })
 }
@@ -1982,6 +2038,78 @@ mod tests {
             "session_key",
         ] {
             assert!(!debug.contains(disallowed));
+        }
+    }
+
+    #[test]
+    fn test_provisioning_session_sync_returns_safe_error_without_session() {
+        let mut controller = AppController::new();
+        let message = controller
+            .sync_provisioning_session_record()
+            .expect_err("missing session should fail safely")
+            .to_string();
+
+        assert_eq!(message, "Provisioning session metadata is not available");
+        assert!(!message.contains("DATABASE_URL"));
+        assert!(!message.contains("AIACS_MASTER_KEY"));
+        assert!(!message.contains("session_key"));
+        assert!(!message.contains("shared_secret"));
+        assert!(!message.contains("hkdf_output"));
+        assert!(!message.contains("private_key"));
+    }
+
+    #[test]
+    fn test_app_controller_provisioning_session_metadata_is_safe() {
+        let mut controller = AppController::new();
+        controller
+            .establish_secure_session_demo()
+            .expect("session demo failed");
+
+        let metadata = controller
+            .provisioning_session_metadata()
+            .expect("session metadata should build");
+        let debug = format!("{metadata:?}").to_lowercase();
+
+        assert_eq!(metadata.session_id, crate::cloud_storage::DEMO_SESSION_ID);
+        assert_eq!(metadata.customer_id, crate::cloud_storage::DEMO_CUSTOMER_ID);
+        assert_eq!(metadata.vehicle_id, crate::cloud_storage::DEMO_VEHICLE_ID);
+        assert_eq!(metadata.fob_id, DEFAULT_FOB_ID);
+        assert_eq!(
+            metadata.certificate_id,
+            crate::cloud_storage::DEMO_CERTIFICATE_ID
+        );
+        assert_eq!(
+            metadata.auth_status,
+            crate::cloud_storage::AUTHENTICATED_STATUS
+        );
+        assert_eq!(
+            metadata.session_status,
+            crate::cloud_storage::SECURE_SESSION_ESTABLISHED_STATUS
+        );
+        assert_eq!(
+            metadata.access_decision,
+            crate::cloud_storage::GRANT_ACCESS_DECISION
+        );
+        assert_eq!(
+            metadata.session_algorithm,
+            crate::cloud_storage::SESSION_ALGORITHM
+        );
+        assert!(metadata.started_at.is_some());
+        assert!(metadata.completed_at.is_some());
+
+        for disallowed in [
+            "session_key",
+            "shared_secret",
+            "hkdf_output",
+            "aes_key",
+            "aes_gcm_key",
+            "x25519_private_key",
+            "decrypted_payload",
+            "AIACS_MASTER_KEY",
+            "DATABASE_URL",
+            "private_key",
+        ] {
+            assert!(!debug.contains(&disallowed.to_lowercase()));
         }
     }
 
