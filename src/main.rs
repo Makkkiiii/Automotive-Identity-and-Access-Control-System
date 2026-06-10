@@ -44,6 +44,8 @@ const PENDING_BG: Color = Color::from_rgb(0.165, 0.153, 0.176);
 const PENDING_BORDER: Color = Color::from_rgb(0.353, 0.325, 0.361);
 const PENDING_TEXT: Color = Color::from_rgb(0.725, 0.659, 0.651);
 const PENDING_DOT: Color = Color::from_rgb(0.561, 0.522, 0.533);
+const AUDIT_SYNC_REDACTION_LINE: &str =
+    "Sensitive material: [REDACTED] | Raw session key: [REDACTED] | Private key material: [REDACTED]";
 
 pub fn main() -> iced::Result {
     AIACSApp::run(Settings::default())
@@ -63,6 +65,8 @@ struct AIACSApp {
     last_certificate_sync_time: String,
     last_provisioning_session_sync_status: String,
     last_provisioning_session_sync_time: String,
+    last_audit_log_sync_status: String,
+    last_audit_log_sync_time: String,
     last_encrypted_key_sync_status: String,
     last_encrypted_key_sync_time: String,
     selected_detail: String,
@@ -178,6 +182,7 @@ enum Message {
     SyncDemoMetadata,
     SyncCertificateMetadata,
     SyncProvisioningSession,
+    SyncAuditLogs,
     SyncCaEncryptedKeyBlob,
     SyncKeyFobEncryptedKeyBlob,
     SyncEncryptedKeyBlobs,
@@ -215,6 +220,8 @@ impl Sandbox for AIACSApp {
             last_certificate_sync_time: "N/A".to_string(),
             last_provisioning_session_sync_status: "Ready".to_string(),
             last_provisioning_session_sync_time: "N/A".to_string(),
+            last_audit_log_sync_status: "Ready".to_string(),
+            last_audit_log_sync_time: "N/A".to_string(),
             last_encrypted_key_sync_status: "Not uploaded".to_string(),
             last_encrypted_key_sync_time: "N/A".to_string(),
             selected_detail: "Provisioning console ready. Initialize vehicle trust to begin."
@@ -558,6 +565,16 @@ impl Sandbox for AIACSApp {
                     Err(error) => self.record_provisioning_session_sync_error(error),
                 }
             }
+            Message::SyncAuditLogs => match self.controller.sync_audit_log_records() {
+                Ok(message) => {
+                    self.record_audit_log_sync(message.clone());
+                    self.push_log("[DB]", "Audit log records synced");
+                    self.push_log("[DB]", "Audit event synced: AUDIT-0001");
+                    self.push_log("[DB]", "Audit event synced: AUDIT-0007");
+                    self.push_log("[SECURITY]", "Sensitive audit material: [REDACTED]");
+                }
+                Err(error) => self.record_audit_log_sync_error(error),
+            },
             Message::SyncCaEncryptedKeyBlob => match self.controller.sync_ca_encrypted_key_blob() {
                 Ok(message) => {
                     self.record_encrypted_key_sync(message.clone());
@@ -1633,6 +1650,14 @@ impl AIACSApp {
                     self.artifact_detail_row("Raw Session Key", "[REDACTED]"),
                     self.artifact_detail_row("Shared Secret", "[REDACTED]"),
                     self.artifact_detail_row("HKDF Output", "[REDACTED]"),
+                    self.artifact_detail_row("Audit Logs", self.last_audit_log_sync_status.clone()),
+                    self.artifact_detail_row(
+                        "Audit Log Sync Time",
+                        self.last_audit_log_sync_time.clone()
+                    ),
+                    self.artifact_detail_row("Audit Scope", "provisioning workflow events"),
+                    self.artifact_detail_row("Sensitive Material", "[REDACTED]"),
+                    self.artifact_detail_row("Private Key Material", "[REDACTED]"),
                     self.artifact_detail_row(
                         "Last Encrypted Key Upload",
                         self.last_encrypted_key_sync_status.clone()
@@ -1713,6 +1738,24 @@ impl AIACSApp {
                         ButtonKind::Nav
                     ),
                     text("Raw session key: [REDACTED] | Shared secret: [REDACTED] | HKDF output: [REDACTED]")
+                        .size(11)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(SECONDARY_TEXT)),
+                    text("Audit Log Sync")
+                        .size(18)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(ACCENT_PINK)),
+                    text("Stores safe provisioning workflow audit events with sensitive material redacted.")
+                        .size(12)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(SECONDARY_TEXT)),
+                    compact_button(
+                        "terminal",
+                        "Sync Audit Logs",
+                        Message::SyncAuditLogs,
+                        ButtonKind::Nav
+                    ),
+                    text(AUDIT_SYNC_REDACTION_LINE)
                         .size(11)
                         .font(Font::MONOSPACE)
                         .style(theme::Text::Color(SECONDARY_TEXT)),
@@ -2275,6 +2318,21 @@ impl AIACSApp {
         self.push_log("[DB]", self.last_provisioning_session_sync_status.clone());
     }
 
+    fn record_audit_log_sync(&mut self, message: String) {
+        self.cloud_status = "Connected".to_string();
+        self.last_audit_log_sync_status = message.clone();
+        self.last_audit_log_sync_time = Local::now().format("%H:%M:%S").to_string();
+        self.selected_detail = message;
+    }
+
+    fn record_audit_log_sync_error(&mut self, error: AppControllerError) {
+        self.cloud_status = "Error".to_string();
+        self.last_audit_log_sync_status = format!("Audit log sync failed: {}", error);
+        self.last_audit_log_sync_time = Local::now().format("%H:%M:%S").to_string();
+        self.selected_detail = self.last_audit_log_sync_status.clone();
+        self.push_log("[DB]", self.last_audit_log_sync_status.clone());
+    }
+
     fn record_encrypted_key_sync(&mut self, message: String) {
         self.cloud_status = "Connected".to_string();
         self.last_encrypted_key_sync_status = message.clone();
@@ -2711,4 +2769,20 @@ fn trace_parts(entry: &str) -> (&str, &str) {
 
 fn timestamped(tag: &str, message: &str) -> String {
     format!("{} {} {}", Local::now().format("%H:%M:%S"), tag, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audit_sync_gui_status_line_redacts_sensitive_material() {
+        assert!(AUDIT_SYNC_REDACTION_LINE.contains("[REDACTED]"));
+        assert!(AUDIT_SYNC_REDACTION_LINE.contains("Raw session key: [REDACTED]"));
+        assert!(AUDIT_SYNC_REDACTION_LINE.contains("Private key material: [REDACTED]"));
+        assert!(!AUDIT_SYNC_REDACTION_LINE.contains("DATABASE_URL"));
+        assert!(!AUDIT_SYNC_REDACTION_LINE.contains("AIACS_MASTER_KEY"));
+        assert!(!AUDIT_SYNC_REDACTION_LINE.contains("encrypted_key_blob"));
+        assert!(!AUDIT_SYNC_REDACTION_LINE.contains("encryption_nonce"));
+    }
 }

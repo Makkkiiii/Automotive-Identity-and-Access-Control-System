@@ -401,7 +401,7 @@ AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metada
 | `certificates`          | Safe certificate metadata sync                                        |
 | `encrypted_keys`        | Client-side encrypted private key blobs, never plaintext private keys |
 | `provisioning_sessions` | Safe provisioning session metadata sync                               |
-| `audit_logs`            | Future cloud audit log records                                        |
+| `audit_logs`            | Safe provisioning workflow audit events                               |
 | `diagnostic_results`    | Future diagnostics result records                                     |
 
 ### Current Behavior
@@ -410,11 +410,12 @@ AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metada
 - Safe customer, vehicle, and key fob metadata can be synced.
 - Safe certificate metadata can be synced.
 - Safe provisioning session metadata can be synced after secure session activation.
+- Safe provisioning workflow audit events can be synced with `[REDACTED]` markers.
 - Private key blobs can be encrypted locally before cloud upload.
 - Raw private keys are not uploaded.
 - Raw session keys, shared secrets, HKDF output, AES keys, and X25519 private keys are not uploaded.
-- Certificate JSON, audit logs, and diagnostics are not uploaded in the current metadata phase.
-- Cloud Phase 6B adds provisioning session metadata sync only; audit logs and diagnostic results remain planned future work.
+- Certificate JSON and diagnostics are not uploaded in the current metadata phase.
+- Cloud Phase 6C adds audit log sync only; diagnostic results remain planned future work.
 
 ---
 
@@ -493,6 +494,20 @@ SELECT * FROM vehicles;
 SELECT * FROM key_fobs;
 ```
 
+Verify synced audit log metadata without exposing secrets:
+
+```sql
+SELECT
+  log_id,
+  session_id,
+  event_type,
+  severity,
+  actor,
+  created_at
+FROM audit_logs
+ORDER BY log_id;
+```
+
 Expected demo records:
 
 | Table       | Expected Record                |
@@ -500,6 +515,7 @@ Expected demo records:
 | `customers` | `CUST-0001` / `XYZ`            |
 | `vehicles`  | `VEH-0001` / `Nissan `         |
 | `key_fobs`  | `FOB-0001` / `Primary Key Fob` |
+| `audit_logs` | `AUDIT-0001` through `AUDIT-0007` |
 
 ---
 

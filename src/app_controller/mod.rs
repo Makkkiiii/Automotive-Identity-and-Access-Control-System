@@ -7,8 +7,9 @@ use crate::cloud_storage::{
     demo_provisioning_session_metadata, demo_vehicle_metadata, encrypt_private_key_for_cloud,
     parse_master_key_from_env, CertificateMetadata, CloudStorageClient, CloudStorageError,
     CustomerMetadata, EncryptedKeyRecord, KeyFobMetadata, ProvisioningSessionMetadata,
-    VehicleMetadata, CA_ENCRYPTED_KEY_ID, CA_KEY_PURPOSE, DEFAULT_CERTIFICATE_STATUS, DEMO_FOB_ID,
-    DEMO_VEHICLE_ID, ENCRYPTED_KEY_STORAGE_STATUS, KEY_FOB_ENCRYPTED_KEY_ID, KEY_FOB_KEY_PURPOSE,
+    VehicleMetadata, AUDIT_LOG_IDS, CA_ENCRYPTED_KEY_ID, CA_KEY_PURPOSE,
+    DEFAULT_CERTIFICATE_STATUS, DEMO_FOB_ID, DEMO_VEHICLE_ID, ENCRYPTED_KEY_STORAGE_STATUS,
+    KEY_FOB_ENCRYPTED_KEY_ID, KEY_FOB_KEY_PURPOSE,
 };
 use crate::keyfob::{DigitalKeyFob, KeyFobError};
 use crate::session::{SessionState, SessionValidationEngine};
@@ -912,6 +913,22 @@ impl AppController {
         self.save_log_entry("[SECURITY]", "Raw session key: [REDACTED]")?;
         self.save_log_entry("[SECURITY]", "Shared secret: [REDACTED]")?;
         self.save_log_entry("[SECURITY]", "HKDF output: [REDACTED]")?;
+        Ok(message)
+    }
+
+    pub fn sync_audit_log_records(&mut self) -> Result<String, AppControllerError> {
+        let runtime = Self::cloud_runtime()?;
+        let message = runtime
+            .block_on(async {
+                let client = CloudStorageClient::connect_from_env().await?;
+                client.sync_demo_audit_logs().await
+            })
+            .map_err(Self::map_cloud_error)?;
+
+        self.save_log_entry("[DB]", "Audit log records synced")?;
+        self.save_log_entry("[DB]", format!("Audit event synced: {}", AUDIT_LOG_IDS[0]))?;
+        self.save_log_entry("[DB]", format!("Audit event synced: {}", AUDIT_LOG_IDS[6]))?;
+        self.save_log_entry("[SECURITY]", "Sensitive audit material: [REDACTED]")?;
         Ok(message)
     }
 
@@ -1929,6 +1946,27 @@ mod tests {
         assert!(!message.contains("AIACS_MASTER_KEY"));
         assert!(!message.contains("postgresql://"));
         assert!(!message.contains("password"));
+    }
+
+    #[test]
+    fn test_audit_log_sync_error_is_safe_for_gui() {
+        let error = AppController::map_cloud_error(CloudStorageError::AuditLogSyncFailed);
+        let message = error.to_string();
+
+        assert_eq!(message, "Audit log records could not be synced");
+        for disallowed in [
+            "DATABASE_URL",
+            "AIACS_MASTER_KEY",
+            "postgresql://",
+            "private_key",
+            "session_key",
+            "shared_secret",
+            "hkdf_output",
+            "encrypted_key_blob",
+            "encryption_nonce",
+        ] {
+            assert!(!message.contains(disallowed));
+        }
     }
 
     #[test]

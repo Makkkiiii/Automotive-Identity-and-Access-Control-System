@@ -20,6 +20,7 @@ const KEY_FOB_SYNCED_MESSAGE: &str = "Key fob metadata synced";
 const DEMO_METADATA_SYNCED_MESSAGE: &str = "Demo metadata synced to cloud database";
 pub const CERTIFICATE_METADATA_SYNCED_MESSAGE: &str = "Certificate metadata synced";
 pub const PROVISIONING_SESSION_SYNCED_MESSAGE: &str = "Provisioning session record synced";
+pub const AUDIT_LOGS_SYNCED_MESSAGE: &str = "Audit log records synced";
 pub const CA_ENCRYPTED_KEY_SYNCED_MESSAGE: &str = "CA encrypted key blob uploaded";
 pub const KEY_FOB_ENCRYPTED_KEY_SYNCED_MESSAGE: &str = "Key fob encrypted key blob uploaded";
 pub const ENCRYPTED_KEY_BLOBS_SYNCED_MESSAGE: &str =
@@ -45,6 +46,15 @@ pub const AUTHENTICATED_STATUS: &str = "authenticated";
 pub const SECURE_SESSION_ESTABLISHED_STATUS: &str = "secure_session_established";
 pub const GRANT_ACCESS_DECISION: &str = "grant_access";
 pub const SESSION_ALGORITHM: &str = "X25519 + HKDF-SHA256 + AES-256-GCM";
+pub const AUDIT_LOG_IDS: [&str; 7] = [
+    "AUDIT-0001",
+    "AUDIT-0002",
+    "AUDIT-0003",
+    "AUDIT-0004",
+    "AUDIT-0005",
+    "AUDIT-0006",
+    "AUDIT-0007",
+];
 pub const CA_ENCRYPTED_KEY_ID: &str = "KEY-CA-0001";
 pub const KEY_FOB_ENCRYPTED_KEY_ID: &str = "KEY-FOB-0001";
 pub const ENCRYPTED_KEY_ALGORITHM: &str = "AES-256-GCM";
@@ -180,14 +190,52 @@ ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
 "#,
     r#"
 CREATE TABLE IF NOT EXISTS audit_logs (
-    log_id UUID PRIMARY KEY,
-    event_tag TEXT NOT NULL,
+    log_id TEXT PRIMARY KEY,
+    event_tag TEXT,
+    session_id TEXT,
+    event_type TEXT NOT NULL,
     event_message TEXT NOT NULL,
-    customer_id TEXT,
-    vehicle_id TEXT,
-    fob_id TEXT,
-    created_at TIMESTAMPTZ NOT NULL
+    severity TEXT,
+    actor TEXT,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
 );
+"#,
+    r#"
+ALTER TABLE audit_logs
+ALTER COLUMN log_id TYPE TEXT USING log_id::TEXT;
+"#,
+    r#"
+ALTER TABLE audit_logs
+ALTER COLUMN event_tag DROP NOT NULL;
+"#,
+    r#"
+ALTER TABLE audit_logs
+ADD COLUMN IF NOT EXISTS session_id TEXT;
+"#,
+    r#"
+ALTER TABLE audit_logs
+ADD COLUMN IF NOT EXISTS event_type TEXT;
+"#,
+    r#"
+ALTER TABLE audit_logs
+ADD COLUMN IF NOT EXISTS event_message TEXT;
+"#,
+    r#"
+ALTER TABLE audit_logs
+ADD COLUMN IF NOT EXISTS severity TEXT;
+"#,
+    r#"
+ALTER TABLE audit_logs
+ADD COLUMN IF NOT EXISTS actor TEXT;
+"#,
+    r#"
+ALTER TABLE audit_logs
+ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+"#,
+    r#"
+ALTER TABLE audit_logs
+ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
 "#,
     r#"
 CREATE TABLE IF NOT EXISTS diagnostic_results (
@@ -317,6 +365,27 @@ ON CONFLICT (session_id) DO UPDATE SET
     updated_at = NOW();
 "#;
 
+const UPSERT_AUDIT_LOG_SQL: &str = r#"
+INSERT INTO audit_logs (
+    log_id,
+    session_id,
+    event_type,
+    event_message,
+    severity,
+    actor,
+    created_at,
+    updated_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+ON CONFLICT (log_id) DO UPDATE SET
+    session_id = EXCLUDED.session_id,
+    event_type = EXCLUDED.event_type,
+    event_message = EXCLUDED.event_message,
+    severity = EXCLUDED.severity,
+    actor = EXCLUDED.actor,
+    created_at = EXCLUDED.created_at,
+    updated_at = NOW();
+"#;
+
 const UPSERT_ENCRYPTED_KEY_SQL: &str = r#"
 INSERT INTO encrypted_keys (
     key_id,
@@ -399,6 +468,17 @@ pub struct ProvisioningSessionMetadata {
     pub session_algorithm: String,
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditLogRecord {
+    pub log_id: String,
+    pub session_id: String,
+    pub event_type: String,
+    pub event_message: String,
+    pub severity: String,
+    pub actor: String,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -523,6 +603,73 @@ pub fn demo_provisioning_session_metadata(
         started_at,
         completed_at,
     }
+}
+
+pub fn demo_audit_log_records(created_at: DateTime<Utc>) -> Vec<AuditLogRecord> {
+    [
+        (
+            AUDIT_LOG_IDS[0],
+            "provisioning_started",
+            "Vehicle access provisioning workflow started",
+            "info",
+            "technician",
+        ),
+        (
+            AUDIT_LOG_IDS[1],
+            "customer_vehicle_selected",
+            "Customer CUST-0001, vehicle VEH-0001, and key fob FOB-0001 selected",
+            "info",
+            "technician",
+        ),
+        (
+            AUDIT_LOG_IDS[2],
+            "certificate_issued",
+            "Certificate metadata issued for CERT-FOB-0001",
+            "info",
+            "system",
+        ),
+        (
+            AUDIT_LOG_IDS[3],
+            "authentication_verified",
+            "Authentication verified using certificate validation, subject binding, Ed25519 signature verification, freshness check, and replay protection",
+            "info",
+            "system",
+        ),
+        (
+            AUDIT_LOG_IDS[4],
+            "secure_session_established",
+            "Secure session established using X25519 + HKDF-SHA256 + AES-256-GCM; raw session material is [REDACTED]",
+            "info",
+            "system",
+        ),
+        (
+            AUDIT_LOG_IDS[5],
+            "encrypted_key_blob_synced",
+            "Encrypted key blob metadata synced; plaintext key material is [REDACTED]",
+            "info",
+            "system",
+        ),
+        (
+            AUDIT_LOG_IDS[6],
+            "provisioning_finalized",
+            "Provisioning workflow finalized with access decision grant_access",
+            "info",
+            "technician",
+        ),
+    ]
+    .into_iter()
+    .map(
+        |(log_id, event_type, event_message, severity, actor)| AuditLogRecord {
+            log_id: log_id.to_string(),
+            session_id: DEMO_SESSION_ID.to_string(),
+            event_type: event_type.to_string(),
+            event_message: event_message.to_string(),
+            severity: severity.to_string(),
+            actor: actor.to_string(),
+            created_at,
+        },
+    )
+    .collect()
 }
 
 pub fn parse_master_key_from_env() -> Result<[u8; 32], CloudStorageError> {
@@ -760,6 +907,35 @@ impl CloudStorageClient {
         .await
     }
 
+    pub async fn upsert_audit_log(
+        &self,
+        record: &AuditLogRecord,
+    ) -> Result<String, CloudStorageError> {
+        sqlx::query(UPSERT_AUDIT_LOG_SQL)
+            .bind(&record.log_id)
+            .bind(&record.session_id)
+            .bind(&record.event_type)
+            .bind(&record.event_message)
+            .bind(&record.severity)
+            .bind(&record.actor)
+            .bind(record.created_at)
+            .execute(&self.pool)
+            .await
+            .map_err(|_| CloudStorageError::AuditLogSyncFailed)?;
+
+        Ok(AUDIT_LOGS_SYNCED_MESSAGE.to_string())
+    }
+
+    pub async fn sync_demo_audit_logs(&self) -> Result<String, CloudStorageError> {
+        self.initialize_schema().await?;
+
+        for record in demo_audit_log_records(Utc::now()) {
+            self.upsert_audit_log(&record).await?;
+        }
+
+        Ok(AUDIT_LOGS_SYNCED_MESSAGE.to_string())
+    }
+
     pub async fn upsert_encrypted_key(
         &self,
         record: &EncryptedKeyRecord,
@@ -813,6 +989,7 @@ pub enum CloudStorageError {
     MetadataSyncFailed,
     CertificateMetadataSyncFailed,
     ProvisioningSessionSyncFailed,
+    AuditLogSyncFailed,
     PrivateKeyEncryptionFailed,
     EncryptedKeySyncFailed,
 }
@@ -843,6 +1020,9 @@ impl fmt::Display for CloudStorageError {
             }
             CloudStorageError::ProvisioningSessionSyncFailed => {
                 f.write_str("Provisioning session record could not be synced")
+            }
+            CloudStorageError::AuditLogSyncFailed => {
+                f.write_str("Audit log records could not be synced")
             }
             CloudStorageError::PrivateKeyEncryptionFailed => {
                 f.write_str("Private key encryption failed")
@@ -886,6 +1066,11 @@ fn certificate_metadata_sync_sql() -> &'static str {
 #[cfg(test)]
 fn provisioning_session_sync_sql() -> &'static str {
     UPSERT_PROVISIONING_SESSION_SQL
+}
+
+#[cfg(test)]
+fn audit_log_sync_sql() -> &'static str {
+    UPSERT_AUDIT_LOG_SQL
 }
 
 #[cfg(test)]
@@ -1000,6 +1185,47 @@ mod tests {
     }
 
     #[test]
+    fn schema_sql_includes_audit_log_metadata_migrations() {
+        let schema = schema_sql();
+
+        assert!(schema.contains("CREATE TABLE IF NOT EXISTS audit_logs"));
+        assert!(schema.contains("ALTER TABLE audit_logs"));
+        assert!(schema.contains("ALTER COLUMN log_id TYPE TEXT USING log_id::TEXT"));
+        assert!(schema.contains("ALTER COLUMN event_tag DROP NOT NULL"));
+        for migration in [
+            "ADD COLUMN IF NOT EXISTS session_id TEXT",
+            "ADD COLUMN IF NOT EXISTS event_type TEXT",
+            "ADD COLUMN IF NOT EXISTS event_message TEXT",
+            "ADD COLUMN IF NOT EXISTS severity TEXT",
+            "ADD COLUMN IF NOT EXISTS actor TEXT",
+            "ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
+            "ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
+        ] {
+            assert!(
+                schema.contains(migration),
+                "audit migration missing: {migration}"
+            );
+        }
+    }
+
+    #[test]
+    fn sync_demo_audit_logs_initializes_schema_before_upsert() {
+        let source = include_str!("mod.rs");
+        let function_start = source
+            .find("pub async fn sync_demo_audit_logs")
+            .expect("sync_demo_audit_logs should exist");
+        let function_source = &source[function_start..];
+        let initialize_index = function_source
+            .find("self.initialize_schema().await?")
+            .expect("sync_demo_audit_logs should initialize schema");
+        let upsert_index = function_source
+            .find("self.upsert_audit_log")
+            .expect("sync_demo_audit_logs should upsert audit logs");
+
+        assert!(initialize_index < upsert_index);
+    }
+
+    #[test]
     fn schema_sql_does_not_include_plaintext_key_columns() {
         let schema = schema_sql().to_lowercase();
 
@@ -1075,6 +1301,7 @@ mod tests {
             DEMO_METADATA_SYNCED_MESSAGE,
             CERTIFICATE_METADATA_SYNCED_MESSAGE,
             PROVISIONING_SESSION_SYNCED_MESSAGE,
+            AUDIT_LOGS_SYNCED_MESSAGE,
         ] {
             assert!(!message.contains("DATABASE_URL"));
             assert!(!message.contains("AIACS_MASTER_KEY"));
@@ -1227,6 +1454,97 @@ mod tests {
         assert!(!sql.contains("DATABASE_URL"));
         assert!(!sql.contains("encrypted_key_blob"));
         assert!(!sql.contains("encryption_nonce"));
+    }
+
+    fn forbidden_audit_secret_terms() -> [&'static str; 13] {
+        [
+            "session_key",
+            "shared_secret",
+            "raw_key",
+            "master_key",
+            "private_key",
+            "database_url",
+            "hkdf_output",
+            "x25519_private_key",
+            "aes_key",
+            "aes_gcm_key",
+            "decrypted_payload",
+            "encrypted_key_blob",
+            "encryption_nonce",
+        ]
+    }
+
+    #[test]
+    fn audit_log_records_use_safe_demo_values() {
+        let records = demo_audit_log_records(Utc::now());
+        let combined_messages = records
+            .iter()
+            .map(|record| record.event_message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .to_lowercase();
+
+        assert_eq!(records.len(), AUDIT_LOG_IDS.len());
+        for (record, expected_id) in records.iter().zip(AUDIT_LOG_IDS) {
+            assert_eq!(record.log_id, expected_id);
+            assert_eq!(record.session_id, DEMO_SESSION_ID);
+            assert_eq!(record.severity, "info");
+            assert!(matches!(record.actor.as_str(), "technician" | "system"));
+            assert!(!record.event_message.is_empty());
+            assert!(!record.event_message.contains("AIACS_MASTER_KEY"));
+            assert!(!record.event_message.contains("DATABASE_URL"));
+            assert!(!record.event_message.contains("postgresql://"));
+        }
+
+        assert!(records
+            .iter()
+            .any(|record| record.event_message.contains("[REDACTED]")));
+        assert!(!combined_messages.contains("raw session key"));
+        assert!(!combined_messages.contains("shared secret"));
+        assert!(!combined_messages.contains("hkdf output"));
+        assert!(!combined_messages.contains("aes-gcm key bytes"));
+        assert!(!combined_messages.contains("x25519 private key"));
+    }
+
+    #[test]
+    fn audit_log_record_debug_does_not_expose_secret_material() {
+        let records = demo_audit_log_records(Utc::now());
+        let debug = format!("{records:?}").to_lowercase();
+
+        assert!(!debug.contains("aiacs_master_key"));
+        assert!(!debug.contains("database_url"));
+        assert!(!debug.contains("postgresql://"));
+        assert!(!debug.contains("private key material: "));
+        assert!(!debug.contains("raw session key: "));
+        assert!(!debug.contains("shared secret: "));
+        assert!(!debug.contains("hkdf output: "));
+    }
+
+    #[test]
+    fn audit_log_upsert_sql_uses_on_conflict() {
+        let sql = audit_log_sync_sql();
+
+        assert!(sql.contains("INSERT INTO audit_logs"));
+        assert!(sql.contains("ON CONFLICT (log_id) DO UPDATE"));
+        assert!(sql.contains("log_id"));
+        assert!(sql.contains("session_id"));
+        assert!(sql.contains("event_type"));
+        assert!(sql.contains("event_message"));
+        assert!(sql.contains("severity"));
+        assert!(sql.contains("actor"));
+        assert!(sql.contains("created_at"));
+        assert!(sql.contains("updated_at = NOW()"));
+    }
+
+    #[test]
+    fn audit_log_upsert_sql_excludes_forbidden_secret_columns() {
+        let sql = audit_log_sync_sql().to_lowercase();
+
+        for disallowed in forbidden_audit_secret_terms() {
+            assert!(!sql.contains(disallowed));
+        }
+        assert!(!sql.contains("AIACS_MASTER_KEY"));
+        assert!(!sql.contains("DATABASE_URL"));
     }
 
     #[test]
@@ -1477,6 +1795,10 @@ mod tests {
             .sync_demo_provisioning_session()
             .await
             .expect("live DB provisioning session sync should succeed");
+        let audit_log_sync = client
+            .sync_demo_audit_logs()
+            .await
+            .expect("live DB audit log sync should succeed");
         let master_key = parse_master_key_from_env()
             .expect("live encrypted key upload requires AIACS_MASTER_KEY");
         let ca_record = test_encrypted_key_record(
@@ -1511,6 +1833,7 @@ mod tests {
             provisioning_session_sync,
             PROVISIONING_SESSION_SYNCED_MESSAGE
         );
+        assert_eq!(audit_log_sync, AUDIT_LOGS_SYNCED_MESSAGE);
         assert_eq!(encrypted_key_sync, ENCRYPTED_KEY_BLOBS_SYNCED_MESSAGE);
         assert_eq!(health, HEALTHY_MESSAGE);
 
@@ -1635,6 +1958,66 @@ mod tests {
         assert_eq!(session_status, SECURE_SESSION_ESTABLISHED_STATUS);
         assert_eq!(access_decision, GRANT_ACCESS_DECISION);
         assert_eq!(session_algorithm, SESSION_ALGORITHM);
+
+        let audit_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM audit_logs WHERE log_id = ANY($1) AND session_id = $2;",
+        )
+        .bind(AUDIT_LOG_IDS.as_slice())
+        .bind(DEMO_SESSION_ID)
+        .fetch_one(&client.pool)
+        .await
+        .expect("audit log count should query");
+        assert_eq!(audit_count, AUDIT_LOG_IDS.len() as i64);
+
+        for expected_type in [
+            "provisioning_started",
+            "customer_vehicle_selected",
+            "certificate_issued",
+            "authentication_verified",
+            "secure_session_established",
+            "encrypted_key_blob_synced",
+            "provisioning_finalized",
+        ] {
+            let event_type_exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM audit_logs WHERE event_type = $1 AND session_id = $2);",
+            )
+            .bind(expected_type)
+            .bind(DEMO_SESSION_ID)
+            .fetch_one(&client.pool)
+            .await
+            .expect("audit log event type should query");
+            assert!(event_type_exists);
+        }
+
+        let audit_messages: Vec<String> = sqlx::query_scalar(
+            "SELECT event_message FROM audit_logs WHERE log_id = ANY($1) ORDER BY log_id;",
+        )
+        .bind(AUDIT_LOG_IDS.as_slice())
+        .fetch_all(&client.pool)
+        .await
+        .expect("audit log messages should query");
+        let combined_audit_messages = audit_messages.join("\n").to_lowercase();
+        assert!(audit_messages
+            .iter()
+            .any(|message| message.contains("[REDACTED]")));
+        for disallowed in [
+            "session_key",
+            "shared_secret",
+            "raw_key",
+            "master_key",
+            "private_key",
+            "database_url",
+            "hkdf_output",
+            "x25519_private_key",
+            "aes_key",
+            "aes_gcm_key",
+            "decrypted_payload",
+            "encryption_nonce",
+            "aiacs_master_key",
+            "database_url",
+        ] {
+            assert!(!combined_audit_messages.contains(disallowed));
+        }
 
         for key_id in [CA_ENCRYPTED_KEY_ID, KEY_FOB_ENCRYPTED_KEY_ID] {
             let encrypted_key_blob_len: i32 = sqlx::query_scalar(
