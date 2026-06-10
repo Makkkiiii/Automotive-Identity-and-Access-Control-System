@@ -46,6 +46,8 @@ const PENDING_TEXT: Color = Color::from_rgb(0.725, 0.659, 0.651);
 const PENDING_DOT: Color = Color::from_rgb(0.561, 0.522, 0.533);
 const AUDIT_SYNC_REDACTION_LINE: &str =
     "Sensitive material: [REDACTED] | Raw session key: [REDACTED] | Private key material: [REDACTED]";
+const DIAGNOSTIC_SYNC_REDACTION_LINE: &str =
+    "Sensitive material: [REDACTED] | Raw attack payloads: [REDACTED]";
 
 pub fn main() -> iced::Result {
     AIACSApp::run(Settings::default())
@@ -67,6 +69,8 @@ struct AIACSApp {
     last_provisioning_session_sync_time: String,
     last_audit_log_sync_status: String,
     last_audit_log_sync_time: String,
+    last_diagnostic_result_sync_status: String,
+    last_diagnostic_result_sync_time: String,
     last_encrypted_key_sync_status: String,
     last_encrypted_key_sync_time: String,
     selected_detail: String,
@@ -183,6 +187,7 @@ enum Message {
     SyncCertificateMetadata,
     SyncProvisioningSession,
     SyncAuditLogs,
+    SyncDiagnosticResults,
     SyncCaEncryptedKeyBlob,
     SyncKeyFobEncryptedKeyBlob,
     SyncEncryptedKeyBlobs,
@@ -222,6 +227,8 @@ impl Sandbox for AIACSApp {
             last_provisioning_session_sync_time: "N/A".to_string(),
             last_audit_log_sync_status: "Ready".to_string(),
             last_audit_log_sync_time: "N/A".to_string(),
+            last_diagnostic_result_sync_status: "Ready".to_string(),
+            last_diagnostic_result_sync_time: "N/A".to_string(),
             last_encrypted_key_sync_status: "Not uploaded".to_string(),
             last_encrypted_key_sync_time: "N/A".to_string(),
             selected_detail: "Provisioning console ready. Initialize vehicle trust to begin."
@@ -575,6 +582,21 @@ impl Sandbox for AIACSApp {
                 }
                 Err(error) => self.record_audit_log_sync_error(error),
             },
+            Message::SyncDiagnosticResults => {
+                match self.controller.sync_diagnostic_result_records() {
+                    Ok(message) => {
+                        self.record_diagnostic_result_sync(message.clone());
+                        self.push_log("[DB]", "Diagnostic result records synced");
+                        self.push_log("[DB]", "Diagnostic result synced: DIAG-REPLAY-0001");
+                        self.push_log(
+                            "[DB]",
+                            "Diagnostic result synced: DIAG-WRONG-SESSION-KEY-0001",
+                        );
+                        self.push_log("[SECURITY]", "Raw attack payload material: [REDACTED]");
+                    }
+                    Err(error) => self.record_diagnostic_result_sync_error(error),
+                }
+            }
             Message::SyncCaEncryptedKeyBlob => match self.controller.sync_ca_encrypted_key_blob() {
                 Ok(message) => {
                     self.record_encrypted_key_sync(message.clone());
@@ -1659,6 +1681,20 @@ impl AIACSApp {
                     self.artifact_detail_row("Sensitive Material", "[REDACTED]"),
                     self.artifact_detail_row("Private Key Material", "[REDACTED]"),
                     self.artifact_detail_row(
+                        "Diagnostic Results",
+                        self.last_diagnostic_result_sync_status.clone()
+                    ),
+                    self.artifact_detail_row(
+                        "Diagnostic Result Sync Time",
+                        self.last_diagnostic_result_sync_time.clone()
+                    ),
+                    self.artifact_detail_row(
+                        "Diagnostic Scope",
+                        "adversarial validation outcomes"
+                    ),
+                    self.artifact_detail_row("Malicious Scenarios", "rejected"),
+                    self.artifact_detail_row("Raw Attack Payloads", "[REDACTED]"),
+                    self.artifact_detail_row(
                         "Last Encrypted Key Upload",
                         self.last_encrypted_key_sync_status.clone()
                     ),
@@ -1756,6 +1792,24 @@ impl AIACSApp {
                         ButtonKind::Nav
                     ),
                     text(AUDIT_SYNC_REDACTION_LINE)
+                        .size(11)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(SECONDARY_TEXT)),
+                    text("Diagnostic Result Sync")
+                        .size(18)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(ACCENT_PINK)),
+                    text("Stores safe adversarial validation outcomes only. Raw attack payloads are never displayed or uploaded.")
+                        .size(12)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(SECONDARY_TEXT)),
+                    compact_button(
+                        "warning-shield",
+                        "Sync Diagnostic Results",
+                        Message::SyncDiagnosticResults,
+                        ButtonKind::Nav
+                    ),
+                    text(DIAGNOSTIC_SYNC_REDACTION_LINE)
                         .size(11)
                         .font(Font::MONOSPACE)
                         .style(theme::Text::Color(SECONDARY_TEXT)),
@@ -2333,6 +2387,22 @@ impl AIACSApp {
         self.push_log("[DB]", self.last_audit_log_sync_status.clone());
     }
 
+    fn record_diagnostic_result_sync(&mut self, message: String) {
+        self.cloud_status = "Connected".to_string();
+        self.last_diagnostic_result_sync_status = message.clone();
+        self.last_diagnostic_result_sync_time = Local::now().format("%H:%M:%S").to_string();
+        self.selected_detail = message;
+    }
+
+    fn record_diagnostic_result_sync_error(&mut self, error: AppControllerError) {
+        self.cloud_status = "Error".to_string();
+        self.last_diagnostic_result_sync_status =
+            format!("Diagnostic result sync failed: {}", error);
+        self.last_diagnostic_result_sync_time = Local::now().format("%H:%M:%S").to_string();
+        self.selected_detail = self.last_diagnostic_result_sync_status.clone();
+        self.push_log("[DB]", self.last_diagnostic_result_sync_status.clone());
+    }
+
     fn record_encrypted_key_sync(&mut self, message: String) {
         self.cloud_status = "Connected".to_string();
         self.last_encrypted_key_sync_status = message.clone();
@@ -2784,5 +2854,17 @@ mod tests {
         assert!(!AUDIT_SYNC_REDACTION_LINE.contains("AIACS_MASTER_KEY"));
         assert!(!AUDIT_SYNC_REDACTION_LINE.contains("encrypted_key_blob"));
         assert!(!AUDIT_SYNC_REDACTION_LINE.contains("encryption_nonce"));
+    }
+
+    #[test]
+    fn diagnostic_sync_gui_status_line_redacts_sensitive_material() {
+        assert!(DIAGNOSTIC_SYNC_REDACTION_LINE.contains("[REDACTED]"));
+        assert!(DIAGNOSTIC_SYNC_REDACTION_LINE.contains("Raw attack payloads: [REDACTED]"));
+        assert!(!DIAGNOSTIC_SYNC_REDACTION_LINE.contains("DATABASE_URL"));
+        assert!(!DIAGNOSTIC_SYNC_REDACTION_LINE.contains("AIACS_MASTER_KEY"));
+        assert!(!DIAGNOSTIC_SYNC_REDACTION_LINE.contains("raw_ciphertext"));
+        assert!(!DIAGNOSTIC_SYNC_REDACTION_LINE.contains("raw_nonce"));
+        assert!(!DIAGNOSTIC_SYNC_REDACTION_LINE.contains("encrypted_key_blob"));
+        assert!(!DIAGNOSTIC_SYNC_REDACTION_LINE.contains("encryption_nonce"));
     }
 }

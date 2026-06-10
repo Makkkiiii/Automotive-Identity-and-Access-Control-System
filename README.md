@@ -402,7 +402,7 @@ AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metada
 | `encrypted_keys`        | Client-side encrypted private key blobs, never plaintext private keys |
 | `provisioning_sessions` | Safe provisioning session metadata sync                               |
 | `audit_logs`            | Safe provisioning workflow audit events                               |
-| `diagnostic_results`    | Future diagnostics result records                                     |
+| `diagnostic_results`    | Safe adversarial validation outcomes                                  |
 
 ### Current Behavior
 
@@ -411,11 +411,13 @@ AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metada
 - Safe certificate metadata can be synced.
 - Safe provisioning session metadata can be synced after secure session activation.
 - Safe provisioning workflow audit events can be synced with `[REDACTED]` markers.
+- Safe diagnostic result records can be synced for adversarial validation outcomes.
 - Private key blobs can be encrypted locally before cloud upload.
 - Raw private keys are not uploaded.
 - Raw session keys, shared secrets, HKDF output, AES keys, and X25519 private keys are not uploaded.
-- Certificate JSON and diagnostics are not uploaded in the current metadata phase.
-- Cloud Phase 6C adds audit log sync only; diagnostic results remain planned future work.
+- Raw attack payloads, raw ciphertext, and raw nonces are not uploaded.
+- Certificate JSON is not uploaded in the current metadata phase.
+- Cloud Phase 6D adds diagnostic result sync for rejected malicious scenarios.
 
 ---
 
@@ -508,6 +510,21 @@ FROM audit_logs
 ORDER BY log_id;
 ```
 
+Verify synced diagnostic result metadata without exposing secrets:
+
+```sql
+SELECT
+  diagnostic_id,
+  attack_name,
+  expected_outcome,
+  actual_outcome,
+  result_status,
+  denial_reason,
+  executed_at
+FROM diagnostic_results
+ORDER BY diagnostic_id;
+```
+
 Expected demo records:
 
 | Table       | Expected Record                |
@@ -516,6 +533,7 @@ Expected demo records:
 | `vehicles`  | `VEH-0001` / `Nissan `         |
 | `key_fobs`  | `FOB-0001` / `Primary Key Fob` |
 | `audit_logs` | `AUDIT-0001` through `AUDIT-0007` |
+| `diagnostic_results` | `DIAG-REPLAY-0001` through `DIAG-WRONG-SESSION-KEY-0001` |
 
 ---
 

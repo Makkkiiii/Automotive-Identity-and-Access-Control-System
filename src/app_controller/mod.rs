@@ -8,8 +8,8 @@ use crate::cloud_storage::{
     parse_master_key_from_env, CertificateMetadata, CloudStorageClient, CloudStorageError,
     CustomerMetadata, EncryptedKeyRecord, KeyFobMetadata, ProvisioningSessionMetadata,
     VehicleMetadata, AUDIT_LOG_IDS, CA_ENCRYPTED_KEY_ID, CA_KEY_PURPOSE,
-    DEFAULT_CERTIFICATE_STATUS, DEMO_FOB_ID, DEMO_VEHICLE_ID, ENCRYPTED_KEY_STORAGE_STATUS,
-    KEY_FOB_ENCRYPTED_KEY_ID, KEY_FOB_KEY_PURPOSE,
+    DEFAULT_CERTIFICATE_STATUS, DEMO_FOB_ID, DEMO_VEHICLE_ID, DIAGNOSTIC_RESULT_IDS,
+    ENCRYPTED_KEY_STORAGE_STATUS, KEY_FOB_ENCRYPTED_KEY_ID, KEY_FOB_KEY_PURPOSE,
 };
 use crate::keyfob::{DigitalKeyFob, KeyFobError};
 use crate::session::{SessionState, SessionValidationEngine};
@@ -929,6 +929,28 @@ impl AppController {
         self.save_log_entry("[DB]", format!("Audit event synced: {}", AUDIT_LOG_IDS[0]))?;
         self.save_log_entry("[DB]", format!("Audit event synced: {}", AUDIT_LOG_IDS[6]))?;
         self.save_log_entry("[SECURITY]", "Sensitive audit material: [REDACTED]")?;
+        Ok(message)
+    }
+
+    pub fn sync_diagnostic_result_records(&mut self) -> Result<String, AppControllerError> {
+        let runtime = Self::cloud_runtime()?;
+        let message = runtime
+            .block_on(async {
+                let client = CloudStorageClient::connect_from_env().await?;
+                client.sync_demo_diagnostic_results().await
+            })
+            .map_err(Self::map_cloud_error)?;
+
+        self.save_log_entry("[DB]", "Diagnostic result records synced")?;
+        self.save_log_entry(
+            "[DB]",
+            format!("Diagnostic result synced: {}", DIAGNOSTIC_RESULT_IDS[0]),
+        )?;
+        self.save_log_entry(
+            "[DB]",
+            format!("Diagnostic result synced: {}", DIAGNOSTIC_RESULT_IDS[8]),
+        )?;
+        self.save_log_entry("[SECURITY]", "Raw attack payload material: [REDACTED]")?;
         Ok(message)
     }
 
@@ -1962,6 +1984,30 @@ mod tests {
             "session_key",
             "shared_secret",
             "hkdf_output",
+            "encrypted_key_blob",
+            "encryption_nonce",
+        ] {
+            assert!(!message.contains(disallowed));
+        }
+    }
+
+    #[test]
+    fn test_diagnostic_result_sync_error_is_safe_for_gui() {
+        let error = AppController::map_cloud_error(CloudStorageError::DiagnosticResultSyncFailed);
+        let message = error.to_string();
+
+        assert_eq!(message, "Diagnostic result records could not be synced");
+        for disallowed in [
+            "DATABASE_URL",
+            "AIACS_MASTER_KEY",
+            "postgresql://",
+            "private_key",
+            "forged_key",
+            "session_key",
+            "shared_secret",
+            "hkdf_output",
+            "raw_ciphertext",
+            "raw_nonce",
             "encrypted_key_blob",
             "encryption_nonce",
         ] {

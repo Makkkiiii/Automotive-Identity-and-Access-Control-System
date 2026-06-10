@@ -21,6 +21,7 @@ const DEMO_METADATA_SYNCED_MESSAGE: &str = "Demo metadata synced to cloud databa
 pub const CERTIFICATE_METADATA_SYNCED_MESSAGE: &str = "Certificate metadata synced";
 pub const PROVISIONING_SESSION_SYNCED_MESSAGE: &str = "Provisioning session record synced";
 pub const AUDIT_LOGS_SYNCED_MESSAGE: &str = "Audit log records synced";
+pub const DIAGNOSTIC_RESULTS_SYNCED_MESSAGE: &str = "Diagnostic result records synced";
 pub const CA_ENCRYPTED_KEY_SYNCED_MESSAGE: &str = "CA encrypted key blob uploaded";
 pub const KEY_FOB_ENCRYPTED_KEY_SYNCED_MESSAGE: &str = "Key fob encrypted key blob uploaded";
 pub const ENCRYPTED_KEY_BLOBS_SYNCED_MESSAGE: &str =
@@ -54,6 +55,17 @@ pub const AUDIT_LOG_IDS: [&str; 7] = [
     "AUDIT-0005",
     "AUDIT-0006",
     "AUDIT-0007",
+];
+pub const DIAGNOSTIC_RESULT_IDS: [&str; 9] = [
+    "DIAG-REPLAY-0001",
+    "DIAG-FORGED-SIGNATURE-0001",
+    "DIAG-FAKE-CERT-0001",
+    "DIAG-IDENTITY-MISMATCH-0001",
+    "DIAG-DELAYED-RELAY-0001",
+    "DIAG-PACKET-TAMPERING-0001",
+    "DIAG-UNAUTHORIZED-KEYFOB-0001",
+    "DIAG-TAMPERED-CIPHERTEXT-0001",
+    "DIAG-WRONG-SESSION-KEY-0001",
 ];
 pub const CA_ENCRYPTED_KEY_ID: &str = "KEY-CA-0001";
 pub const KEY_FOB_ENCRYPTED_KEY_ID: &str = "KEY-FOB-0001";
@@ -239,15 +251,63 @@ ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
 "#,
     r#"
 CREATE TABLE IF NOT EXISTS diagnostic_results (
-    diagnostic_id UUID PRIMARY KEY,
-    attack_type TEXT NOT NULL,
+    diagnostic_id TEXT PRIMARY KEY,
+    attack_type TEXT,
+    attack_name TEXT,
     expected_outcome TEXT,
     actual_outcome TEXT,
-    defense_status TEXT,
+    result_status TEXT,
+    denial_reason TEXT,
     failure_point TEXT,
     explanation TEXT,
-    created_at TIMESTAMPTZ NOT NULL
+    executed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
 );
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ALTER COLUMN diagnostic_id TYPE TEXT USING diagnostic_id::TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ALTER COLUMN attack_type DROP NOT NULL;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS diagnostic_id TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS attack_name TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS expected_outcome TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS actual_outcome TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS result_status TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS denial_reason TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS executed_at TIMESTAMPTZ;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
 "#,
 ];
 
@@ -386,6 +446,28 @@ ON CONFLICT (log_id) DO UPDATE SET
     updated_at = NOW();
 "#;
 
+const UPSERT_DIAGNOSTIC_RESULT_SQL: &str = r#"
+INSERT INTO diagnostic_results (
+    diagnostic_id,
+    attack_name,
+    expected_outcome,
+    actual_outcome,
+    result_status,
+    denial_reason,
+    executed_at,
+    created_at,
+    updated_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+ON CONFLICT (diagnostic_id) DO UPDATE SET
+    attack_name = EXCLUDED.attack_name,
+    expected_outcome = EXCLUDED.expected_outcome,
+    actual_outcome = EXCLUDED.actual_outcome,
+    result_status = EXCLUDED.result_status,
+    denial_reason = EXCLUDED.denial_reason,
+    executed_at = EXCLUDED.executed_at,
+    updated_at = NOW();
+"#;
+
 const UPSERT_ENCRYPTED_KEY_SQL: &str = r#"
 INSERT INTO encrypted_keys (
     key_id,
@@ -479,6 +561,17 @@ pub struct AuditLogRecord {
     pub severity: String,
     pub actor: String,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticResultRecord {
+    pub diagnostic_id: String,
+    pub attack_name: String,
+    pub expected_outcome: String,
+    pub actual_outcome: String,
+    pub result_status: String,
+    pub denial_reason: String,
+    pub executed_at: DateTime<Utc>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -667,6 +760,65 @@ pub fn demo_audit_log_records(created_at: DateTime<Utc>) -> Vec<AuditLogRecord> 
             severity: severity.to_string(),
             actor: actor.to_string(),
             created_at,
+        },
+    )
+    .collect()
+}
+
+pub fn demo_diagnostic_result_records(executed_at: DateTime<Utc>) -> Vec<DiagnosticResultRecord> {
+    [
+        (DIAGNOSTIC_RESULT_IDS[0], "Replay Attack", "ReusedNonce"),
+        (
+            DIAGNOSTIC_RESULT_IDS[1],
+            "Forged Signature",
+            "InvalidSignature",
+        ),
+        (
+            DIAGNOSTIC_RESULT_IDS[2],
+            "Fake Certificate",
+            "InvalidCertificate",
+        ),
+        (
+            DIAGNOSTIC_RESULT_IDS[3],
+            "Identity Mismatch",
+            "IdentityMismatch",
+        ),
+        (
+            DIAGNOSTIC_RESULT_IDS[4],
+            "Delayed Relay",
+            "FreshnessTimeout",
+        ),
+        (
+            DIAGNOSTIC_RESULT_IDS[5],
+            "Packet Tampering",
+            "InvalidSignature",
+        ),
+        (
+            DIAGNOSTIC_RESULT_IDS[6],
+            "Unauthorized Key Fob",
+            "UnauthorizedKeyFob",
+        ),
+        (
+            DIAGNOSTIC_RESULT_IDS[7],
+            "Tampered Ciphertext",
+            "CiphertextIntegrityFailure",
+        ),
+        (
+            DIAGNOSTIC_RESULT_IDS[8],
+            "Wrong Session Key",
+            "SessionKeyMismatch",
+        ),
+    ]
+    .into_iter()
+    .map(
+        |(diagnostic_id, attack_name, denial_reason)| DiagnosticResultRecord {
+            diagnostic_id: diagnostic_id.to_string(),
+            attack_name: attack_name.to_string(),
+            expected_outcome: "rejected".to_string(),
+            actual_outcome: "rejected".to_string(),
+            result_status: "passed".to_string(),
+            denial_reason: denial_reason.to_string(),
+            executed_at,
         },
     )
     .collect()
@@ -936,6 +1088,35 @@ impl CloudStorageClient {
         Ok(AUDIT_LOGS_SYNCED_MESSAGE.to_string())
     }
 
+    pub async fn upsert_diagnostic_result(
+        &self,
+        record: &DiagnosticResultRecord,
+    ) -> Result<String, CloudStorageError> {
+        sqlx::query(UPSERT_DIAGNOSTIC_RESULT_SQL)
+            .bind(&record.diagnostic_id)
+            .bind(&record.attack_name)
+            .bind(&record.expected_outcome)
+            .bind(&record.actual_outcome)
+            .bind(&record.result_status)
+            .bind(&record.denial_reason)
+            .bind(record.executed_at)
+            .execute(&self.pool)
+            .await
+            .map_err(|_| CloudStorageError::DiagnosticResultSyncFailed)?;
+
+        Ok(DIAGNOSTIC_RESULTS_SYNCED_MESSAGE.to_string())
+    }
+
+    pub async fn sync_demo_diagnostic_results(&self) -> Result<String, CloudStorageError> {
+        self.initialize_schema().await?;
+
+        for record in demo_diagnostic_result_records(Utc::now()) {
+            self.upsert_diagnostic_result(&record).await?;
+        }
+
+        Ok(DIAGNOSTIC_RESULTS_SYNCED_MESSAGE.to_string())
+    }
+
     pub async fn upsert_encrypted_key(
         &self,
         record: &EncryptedKeyRecord,
@@ -990,6 +1171,7 @@ pub enum CloudStorageError {
     CertificateMetadataSyncFailed,
     ProvisioningSessionSyncFailed,
     AuditLogSyncFailed,
+    DiagnosticResultSyncFailed,
     PrivateKeyEncryptionFailed,
     EncryptedKeySyncFailed,
 }
@@ -1023,6 +1205,9 @@ impl fmt::Display for CloudStorageError {
             }
             CloudStorageError::AuditLogSyncFailed => {
                 f.write_str("Audit log records could not be synced")
+            }
+            CloudStorageError::DiagnosticResultSyncFailed => {
+                f.write_str("Diagnostic result records could not be synced")
             }
             CloudStorageError::PrivateKeyEncryptionFailed => {
                 f.write_str("Private key encryption failed")
@@ -1071,6 +1256,11 @@ fn provisioning_session_sync_sql() -> &'static str {
 #[cfg(test)]
 fn audit_log_sync_sql() -> &'static str {
     UPSERT_AUDIT_LOG_SQL
+}
+
+#[cfg(test)]
+fn diagnostic_result_sync_sql() -> &'static str {
+    UPSERT_DIAGNOSTIC_RESULT_SQL
 }
 
 #[cfg(test)]
@@ -1226,6 +1416,49 @@ mod tests {
     }
 
     #[test]
+    fn schema_sql_includes_diagnostic_result_metadata_migrations() {
+        let schema = schema_sql();
+
+        assert!(schema.contains("CREATE TABLE IF NOT EXISTS diagnostic_results"));
+        assert!(schema.contains("ALTER TABLE diagnostic_results"));
+        assert!(schema.contains("ALTER COLUMN diagnostic_id TYPE TEXT USING diagnostic_id::TEXT"));
+        assert!(schema.contains("ALTER COLUMN attack_type DROP NOT NULL"));
+        for migration in [
+            "ADD COLUMN IF NOT EXISTS diagnostic_id TEXT",
+            "ADD COLUMN IF NOT EXISTS attack_name TEXT",
+            "ADD COLUMN IF NOT EXISTS expected_outcome TEXT",
+            "ADD COLUMN IF NOT EXISTS actual_outcome TEXT",
+            "ADD COLUMN IF NOT EXISTS result_status TEXT",
+            "ADD COLUMN IF NOT EXISTS denial_reason TEXT",
+            "ADD COLUMN IF NOT EXISTS executed_at TIMESTAMPTZ",
+            "ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
+            "ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
+        ] {
+            assert!(
+                schema.contains(migration),
+                "diagnostic migration missing: {migration}"
+            );
+        }
+    }
+
+    #[test]
+    fn sync_demo_diagnostic_results_initializes_schema_before_upsert() {
+        let source = include_str!("mod.rs");
+        let function_start = source
+            .find("pub async fn sync_demo_diagnostic_results")
+            .expect("sync_demo_diagnostic_results should exist");
+        let function_source = &source[function_start..];
+        let initialize_index = function_source
+            .find("self.initialize_schema().await?")
+            .expect("sync_demo_diagnostic_results should initialize schema");
+        let upsert_index = function_source
+            .find("self.upsert_diagnostic_result")
+            .expect("sync_demo_diagnostic_results should upsert diagnostic results");
+
+        assert!(initialize_index < upsert_index);
+    }
+
+    #[test]
     fn schema_sql_does_not_include_plaintext_key_columns() {
         let schema = schema_sql().to_lowercase();
 
@@ -1241,6 +1474,9 @@ mod tests {
         assert!(!schema.contains("aes_key"));
         assert!(!schema.contains("aes_gcm_key"));
         assert!(!schema.contains("decrypted_payload"));
+        assert!(!schema.contains("forged_key"));
+        assert!(!schema.contains("raw_ciphertext"));
+        assert!(!schema.contains("raw_nonce"));
     }
 
     #[test]
@@ -1302,6 +1538,7 @@ mod tests {
             CERTIFICATE_METADATA_SYNCED_MESSAGE,
             PROVISIONING_SESSION_SYNCED_MESSAGE,
             AUDIT_LOGS_SYNCED_MESSAGE,
+            DIAGNOSTIC_RESULTS_SYNCED_MESSAGE,
         ] {
             assert!(!message.contains("DATABASE_URL"));
             assert!(!message.contains("AIACS_MASTER_KEY"));
@@ -1541,6 +1778,105 @@ mod tests {
         let sql = audit_log_sync_sql().to_lowercase();
 
         for disallowed in forbidden_audit_secret_terms() {
+            assert!(!sql.contains(disallowed));
+        }
+        assert!(!sql.contains("AIACS_MASTER_KEY"));
+        assert!(!sql.contains("DATABASE_URL"));
+    }
+
+    fn forbidden_diagnostic_secret_terms() -> [&'static str; 17] {
+        [
+            "session_key",
+            "shared_secret",
+            "raw_key",
+            "forged_key",
+            "master_key",
+            "private_key",
+            "database_url",
+            "hkdf_output",
+            "x25519_private_key",
+            "aes_key",
+            "aes_gcm_key",
+            "decrypted_payload",
+            "ciphertext",
+            "raw_ciphertext",
+            "raw_nonce",
+            "encrypted_key_blob",
+            "encryption_nonce",
+        ]
+    }
+
+    #[test]
+    fn diagnostic_result_records_use_safe_demo_values() {
+        let records = demo_diagnostic_result_records(Utc::now());
+        let attack_names: Vec<&str> = records
+            .iter()
+            .map(|record| record.attack_name.as_str())
+            .collect();
+
+        assert_eq!(records.len(), DIAGNOSTIC_RESULT_IDS.len());
+        for (record, expected_id) in records.iter().zip(DIAGNOSTIC_RESULT_IDS) {
+            assert_eq!(record.diagnostic_id, expected_id);
+            assert_eq!(record.expected_outcome, "rejected");
+            assert_eq!(record.actual_outcome, "rejected");
+            assert_eq!(record.result_status, "passed");
+            assert!(!record.denial_reason.is_empty());
+            assert!(!record.diagnostic_id.contains("AIACS_MASTER_KEY"));
+            assert!(!record.diagnostic_id.contains("DATABASE_URL"));
+        }
+
+        for expected_attack in [
+            "Replay Attack",
+            "Forged Signature",
+            "Fake Certificate",
+            "Identity Mismatch",
+            "Delayed Relay",
+            "Packet Tampering",
+            "Unauthorized Key Fob",
+            "Tampered Ciphertext",
+            "Wrong Session Key",
+        ] {
+            assert!(attack_names.contains(&expected_attack));
+        }
+    }
+
+    #[test]
+    fn diagnostic_result_record_debug_does_not_expose_secret_material() {
+        let records = demo_diagnostic_result_records(Utc::now());
+        let debug = format!("{records:?}").to_lowercase();
+
+        assert!(!debug.contains("aiacs_master_key"));
+        assert!(!debug.contains("database_url"));
+        assert!(!debug.contains("postgresql://"));
+        assert!(!debug.contains("private key material"));
+        assert!(!debug.contains("raw session key"));
+        assert!(!debug.contains("shared secret"));
+        assert!(!debug.contains("hkdf output"));
+        assert!(!debug.contains("raw nonce"));
+        assert!(!debug.contains("raw ciphertext"));
+    }
+
+    #[test]
+    fn diagnostic_result_upsert_sql_uses_on_conflict() {
+        let sql = diagnostic_result_sync_sql();
+
+        assert!(sql.contains("INSERT INTO diagnostic_results"));
+        assert!(sql.contains("ON CONFLICT (diagnostic_id) DO UPDATE"));
+        assert!(sql.contains("diagnostic_id"));
+        assert!(sql.contains("attack_name"));
+        assert!(sql.contains("expected_outcome"));
+        assert!(sql.contains("actual_outcome"));
+        assert!(sql.contains("result_status"));
+        assert!(sql.contains("denial_reason"));
+        assert!(sql.contains("executed_at"));
+        assert!(sql.contains("updated_at = NOW()"));
+    }
+
+    #[test]
+    fn diagnostic_result_upsert_sql_excludes_forbidden_secret_columns() {
+        let sql = diagnostic_result_sync_sql().to_lowercase();
+
+        for disallowed in forbidden_diagnostic_secret_terms() {
             assert!(!sql.contains(disallowed));
         }
         assert!(!sql.contains("AIACS_MASTER_KEY"));
@@ -1799,6 +2135,10 @@ mod tests {
             .sync_demo_audit_logs()
             .await
             .expect("live DB audit log sync should succeed");
+        let diagnostic_result_sync = client
+            .sync_demo_diagnostic_results()
+            .await
+            .expect("live DB diagnostic result sync should succeed");
         let master_key = parse_master_key_from_env()
             .expect("live encrypted key upload requires AIACS_MASTER_KEY");
         let ca_record = test_encrypted_key_record(
@@ -1834,6 +2174,7 @@ mod tests {
             PROVISIONING_SESSION_SYNCED_MESSAGE
         );
         assert_eq!(audit_log_sync, AUDIT_LOGS_SYNCED_MESSAGE);
+        assert_eq!(diagnostic_result_sync, DIAGNOSTIC_RESULTS_SYNCED_MESSAGE);
         assert_eq!(encrypted_key_sync, ENCRYPTED_KEY_BLOBS_SYNCED_MESSAGE);
         assert_eq!(health, HEALTHY_MESSAGE);
 
@@ -2017,6 +2358,88 @@ mod tests {
             "database_url",
         ] {
             assert!(!combined_audit_messages.contains(disallowed));
+        }
+
+        let diagnostic_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM diagnostic_results WHERE diagnostic_id = ANY($1);",
+        )
+        .bind(DIAGNOSTIC_RESULT_IDS.as_slice())
+        .fetch_one(&client.pool)
+        .await
+        .expect("diagnostic result count should query");
+        assert_eq!(diagnostic_count, DIAGNOSTIC_RESULT_IDS.len() as i64);
+
+        let diagnostic_rows: Vec<(String, String, String, String, String, String)> =
+            sqlx::query_as(
+                "SELECT diagnostic_id, attack_name, expected_outcome, actual_outcome, result_status, denial_reason FROM diagnostic_results WHERE diagnostic_id = ANY($1) ORDER BY diagnostic_id;",
+            )
+            .bind(DIAGNOSTIC_RESULT_IDS.as_slice())
+            .fetch_all(&client.pool)
+            .await
+            .expect("diagnostic result rows should query");
+        let diagnostic_text = diagnostic_rows
+            .iter()
+            .map(
+                |(
+                    diagnostic_id,
+                    attack_name,
+                    expected_outcome,
+                    actual_outcome,
+                    result_status,
+                    denial_reason,
+                )| {
+                    format!(
+                        "{diagnostic_id} {attack_name} {expected_outcome} {actual_outcome} {result_status} {denial_reason}"
+                    )
+                },
+            )
+            .collect::<Vec<_>>()
+            .join("\n")
+            .to_lowercase();
+
+        for (_, _, expected_outcome, actual_outcome, result_status, denial_reason) in
+            &diagnostic_rows
+        {
+            assert_eq!(expected_outcome, "rejected");
+            assert_eq!(actual_outcome, "rejected");
+            assert_eq!(result_status, "passed");
+            assert!(!denial_reason.is_empty());
+        }
+        for expected_attack in [
+            "Replay Attack",
+            "Forged Signature",
+            "Fake Certificate",
+            "Identity Mismatch",
+            "Delayed Relay",
+            "Packet Tampering",
+            "Unauthorized Key Fob",
+            "Tampered Ciphertext",
+            "Wrong Session Key",
+        ] {
+            assert!(diagnostic_rows
+                .iter()
+                .any(|(_, attack_name, _, _, _, _)| attack_name == expected_attack));
+        }
+        for disallowed in [
+            "session_key",
+            "shared_secret",
+            "raw_key",
+            "forged_key",
+            "master_key",
+            "private_key",
+            "database_url",
+            "hkdf_output",
+            "x25519_private_key",
+            "aes_key",
+            "aes_gcm_key",
+            "decrypted_payload",
+            "raw_ciphertext",
+            "raw_nonce",
+            "encrypted_key_blob",
+            "encryption_nonce",
+            "aiacs_master_key",
+        ] {
+            assert!(!diagnostic_text.contains(disallowed));
         }
 
         for key_id in [CA_ENCRYPTED_KEY_ID, KEY_FOB_ENCRYPTED_KEY_ID] {
