@@ -77,6 +77,7 @@ impl From<String> for AppControllerError {
     }
 }
 
+#[derive(Clone)]
 pub struct AppController {
     ca: Option<CertificateAuthority>,
     keyfob: Option<DigitalKeyFob>,
@@ -959,9 +960,26 @@ impl AppController {
         email: Option<String>,
         phone: Option<String>,
     ) -> Result<String, AppControllerError> {
+        let owner_name = owner_name.into();
+        let email = email.map(|value| value.trim().to_string());
+        let phone = phone.map(|value| value.trim().to_string());
+        if owner_name.trim().is_empty() {
+            return Err(AppControllerError::Backend(
+                "Owner name is required".to_string(),
+            ));
+        }
+        if email
+            .as_deref()
+            .map(|value| !is_valid_email(value))
+            .unwrap_or(true)
+        {
+            return Err(AppControllerError::Backend(
+                "Valid email is required".to_string(),
+            ));
+        }
         let customer = CustomerMetadata {
             customer_id: generated_record_id("CUST", self.customer_records.len() + 1),
-            owner_name: owner_name.into(),
+            owner_name,
             email,
             phone,
         };
@@ -1034,15 +1052,36 @@ impl AppController {
         registration_number: Option<String>,
     ) -> Result<String, AppControllerError> {
         let customer_id = customer_id.into();
+        let vehicle_display_name = vehicle_display_name.into();
+        let make = make.map(|value| value.trim().to_string());
+        let model = model.map(|value| value.trim().to_string());
+        let vin = vin.map(|value| value.trim().to_string());
+        let registration_number = registration_number.map(|value| value.trim().to_string());
         if customer_id.trim().is_empty() {
             return Err(AppControllerError::Backend(
                 "Select a customer before creating a vehicle".to_string(),
             ));
         }
+        if vehicle_display_name.trim().is_empty() {
+            return Err(AppControllerError::Backend(
+                "Vehicle display name is required".to_string(),
+            ));
+        }
+        if make.as_deref().map(str::is_empty).unwrap_or(true) {
+            return Err(AppControllerError::Backend("Make is required".to_string()));
+        }
+        if model.as_deref().map(str::is_empty).unwrap_or(true) {
+            return Err(AppControllerError::Backend("Model is required".to_string()));
+        }
+        if year.is_none() {
+            return Err(AppControllerError::Backend(
+                "Vehicle year must be numeric".to_string(),
+            ));
+        }
         let vehicle = VehicleMetadata {
             vehicle_id: generated_record_id("VEH", self.vehicle_records.len() + 1),
             customer_id,
-            vehicle_display_name: vehicle_display_name.into(),
+            vehicle_display_name,
             make,
             model,
             year,
@@ -1133,16 +1172,22 @@ impl AppController {
         fob_label: impl Into<String>,
     ) -> Result<String, AppControllerError> {
         let vehicle_id = vehicle_id.into();
+        let fob_label = fob_label.into();
         if vehicle_id.trim().is_empty() {
             return Err(AppControllerError::Backend(
                 "Select a vehicle before creating a key fob".to_string(),
+            ));
+        }
+        if fob_label.trim().is_empty() {
+            return Err(AppControllerError::Backend(
+                "Key fob label is required".to_string(),
             ));
         }
         let key_fob = KeyFobMetadata {
             fob_id: generated_record_id("FOB", self.key_fob_records.len() + 1),
             vehicle_id,
             customer_id: self.active_customer.customer_id.clone(),
-            fob_label: fob_label.into(),
+            fob_label,
             public_key_fingerprint: self.key_fob_public_key_fingerprint(),
             certificate_status: Some(self.certificate_status_label().to_string()),
             provisioning_status: Some(self.provisioning_status_label().to_string()),
@@ -2124,6 +2169,14 @@ fn generated_record_id(prefix: &str, index: usize) -> String {
     format!("{prefix}-{index:04}")
 }
 
+fn is_valid_email(value: &str) -> bool {
+    let trimmed = value.trim();
+    let Some((local, domain)) = trimmed.split_once('@') else {
+        return false;
+    };
+    !local.is_empty() && domain.contains('.') && !domain.ends_with('.')
+}
+
 fn upsert_local_customer(records: &mut Vec<CustomerMetadata>, record: CustomerMetadata) {
     if let Some(existing) = records
         .iter_mut()
@@ -2760,6 +2813,50 @@ mod tests {
             .expect_err("empty vehicle id should fail safely")
             .to_string();
         assert_eq!(key_fob_error, "Select a vehicle before creating a key fob");
+    }
+
+    #[test]
+    fn test_management_record_ids_are_generated_safely() {
+        assert_eq!(generated_record_id("CUST", 2), "CUST-0002");
+        assert_eq!(generated_record_id("VEH", 12), "VEH-0012");
+        assert_eq!(generated_record_id("FOB", 101), "FOB-0101");
+    }
+
+    #[test]
+    fn test_manual_management_record_validation_is_safe() {
+        let mut controller = AppController::new();
+
+        let owner_error = controller
+            .create_customer_record("", Some("owner@example.com".to_string()), None)
+            .expect_err("empty owner name should fail before cloud work")
+            .to_string();
+        assert_eq!(owner_error, "Owner name is required");
+
+        let email_error = controller
+            .create_customer_record("Manual Owner", Some("invalid-email".to_string()), None)
+            .expect_err("invalid email should fail before cloud work")
+            .to_string();
+        assert_eq!(email_error, "Valid email is required");
+
+        let vehicle_error = controller
+            .create_vehicle_record(
+                crate::cloud_storage::DEMO_CUSTOMER_ID,
+                "Manual Vehicle",
+                Some("Nissan".to_string()),
+                Some("Magnite".to_string()),
+                None,
+                None,
+                None,
+            )
+            .expect_err("missing numeric year should fail before cloud work")
+            .to_string();
+        assert_eq!(vehicle_error, "Vehicle year must be numeric");
+
+        let fob_error = controller
+            .create_key_fob_record(crate::cloud_storage::DEMO_VEHICLE_ID, "")
+            .expect_err("empty fob label should fail before cloud work")
+            .to_string();
+        assert_eq!(fob_error, "Key fob label is required");
     }
 
     #[test]

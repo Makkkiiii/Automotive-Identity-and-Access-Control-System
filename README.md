@@ -319,9 +319,9 @@ The desktop GUI is organized as a multi-page vehicle provisioning console.
 | Page               | Purpose                                                                                                                                  |
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | Dashboard          | High-level overview of active customer, selected vehicle, registered key fob, and provisioning status                                    |
-| Customers          | Demo customer/owner details and view-only demo profile actions                                                                           |
-| Vehicles           | Selected vehicle details, technical ID, make/model/year, and owner association                                                           |
-| Key Fobs           | Digital key fob details, certificate state, public fingerprint, and redacted private key state                                           |
+| Customers          | Cloud-backed customer records with manual owner, email, and phone input; customer IDs are generated automatically                        |
+| Vehicles           | Cloud-backed vehicle records with manual display name, make, model, year, VIN, and registration input; vehicle IDs are generated automatically |
+| Key Fobs           | Cloud-backed key fob records with manual fob label input, public fingerprint, and redacted private key state; fob IDs are generated automatically |
 | Provisioning       | Primary guided workflow for normal vehicle access provisioning                                                                           |
 | Protocol Artifacts | Selectable protocol artifacts such as challenge message, authentication proof, certificate details, session summary, and access decision |
 | Credential Storage | Safe credential paths, fingerprints, storage mode, and `[REDACTED]` private key values                                                   |
@@ -422,6 +422,8 @@ AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metada
 - Cloud Phase 7 adds automatic GUI workflow-to-cloud sync while preserving manual sync buttons for verification and recovery.
 - GUI cloud operations continue to call `AppController` only; the GUI does not call cloud storage or cryptographic modules directly.
 - Cloud Phase 8 adds database-backed customer, vehicle, and key fob record management.
+- Cloud Phase 8.5 moves cloud-connected GUI actions onto asynchronous Iced commands so the interface remains responsive during load/create/sync operations.
+- Customers, Vehicles, and Key Fobs pages use manual record input; only generated metadata IDs are automatic.
 - Demo records remain available as fallback/sample records when cloud storage is not configured.
 - Full dynamic cryptographic identity binding for custom selected records remains a later phase; the stable demo crypto flow is preserved.
 - Customer, vehicle, and key fob tables store safe metadata only, never private keys or session secret material.
@@ -578,6 +580,12 @@ Start the main GUI:
 cargo run
 ```
 
+Run the GUI explicitly:
+
+```bash
+cargo run --bin aiacs
+```
+
 Run the diagnostics tool:
 
 ```bash
@@ -600,7 +608,7 @@ Run the release binary on Linux/macOS:
 
 1. Open the GUI with `cargo run`.
 2. Review the Dashboard page.
-3. Open Customers, Vehicles, and Key Fobs to view the selected demo records.
+3. Open Customers, Vehicles, and Key Fobs to manually enter or load safe metadata records.
 4. Open Provisioning.
 5. Complete the guided vehicle access workflow.
 6. Review Protocol Artifacts.
@@ -608,6 +616,8 @@ Run the release binary on Linux/macOS:
 8. Open Cloud Storage and run safe metadata sync if `.env.local` is configured.
 9. Export the provisioning report from Logs / Report.
 10. Launch diagnostics separately when testing adversarial validation.
+
+Selected cloud metadata records are visible in the GUI, but full cryptographic identity binding for custom selected records is deferred until Phase 9. Until then, the cryptographic provisioning demo uses the stable demo identity.
 
 ---
 

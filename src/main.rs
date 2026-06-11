@@ -2,14 +2,13 @@ use aiacs::app_controller::{AppController, AppControllerError};
 use chrono::Local;
 use iced::alignment;
 use iced::theme;
-use iced::widget::{button, column, container, row, scrollable, text, Svg};
+use iced::widget::{button, column, container, row, scrollable, text, text_input, Svg};
 use iced::{
-    application, Alignment, Background, Border, Color, Element, Font, Length, Sandbox, Settings,
-    Theme,
+    application, executor, Alignment, Application, Background, Border, Color, Command, Element,
+    Font, Length, Settings, Theme,
 };
 
 const OWNER_NAME: &str = "Dennis Maharjan";
-const CUSTOMER_ID: &str = "CUST-0001";
 const CUSTOMER_EMAIL: &str = "dennis.m@example.com";
 const CUSTOMER_PHONE: &str = "+977-9800000000";
 const VEHICLE_DISPLAY_NAME: &str = "Nissan Magnite 2021";
@@ -129,6 +128,24 @@ struct ManagementState {
     customer_note: String,
     vehicle_note: String,
     keyfob_note: String,
+    customer_load_status: String,
+    customer_create_status: String,
+    vehicle_load_status: String,
+    vehicle_create_status: String,
+    key_fob_load_status: String,
+    key_fob_create_status: String,
+    cloud_sync_status: String,
+    cloud_operation_in_progress: bool,
+    customer_owner_input: String,
+    customer_email_input: String,
+    customer_phone_input: String,
+    vehicle_display_name_input: String,
+    vehicle_make_input: String,
+    vehicle_model_input: String,
+    vehicle_year_input: String,
+    vehicle_vin_input: String,
+    vehicle_registration_input: String,
+    key_fob_label_input: String,
 }
 
 impl Default for ManagementState {
@@ -137,9 +154,69 @@ impl Default for ManagementState {
             customer_note: "Demo customer selected".to_string(),
             vehicle_note: "Demo vehicle selected".to_string(),
             keyfob_note: "Primary key fob ready for provisioning".to_string(),
+            customer_load_status: "Ready".to_string(),
+            customer_create_status: "Ready".to_string(),
+            vehicle_load_status: "Ready".to_string(),
+            vehicle_create_status: "Ready".to_string(),
+            key_fob_load_status: "Ready".to_string(),
+            key_fob_create_status: "Ready".to_string(),
+            cloud_sync_status: "Ready".to_string(),
+            cloud_operation_in_progress: false,
+            customer_owner_input: String::new(),
+            customer_email_input: String::new(),
+            customer_phone_input: String::new(),
+            vehicle_display_name_input: String::new(),
+            vehicle_make_input: String::new(),
+            vehicle_model_input: String::new(),
+            vehicle_year_input: String::new(),
+            vehicle_vin_input: String::new(),
+            vehicle_registration_input: String::new(),
+            key_fob_label_input: String::new(),
         }
     }
 }
+
+#[derive(Debug, Clone, Copy)]
+enum CloudOperation {
+    LoadCustomers,
+    CreateCustomer,
+    SelectCustomer,
+    LoadVehicles,
+    CreateVehicle,
+    SelectVehicle,
+    LoadKeyFobs,
+    CreateKeyFob,
+    SelectKeyFob,
+    CheckConnection,
+    EnableAutoSync,
+    DisableAutoSync,
+    SyncCustomerMetadata,
+    SyncVehicleMetadata,
+    SyncKeyFobMetadata,
+    SyncDemoMetadata,
+    SyncCertificateMetadata,
+    SyncProvisioningSession,
+    SyncAuditLogs,
+    SyncDiagnosticResults,
+    SyncCaEncryptedKeyBlob,
+    SyncKeyFobEncryptedKeyBlob,
+    SyncEncryptedKeyBlobs,
+    AutoMetadata,
+    AutoCertificate,
+    AutoEncryptedKeyBlob,
+    AutoSession,
+    AutoAuditLogs,
+    AutoDiagnosticResults,
+}
+
+#[derive(Debug, Clone)]
+struct CloudOperationResult {
+    operation: CloudOperation,
+    controller: AppController,
+    result: Result<String, String>,
+}
+
+type VehicleFormValues = (String, String, String, i32, Option<String>, Option<String>);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MainTab {
@@ -171,12 +248,25 @@ enum Message {
     LoadCustomers,
     CreateCustomer,
     SelectCustomer,
+    CustomerOwnerChanged(String),
+    CustomerEmailChanged(String),
+    CustomerPhoneChanged(String),
+    FillDemoCustomer,
     LoadVehicles,
     CreateVehicle,
     SelectVehicle,
+    VehicleDisplayNameChanged(String),
+    VehicleMakeChanged(String),
+    VehicleModelChanged(String),
+    VehicleYearChanged(String),
+    VehicleVinChanged(String),
+    VehicleRegistrationChanged(String),
+    FillDemoVehicle,
     LoadKeyFobs,
     CreateKeyFobRecord,
     SelectKeyFobRecord,
+    KeyFobLabelChanged(String),
+    FillDemoKeyFob,
     RotateCredential,
     ConnectVehicle,
     DetectKeyFob,
@@ -203,15 +293,19 @@ enum Message {
     SyncCaEncryptedKeyBlob,
     SyncKeyFobEncryptedKeyBlob,
     SyncEncryptedKeyBlobs,
+    CloudOperationFinished(Box<CloudOperationResult>),
     ClearLog,
     ExportLogs,
     ExportProvisioningReport,
 }
 
-impl Sandbox for AIACSApp {
+impl Application for AIACSApp {
+    type Executor = executor::Default;
+    type Flags = ();
     type Message = Message;
+    type Theme = Theme;
 
-    fn new() -> Self {
+    fn new(_flags: Self::Flags) -> (Self, Command<Self::Message>) {
         let mut controller = AppController::new();
         let initial_messages = [
             "AIACS provisioning console initialized",
@@ -223,40 +317,43 @@ impl Sandbox for AIACSApp {
             let _ = controller.save_log_entry("[INFO]", message);
         }
 
-        Self {
-            controller,
-            status: SystemStatus::default(),
-            workflow_state: WorkflowState::default(),
-            management_state: ManagementState::default(),
-            selected_tab: MainTab::Dashboard,
-            selected_artifact: ArtifactSection::ChallengeMessage,
-            cloud_status: "Disconnected".to_string(),
-            cloud_auto_sync_status: "Disabled".to_string(),
-            cloud_sync_metadata_status: "Pending".to_string(),
-            cloud_sync_certificate_status: "Pending".to_string(),
-            cloud_sync_encrypted_key_status: "Pending".to_string(),
-            cloud_sync_session_status: "Pending".to_string(),
-            cloud_sync_audit_status: "Pending".to_string(),
-            cloud_sync_diagnostic_status: "Pending".to_string(),
-            last_metadata_sync_status: "Not synced".to_string(),
-            last_metadata_sync_time: "N/A".to_string(),
-            last_certificate_sync_status: "Not synced".to_string(),
-            last_certificate_sync_time: "N/A".to_string(),
-            last_provisioning_session_sync_status: "Ready".to_string(),
-            last_provisioning_session_sync_time: "N/A".to_string(),
-            last_audit_log_sync_status: "Ready".to_string(),
-            last_audit_log_sync_time: "N/A".to_string(),
-            last_diagnostic_result_sync_status: "Ready".to_string(),
-            last_diagnostic_result_sync_time: "N/A".to_string(),
-            last_encrypted_key_sync_status: "Not uploaded".to_string(),
-            last_encrypted_key_sync_time: "N/A".to_string(),
-            selected_detail: "Provisioning console ready. Initialize vehicle trust to begin."
-                .to_string(),
-            event_log: initial_messages
-                .iter()
-                .map(|message| timestamped("[INFO]", message))
-                .collect(),
-        }
+        (
+            Self {
+                controller,
+                status: SystemStatus::default(),
+                workflow_state: WorkflowState::default(),
+                management_state: ManagementState::default(),
+                selected_tab: MainTab::Dashboard,
+                selected_artifact: ArtifactSection::ChallengeMessage,
+                cloud_status: "Disconnected".to_string(),
+                cloud_auto_sync_status: "Disabled".to_string(),
+                cloud_sync_metadata_status: "Pending".to_string(),
+                cloud_sync_certificate_status: "Pending".to_string(),
+                cloud_sync_encrypted_key_status: "Pending".to_string(),
+                cloud_sync_session_status: "Pending".to_string(),
+                cloud_sync_audit_status: "Pending".to_string(),
+                cloud_sync_diagnostic_status: "Pending".to_string(),
+                last_metadata_sync_status: "Not synced".to_string(),
+                last_metadata_sync_time: "N/A".to_string(),
+                last_certificate_sync_status: "Not synced".to_string(),
+                last_certificate_sync_time: "N/A".to_string(),
+                last_provisioning_session_sync_status: "Ready".to_string(),
+                last_provisioning_session_sync_time: "N/A".to_string(),
+                last_audit_log_sync_status: "Ready".to_string(),
+                last_audit_log_sync_time: "N/A".to_string(),
+                last_diagnostic_result_sync_status: "Ready".to_string(),
+                last_diagnostic_result_sync_time: "N/A".to_string(),
+                last_encrypted_key_sync_status: "Not uploaded".to_string(),
+                last_encrypted_key_sync_time: "N/A".to_string(),
+                selected_detail: "Provisioning console ready. Initialize vehicle trust to begin."
+                    .to_string(),
+                event_log: initial_messages
+                    .iter()
+                    .map(|message| timestamped("[INFO]", message))
+                    .collect(),
+            },
+            Command::none(),
+        )
     }
 
     fn title(&self) -> String {
@@ -283,7 +380,7 @@ impl Sandbox for AIACSApp {
         })
     }
 
-    fn update(&mut self, message: Message) {
+    fn update(&mut self, message: Message) -> Command<Self::Message> {
         match message {
             Message::SelectTab(tab) => {
                 self.selected_tab = tab;
@@ -291,156 +388,176 @@ impl Sandbox for AIACSApp {
             Message::SelectArtifact(section) => {
                 self.selected_artifact = section;
             }
-            Message::LoadCustomers => match self.controller.load_customer_records() {
-                Ok(message) => {
-                    self.management_state.customer_note = message.clone();
-                    self.selected_detail = message.clone();
-                    self.push_log("[DB]", message);
+            Message::LoadCustomers => {
+                self.begin_cloud_operation("Loading customers...");
+                self.management_state.customer_load_status = "Loading customers...".to_string();
+                return self.run_cloud_operation(CloudOperation::LoadCustomers);
+            }
+            Message::CreateCustomer => match self.customer_form_values() {
+                Ok((owner_name, email, phone)) => {
+                    self.begin_cloud_operation("Creating customer...");
+                    self.management_state.customer_create_status =
+                        "Creating customer...".to_string();
+                    return self.run_cloud_operation_with(move |mut controller| {
+                        let result = controller
+                            .create_customer_record(owner_name, Some(email), phone)
+                            .map_err(|error| error.to_string());
+                        CloudOperationResult {
+                            operation: CloudOperation::CreateCustomer,
+                            controller,
+                            result,
+                        }
+                    });
                 }
-                Err(error) => {
-                    self.management_state.customer_note =
-                        format!("Customer load failed: {}", error);
-                    self.selected_detail = self.management_state.customer_note.clone();
-                    self.push_log("[ERROR]", self.management_state.customer_note.clone());
-                }
-            },
-            Message::CreateCustomer => match self.controller.create_customer_record(
-                "Cloud Customer",
-                Some(CUSTOMER_EMAIL.to_string()),
-                Some(CUSTOMER_PHONE.to_string()),
-            ) {
-                Ok(message) => {
-                    self.management_state.customer_note = message.clone();
-                    self.selected_detail = message.clone();
-                    self.push_log("[DB]", message);
-                    let auto_sync = self.controller.auto_sync_after_metadata_ready();
-                    self.record_auto_sync_result("Metadata", auto_sync);
-                }
-                Err(error) => {
-                    self.management_state.customer_note =
-                        format!("Customer creation failed: {}", error);
-                    self.selected_detail = self.management_state.customer_note.clone();
-                    self.push_log("[ERROR]", self.management_state.customer_note.clone());
-                }
+                Err(message) => self.record_customer_form_error(message),
             },
             Message::SelectCustomer => {
-                let customer = self.controller.active_customer_record();
-                match self.controller.select_customer(&customer.customer_id) {
-                    Ok(message) => {
-                        self.management_state.customer_note = message.clone();
-                        self.selected_detail = message.clone();
-                        self.push_log("[INFO]", message);
+                let customer_id = self.controller.active_customer_record().customer_id;
+                self.begin_cloud_operation("Selecting customer...");
+                return self.run_cloud_operation_with(move |mut controller| {
+                    let result = controller
+                        .select_customer(&customer_id)
+                        .map_err(|error| error.to_string());
+                    CloudOperationResult {
+                        operation: CloudOperation::SelectCustomer,
+                        controller,
+                        result,
                     }
-                    Err(error) => {
-                        self.management_state.customer_note =
-                            format!("Customer selection failed: {}", error);
-                        self.selected_detail = self.management_state.customer_note.clone();
-                        self.push_log("[ERROR]", self.management_state.customer_note.clone());
-                    }
-                }
+                });
             }
-            Message::LoadVehicles => match self.controller.load_vehicle_records() {
-                Ok(message) => {
-                    self.management_state.vehicle_note = message.clone();
-                    self.selected_detail = message.clone();
-                    self.push_log("[DB]", message);
+            Message::CustomerOwnerChanged(value) => {
+                self.management_state.customer_owner_input = value;
+            }
+            Message::CustomerEmailChanged(value) => {
+                self.management_state.customer_email_input = value;
+            }
+            Message::CustomerPhoneChanged(value) => {
+                self.management_state.customer_phone_input = value;
+            }
+            Message::FillDemoCustomer => {
+                self.management_state.customer_owner_input = OWNER_NAME.to_string();
+                self.management_state.customer_email_input = CUSTOMER_EMAIL.to_string();
+                self.management_state.customer_phone_input = CUSTOMER_PHONE.to_string();
+                self.management_state.customer_note =
+                    "Demo customer fields filled for operator review".to_string();
+            }
+            Message::LoadVehicles => {
+                self.begin_cloud_operation("Loading vehicles...");
+                self.management_state.vehicle_load_status = "Loading vehicles...".to_string();
+                return self.run_cloud_operation(CloudOperation::LoadVehicles);
+            }
+            Message::CreateVehicle => match self.vehicle_form_values() {
+                Ok((display_name, make, model, year, vin, registration)) => {
+                    let customer_id = self.controller.active_customer_record().customer_id;
+                    self.begin_cloud_operation("Creating vehicle...");
+                    self.management_state.vehicle_create_status = "Creating vehicle...".to_string();
+                    return self.run_cloud_operation_with(move |mut controller| {
+                        let result = controller
+                            .create_vehicle_record(
+                                customer_id,
+                                display_name,
+                                Some(make),
+                                Some(model),
+                                Some(year),
+                                vin,
+                                registration,
+                            )
+                            .map_err(|error| error.to_string());
+                        CloudOperationResult {
+                            operation: CloudOperation::CreateVehicle,
+                            controller,
+                            result,
+                        }
+                    });
                 }
-                Err(error) => {
-                    self.management_state.vehicle_note = format!("Vehicle load failed: {}", error);
-                    self.selected_detail = self.management_state.vehicle_note.clone();
-                    self.push_log("[ERROR]", self.management_state.vehicle_note.clone());
-                }
+                Err(message) => self.record_vehicle_form_error(message),
             },
-            Message::CreateVehicle => {
-                let customer = self.controller.active_customer_record();
-                match self.controller.create_vehicle_record(
-                    customer.customer_id,
-                    "Cloud Vehicle",
-                    Some(VEHICLE_MAKE.to_string()),
-                    Some(VEHICLE_MODEL.to_string()),
-                    VEHICLE_YEAR.parse::<i32>().ok(),
-                    Some(VEHICLE_VIN.to_string()),
-                    Some(VEHICLE_REGISTRATION.to_string()),
-                ) {
-                    Ok(message) => {
-                        self.management_state.vehicle_note = message.clone();
-                        self.selected_detail = message.clone();
-                        self.push_log("[DB]", message);
-                        let auto_sync = self.controller.auto_sync_after_metadata_ready();
-                        self.record_auto_sync_result("Metadata", auto_sync);
-                    }
-                    Err(error) => {
-                        self.management_state.vehicle_note =
-                            format!("Vehicle creation failed: {}", error);
-                        self.selected_detail = self.management_state.vehicle_note.clone();
-                        self.push_log("[ERROR]", self.management_state.vehicle_note.clone());
-                    }
-                }
-            }
             Message::SelectVehicle => {
-                let vehicle = self.controller.active_vehicle_record();
-                match self.controller.select_vehicle(&vehicle.vehicle_id) {
-                    Ok(message) => {
-                        self.management_state.vehicle_note = message.clone();
-                        self.selected_detail = message.clone();
-                        self.push_log("[INFO]", message);
+                let vehicle_id = self.controller.active_vehicle_record().vehicle_id;
+                self.begin_cloud_operation("Selecting vehicle...");
+                return self.run_cloud_operation_with(move |mut controller| {
+                    let result = controller
+                        .select_vehicle(&vehicle_id)
+                        .map_err(|error| error.to_string());
+                    CloudOperationResult {
+                        operation: CloudOperation::SelectVehicle,
+                        controller,
+                        result,
                     }
-                    Err(error) => {
-                        self.management_state.vehicle_note =
-                            format!("Vehicle selection failed: {}", error);
-                        self.selected_detail = self.management_state.vehicle_note.clone();
-                        self.push_log("[ERROR]", self.management_state.vehicle_note.clone());
-                    }
-                }
+                });
             }
-            Message::LoadKeyFobs => match self.controller.load_key_fob_records() {
-                Ok(message) => {
-                    self.management_state.keyfob_note = message.clone();
-                    self.selected_detail = message.clone();
-                    self.push_log("[DB]", message);
+            Message::VehicleDisplayNameChanged(value) => {
+                self.management_state.vehicle_display_name_input = value;
+            }
+            Message::VehicleMakeChanged(value) => {
+                self.management_state.vehicle_make_input = value;
+            }
+            Message::VehicleModelChanged(value) => {
+                self.management_state.vehicle_model_input = value;
+            }
+            Message::VehicleYearChanged(value) => {
+                self.management_state.vehicle_year_input = value;
+            }
+            Message::VehicleVinChanged(value) => {
+                self.management_state.vehicle_vin_input = value;
+            }
+            Message::VehicleRegistrationChanged(value) => {
+                self.management_state.vehicle_registration_input = value;
+            }
+            Message::FillDemoVehicle => {
+                self.management_state.vehicle_display_name_input = VEHICLE_DISPLAY_NAME.to_string();
+                self.management_state.vehicle_make_input = VEHICLE_MAKE.to_string();
+                self.management_state.vehicle_model_input = VEHICLE_MODEL.to_string();
+                self.management_state.vehicle_year_input = VEHICLE_YEAR.to_string();
+                self.management_state.vehicle_vin_input = VEHICLE_VIN.to_string();
+                self.management_state.vehicle_registration_input = VEHICLE_REGISTRATION.to_string();
+                self.management_state.vehicle_note =
+                    "Demo vehicle fields filled for operator review".to_string();
+            }
+            Message::LoadKeyFobs => {
+                self.begin_cloud_operation("Loading key fobs...");
+                self.management_state.key_fob_load_status = "Loading key fobs...".to_string();
+                return self.run_cloud_operation(CloudOperation::LoadKeyFobs);
+            }
+            Message::CreateKeyFobRecord => match self.key_fob_form_values() {
+                Ok(label) => {
+                    let vehicle_id = self.controller.active_vehicle_record().vehicle_id;
+                    self.begin_cloud_operation("Creating key fob...");
+                    self.management_state.key_fob_create_status = "Creating key fob...".to_string();
+                    return self.run_cloud_operation_with(move |mut controller| {
+                        let result = controller
+                            .create_key_fob_record(vehicle_id, label)
+                            .map_err(|error| error.to_string());
+                        CloudOperationResult {
+                            operation: CloudOperation::CreateKeyFob,
+                            controller,
+                            result,
+                        }
+                    });
                 }
-                Err(error) => {
-                    self.management_state.keyfob_note = format!("Key fob load failed: {}", error);
-                    self.selected_detail = self.management_state.keyfob_note.clone();
-                    self.push_log("[ERROR]", self.management_state.keyfob_note.clone());
-                }
+                Err(message) => self.record_key_fob_form_error(message),
             },
-            Message::CreateKeyFobRecord => {
-                let vehicle = self.controller.active_vehicle_record();
-                match self
-                    .controller
-                    .create_key_fob_record(vehicle.vehicle_id, "Cloud Key Fob")
-                {
-                    Ok(message) => {
-                        self.management_state.keyfob_note = message.clone();
-                        self.selected_detail = message.clone();
-                        self.push_log("[DB]", message);
-                        let auto_sync = self.controller.auto_sync_after_key_fob_registered();
-                        self.record_auto_sync_result("Metadata", auto_sync);
-                    }
-                    Err(error) => {
-                        self.management_state.keyfob_note =
-                            format!("Key fob creation failed: {}", error);
-                        self.selected_detail = self.management_state.keyfob_note.clone();
-                        self.push_log("[ERROR]", self.management_state.keyfob_note.clone());
-                    }
-                }
-            }
             Message::SelectKeyFobRecord => {
-                let key_fob = self.controller.active_key_fob_record();
-                match self.controller.select_key_fob(&key_fob.fob_id) {
-                    Ok(message) => {
-                        self.management_state.keyfob_note = message.clone();
-                        self.selected_detail = message.clone();
-                        self.push_log("[INFO]", message);
+                let fob_id = self.controller.active_key_fob_record().fob_id;
+                self.begin_cloud_operation("Selecting key fob...");
+                return self.run_cloud_operation_with(move |mut controller| {
+                    let result = controller
+                        .select_key_fob(&fob_id)
+                        .map_err(|error| error.to_string());
+                    CloudOperationResult {
+                        operation: CloudOperation::SelectKeyFob,
+                        controller,
+                        result,
                     }
-                    Err(error) => {
-                        self.management_state.keyfob_note =
-                            format!("Key fob selection failed: {}", error);
-                        self.selected_detail = self.management_state.keyfob_note.clone();
-                        self.push_log("[ERROR]", self.management_state.keyfob_note.clone());
-                    }
-                }
+                });
+            }
+            Message::KeyFobLabelChanged(value) => {
+                self.management_state.key_fob_label_input = value;
+            }
+            Message::FillDemoKeyFob => {
+                self.management_state.key_fob_label_input = KEY_FOB_LABEL.to_string();
+                self.management_state.keyfob_note =
+                    "Demo key fob label filled for operator review".to_string();
             }
             Message::RotateCredential => match self.controller.rotate_key_fob_credential() {
                 Ok(message) => {
@@ -484,8 +601,8 @@ impl Sandbox for AIACSApp {
                     self.status.top_badge = "Trust Ready".to_string();
                     self.selected_detail = message.clone();
                     self.push_log("[INFO]", format!("Vehicle trust initialized: {}", message));
-                    let auto_sync = self.controller.auto_sync_after_trust_initialized();
-                    self.record_auto_sync_result("Encrypted Key Blob", auto_sync);
+                    self.cloud_sync_encrypted_key_status = "Cloud sync running...".to_string();
+                    return self.run_cloud_operation(CloudOperation::AutoEncryptedKeyBlob);
                 }
                 Err(error) => {
                     self.status.trust_status = "Error".to_string();
@@ -505,8 +622,8 @@ impl Sandbox for AIACSApp {
                     self.status.top_badge = "Key Fob Registered".to_string();
                     self.selected_detail = message.clone();
                     self.push_log("[INFO]", format!("Digital key fob registered: {}", message));
-                    let auto_sync = self.controller.auto_sync_after_key_fob_registered();
-                    self.record_auto_sync_result("Metadata", auto_sync);
+                    self.cloud_sync_metadata_status = "Cloud sync running...".to_string();
+                    return self.run_cloud_operation(CloudOperation::AutoMetadata);
                 }
                 Err(error) => {
                     self.status.key_fob_status = "Error".to_string();
@@ -529,8 +646,8 @@ impl Sandbox for AIACSApp {
                     self.status.top_badge = "Access Certificate Issued".to_string();
                     self.selected_detail = message.clone();
                     self.push_log("[INFO]", format!("Access certificate issued: {}", message));
-                    let auto_sync = self.controller.auto_sync_after_certificate_issued();
-                    self.record_auto_sync_result("Certificate", auto_sync);
+                    self.cloud_sync_certificate_status = "Cloud sync running...".to_string();
+                    return self.run_cloud_operation(CloudOperation::AutoCertificate);
                 }
                 Err(error) => {
                     self.status.certificate_status = "Error".to_string();
@@ -621,9 +738,8 @@ impl Sandbox for AIACSApp {
                             "[SESSION]",
                             "Secure access session activated for provisioned key fob",
                         );
-                        let auto_sync =
-                            self.controller.auto_sync_after_secure_session_established();
-                        self.record_auto_sync_result("Session", auto_sync);
+                        self.cloud_sync_session_status = "Cloud sync running...".to_string();
+                        return self.run_cloud_operation(CloudOperation::AutoSession);
                     }
                     Err(error) => {
                         self.status.session_status = "Error".to_string();
@@ -640,177 +756,73 @@ impl Sandbox for AIACSApp {
                 Ok(message) => {
                     self.selected_detail = message.clone();
                     self.push_log("[INFO]", message);
-                    let auto_sync = self.controller.auto_sync_after_diagnostics_completed();
-                    self.record_auto_sync_result("Diagnostic Results", auto_sync);
+                    self.cloud_sync_diagnostic_status = "Cloud sync running...".to_string();
+                    return self.run_cloud_operation(CloudOperation::AutoDiagnosticResults);
                 }
                 Err(error) => {
                     self.selected_detail = format!("Diagnostics launch failed: {}", error);
                     self.push_log("[ERROR]", format!("Diagnostics launch failed: {}", error));
                 }
             },
-            Message::CheckCloudConnection => match self.controller.check_cloud_connection() {
-                Ok(message) => {
-                    self.cloud_status = "Connected".to_string();
-                    self.selected_detail = message.clone();
-                    self.push_log("[DB]", message);
-                }
-                Err(error) => {
-                    self.cloud_status = "Error".to_string();
-                    self.selected_detail = format!("Cloud connection check failed: {}", error);
-                    self.push_log("[DB]", format!("Cloud connection check failed: {}", error));
-                }
-            },
-            Message::EnableCloudAutoSync => match self.controller.enable_cloud_auto_sync() {
-                Ok(message) => {
-                    self.cloud_status = "Connected".to_string();
-                    self.cloud_auto_sync_status =
-                        self.controller.get_cloud_auto_sync_status().to_string();
-                    self.selected_detail = message.clone();
-                    self.push_log("[DB]", message);
-                    self.push_log("[SECURITY]", "Cloud secret material: [REDACTED]");
-                }
-                Err(error) => {
-                    self.cloud_auto_sync_status = "Disabled".to_string();
-                    self.selected_detail = format!("Cloud auto-sync enable failed: {}", error);
-                    self.push_log("[DB]", format!("Cloud auto-sync enable failed: {}", error));
-                }
-            },
-            Message::DisableCloudAutoSync => match self.controller.disable_cloud_auto_sync() {
-                Ok(message) => {
-                    self.cloud_auto_sync_status =
-                        self.controller.get_cloud_auto_sync_status().to_string();
-                    self.selected_detail = message.clone();
-                    self.push_log("[DB]", message);
-                }
-                Err(error) => {
-                    self.selected_detail = format!("Cloud auto-sync disable failed: {}", error);
-                    self.push_log("[DB]", format!("Cloud auto-sync disable failed: {}", error));
-                }
-            },
-            Message::SyncCustomerMetadata => match self.controller.sync_customer_metadata() {
-                Ok(message) => {
-                    self.record_metadata_sync(message.clone());
-                    self.push_log("[DB]", format!("Customer metadata synced: {}", CUSTOMER_ID));
-                }
-                Err(error) => self.record_metadata_sync_error(error),
-            },
-            Message::SyncVehicleMetadata => match self.controller.sync_vehicle_metadata() {
-                Ok(message) => {
-                    self.record_metadata_sync(message.clone());
-                    self.push_log(
-                        "[DB]",
-                        format!("Vehicle metadata synced: {}", VEHICLE_DISPLAY_NAME),
-                    );
-                }
-                Err(error) => self.record_metadata_sync_error(error),
-            },
-            Message::SyncKeyFobMetadata => match self.controller.sync_key_fob_metadata() {
-                Ok(message) => {
-                    self.record_metadata_sync(message.clone());
-                    self.push_log(
-                        "[DB]",
-                        format!("Key fob metadata synced: {}", KEY_FOB_LABEL),
-                    );
-                }
-                Err(error) => self.record_metadata_sync_error(error),
-            },
-            Message::SyncDemoMetadata => match self.controller.sync_demo_cloud_metadata() {
-                Ok(message) => {
-                    self.record_metadata_sync(message.clone());
-                    self.push_log("[DB]", "Demo metadata synced to company cloud database");
-                }
-                Err(error) => self.record_metadata_sync_error(error),
-            },
-            Message::SyncCertificateMetadata => match self.controller.sync_certificate_metadata() {
-                Ok(message) => {
-                    self.record_certificate_sync(message.clone());
-                    self.push_log("[DB]", "Certificate metadata synced: CERT-FOB-0001");
-                    self.push_log("[DB]", "Certificate private material: [REDACTED]");
-                }
-                Err(error) => self.record_certificate_sync_error(error),
-            },
+            Message::CheckCloudConnection => {
+                self.begin_cloud_operation("Checking cloud connection...");
+                return self.run_cloud_operation(CloudOperation::CheckConnection);
+            }
+            Message::EnableCloudAutoSync => {
+                self.begin_cloud_operation("Cloud sync running...");
+                return self.run_cloud_operation(CloudOperation::EnableAutoSync);
+            }
+            Message::DisableCloudAutoSync => {
+                self.begin_cloud_operation("Cloud sync running...");
+                return self.run_cloud_operation(CloudOperation::DisableAutoSync);
+            }
+            Message::SyncCustomerMetadata => {
+                self.begin_manual_sync("Syncing customer metadata...");
+                return self.run_cloud_operation(CloudOperation::SyncCustomerMetadata);
+            }
+            Message::SyncVehicleMetadata => {
+                self.begin_manual_sync("Syncing vehicle metadata...");
+                return self.run_cloud_operation(CloudOperation::SyncVehicleMetadata);
+            }
+            Message::SyncKeyFobMetadata => {
+                self.begin_manual_sync("Syncing key fob metadata...");
+                return self.run_cloud_operation(CloudOperation::SyncKeyFobMetadata);
+            }
+            Message::SyncDemoMetadata => {
+                self.begin_manual_sync("Syncing demo metadata...");
+                return self.run_cloud_operation(CloudOperation::SyncDemoMetadata);
+            }
+            Message::SyncCertificateMetadata => {
+                self.cloud_sync_certificate_status = "Cloud sync running...".to_string();
+                return self.run_cloud_operation(CloudOperation::SyncCertificateMetadata);
+            }
             Message::SyncProvisioningSession => {
-                match self.controller.sync_provisioning_session_record() {
-                    Ok(message) => {
-                        self.record_provisioning_session_sync(message.clone());
-                        self.push_log("[DB]", "Provisioning session synced: SESSION-0001");
-                        self.push_log(
-                            "[DB]",
-                            "Session algorithm: X25519 + HKDF-SHA256 + AES-256-GCM",
-                        );
-                        self.push_log("[SECURITY]", "Raw session key: [REDACTED]");
-                        self.push_log("[SECURITY]", "Shared secret: [REDACTED]");
-                        self.push_log("[SECURITY]", "HKDF output: [REDACTED]");
-                    }
-                    Err(error) => self.record_provisioning_session_sync_error(error),
-                }
+                self.cloud_sync_session_status = "Cloud sync running...".to_string();
+                return self.run_cloud_operation(CloudOperation::SyncProvisioningSession);
             }
-            Message::SyncAuditLogs => match self.controller.sync_audit_log_records() {
-                Ok(message) => {
-                    self.record_audit_log_sync(message.clone());
-                    self.push_log("[DB]", "Audit log records synced");
-                    self.push_log("[DB]", "Audit event synced: AUDIT-0001");
-                    self.push_log("[DB]", "Audit event synced: AUDIT-0007");
-                    self.push_log("[SECURITY]", "Sensitive audit material: [REDACTED]");
-                }
-                Err(error) => self.record_audit_log_sync_error(error),
-            },
+            Message::SyncAuditLogs => {
+                self.cloud_sync_audit_status = "Cloud sync running...".to_string();
+                return self.run_cloud_operation(CloudOperation::SyncAuditLogs);
+            }
             Message::SyncDiagnosticResults => {
-                match self.controller.sync_diagnostic_result_records() {
-                    Ok(message) => {
-                        self.record_diagnostic_result_sync(message.clone());
-                        self.push_log("[DB]", "Diagnostic result records synced");
-                        self.push_log("[DB]", "Diagnostic result synced: DIAG-REPLAY-0001");
-                        self.push_log(
-                            "[DB]",
-                            "Diagnostic result synced: DIAG-WRONG-SESSION-KEY-0001",
-                        );
-                        self.push_log("[SECURITY]", "Raw attack payload material: [REDACTED]");
-                    }
-                    Err(error) => self.record_diagnostic_result_sync_error(error),
-                }
+                self.cloud_sync_diagnostic_status = "Cloud sync running...".to_string();
+                return self.run_cloud_operation(CloudOperation::SyncDiagnosticResults);
             }
-            Message::SyncCaEncryptedKeyBlob => match self.controller.sync_ca_encrypted_key_blob() {
-                Ok(message) => {
-                    self.record_encrypted_key_sync(message.clone());
-                    self.push_log("[DB]", "CA encrypted key blob uploaded: KEY-CA-0001");
-                    self.push_log("[DB]", "Raw private key material: [REDACTED]");
-                    self.push_log(
-                        "[DB]",
-                        "Protection: Client-side AES-256-GCM encryption before upload",
-                    );
-                }
-                Err(error) => self.record_encrypted_key_sync_error(error),
-            },
+            Message::SyncCaEncryptedKeyBlob => {
+                self.cloud_sync_encrypted_key_status = "Cloud sync running...".to_string();
+                return self.run_cloud_operation(CloudOperation::SyncCaEncryptedKeyBlob);
+            }
             Message::SyncKeyFobEncryptedKeyBlob => {
-                match self.controller.sync_key_fob_encrypted_key_blob() {
-                    Ok(message) => {
-                        self.record_encrypted_key_sync(message.clone());
-                        self.push_log("[DB]", "Key fob encrypted key blob uploaded: KEY-FOB-0001");
-                        self.push_log("[DB]", "Raw private key material: [REDACTED]");
-                        self.push_log(
-                            "[DB]",
-                            "Protection: Client-side AES-256-GCM encryption before upload",
-                        );
-                    }
-                    Err(error) => self.record_encrypted_key_sync_error(error),
-                }
+                self.cloud_sync_encrypted_key_status = "Cloud sync running...".to_string();
+                return self.run_cloud_operation(CloudOperation::SyncKeyFobEncryptedKeyBlob);
             }
-            Message::SyncEncryptedKeyBlobs => match self.controller.sync_encrypted_key_blobs() {
-                Ok(message) => {
-                    self.record_encrypted_key_sync(message.clone());
-                    self.push_log(
-                        "[DB]",
-                        "Encrypted key blobs synced to company cloud database",
-                    );
-                    self.push_log("[DB]", "Raw private key material: [REDACTED]");
-                    self.push_log(
-                        "[DB]",
-                        "Protection: Client-side AES-256-GCM encryption before upload",
-                    );
-                }
-                Err(error) => self.record_encrypted_key_sync_error(error),
-            },
+            Message::SyncEncryptedKeyBlobs => {
+                self.cloud_sync_encrypted_key_status = "Cloud sync running...".to_string();
+                return self.run_cloud_operation(CloudOperation::SyncEncryptedKeyBlobs);
+            }
+            Message::CloudOperationFinished(result) => {
+                self.finish_cloud_operation(*result);
+            }
             Message::ClearLog => match self.controller.clear_logs() {
                 Ok(message) => {
                     self.event_log.clear();
@@ -838,8 +850,8 @@ impl Sandbox for AIACSApp {
                     self.workflow_state.report_exported = true;
                     self.selected_detail = message.clone();
                     self.push_log("[INFO]", message);
-                    let auto_sync = self.controller.auto_sync_after_provisioning_finalized();
-                    self.record_auto_sync_result("Audit Logs", auto_sync);
+                    self.cloud_sync_audit_status = "Cloud sync running...".to_string();
+                    return self.run_cloud_operation(CloudOperation::AutoAuditLogs);
                 }
                 Err(error) => {
                     self.selected_detail = format!("Provisioning report export failed: {}", error);
@@ -850,6 +862,8 @@ impl Sandbox for AIACSApp {
                 }
             },
         }
+
+        Command::none()
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -863,6 +877,383 @@ impl Sandbox for AIACSApp {
 }
 
 impl AIACSApp {
+    fn run_cloud_operation(&self, operation: CloudOperation) -> Command<Message> {
+        let controller = self.controller.clone();
+        Command::perform(
+            async move { perform_cloud_operation(controller, operation) },
+            |result| Message::CloudOperationFinished(Box::new(result)),
+        )
+    }
+
+    fn run_cloud_operation_with<F>(&self, operation: F) -> Command<Message>
+    where
+        F: FnOnce(AppController) -> CloudOperationResult + Send + 'static,
+    {
+        let controller = self.controller.clone();
+        Command::perform(async move { operation(controller) }, |result| {
+            Message::CloudOperationFinished(Box::new(result))
+        })
+    }
+
+    fn begin_cloud_operation(&mut self, message: &'static str) {
+        self.management_state.cloud_operation_in_progress = true;
+        self.management_state.cloud_sync_status = message.to_string();
+        self.selected_detail = message.to_string();
+    }
+
+    fn begin_manual_sync(&mut self, message: &'static str) {
+        self.begin_cloud_operation(message);
+        self.cloud_sync_metadata_status = "Cloud sync running...".to_string();
+    }
+
+    fn finish_cloud_operation(&mut self, result: CloudOperationResult) {
+        self.management_state.cloud_operation_in_progress = false;
+        self.controller = result.controller;
+
+        match result.result {
+            Ok(message) => self.apply_cloud_success(result.operation, message),
+            Err(error) => self.apply_cloud_error(result.operation, error),
+        }
+    }
+
+    fn apply_cloud_success(&mut self, operation: CloudOperation, message: String) {
+        self.management_state.cloud_sync_status = "Cloud sync completed".to_string();
+        match operation {
+            CloudOperation::LoadCustomers => {
+                self.management_state.customer_load_status = "Customers loaded".to_string();
+                self.management_state.customer_note = message.clone();
+                self.selected_detail = message.clone();
+                self.push_log("[DB]", message);
+            }
+            CloudOperation::CreateCustomer => {
+                self.management_state.customer_create_status = "Customer created".to_string();
+                self.management_state.customer_note = message.clone();
+                self.selected_detail = message.clone();
+                self.push_log("[DB]", message);
+                self.cloud_sync_metadata_status = "Synced".to_string();
+                self.management_state.customer_owner_input.clear();
+                self.management_state.customer_email_input.clear();
+                self.management_state.customer_phone_input.clear();
+            }
+            CloudOperation::SelectCustomer => {
+                self.management_state.customer_note = message.clone();
+                self.selected_detail = message.clone();
+                self.push_log("[INFO]", message);
+            }
+            CloudOperation::LoadVehicles => {
+                self.management_state.vehicle_load_status = "Vehicles loaded".to_string();
+                self.management_state.vehicle_note = message.clone();
+                self.selected_detail = message.clone();
+                self.push_log("[DB]", message);
+            }
+            CloudOperation::CreateVehicle => {
+                self.management_state.vehicle_create_status = "Vehicle created".to_string();
+                self.management_state.vehicle_note = message.clone();
+                self.selected_detail = message.clone();
+                self.push_log("[DB]", message);
+                self.cloud_sync_metadata_status = "Synced".to_string();
+                self.management_state.vehicle_display_name_input.clear();
+                self.management_state.vehicle_make_input.clear();
+                self.management_state.vehicle_model_input.clear();
+                self.management_state.vehicle_year_input.clear();
+                self.management_state.vehicle_vin_input.clear();
+                self.management_state.vehicle_registration_input.clear();
+            }
+            CloudOperation::SelectVehicle => {
+                self.management_state.vehicle_note = message.clone();
+                self.selected_detail = message.clone();
+                self.push_log("[INFO]", message);
+            }
+            CloudOperation::LoadKeyFobs => {
+                self.management_state.key_fob_load_status = "Key fobs loaded".to_string();
+                self.management_state.keyfob_note = message.clone();
+                self.selected_detail = message.clone();
+                self.push_log("[DB]", message);
+            }
+            CloudOperation::CreateKeyFob => {
+                self.management_state.key_fob_create_status = "Key fob created".to_string();
+                self.management_state.keyfob_note = message.clone();
+                self.selected_detail = message.clone();
+                self.push_log("[DB]", message);
+                self.cloud_sync_metadata_status = "Synced".to_string();
+                self.management_state.key_fob_label_input.clear();
+            }
+            CloudOperation::SelectKeyFob => {
+                self.management_state.keyfob_note = message.clone();
+                self.selected_detail = message.clone();
+                self.push_log("[INFO]", message);
+            }
+            CloudOperation::CheckConnection => {
+                self.cloud_status = "Connected".to_string();
+                self.selected_detail = message.clone();
+                self.push_log("[DB]", message);
+            }
+            CloudOperation::EnableAutoSync => {
+                self.cloud_status = "Connected".to_string();
+                self.cloud_auto_sync_status =
+                    self.controller.get_cloud_auto_sync_status().to_string();
+                self.selected_detail = message.clone();
+                self.push_log("[DB]", message);
+                self.push_log("[SECURITY]", "Cloud secret material: [REDACTED]");
+            }
+            CloudOperation::DisableAutoSync => {
+                self.cloud_auto_sync_status =
+                    self.controller.get_cloud_auto_sync_status().to_string();
+                self.selected_detail = message.clone();
+                self.push_log("[DB]", message);
+            }
+            CloudOperation::SyncCustomerMetadata
+            | CloudOperation::SyncVehicleMetadata
+            | CloudOperation::SyncKeyFobMetadata
+            | CloudOperation::SyncDemoMetadata => {
+                self.record_metadata_sync(message.clone());
+                self.push_log("[DB]", message);
+            }
+            CloudOperation::SyncCertificateMetadata => {
+                self.record_certificate_sync(message);
+                self.push_log("[DB]", "Certificate metadata synced: CERT-FOB-0001");
+                self.push_log("[DB]", "Certificate private material: [REDACTED]");
+            }
+            CloudOperation::SyncProvisioningSession => {
+                self.record_provisioning_session_sync(message);
+                self.push_log("[DB]", "Provisioning session synced: SESSION-0001");
+                self.push_log(
+                    "[DB]",
+                    "Session algorithm: X25519 + HKDF-SHA256 + AES-256-GCM",
+                );
+                self.push_log("[SECURITY]", "Raw session key: [REDACTED]");
+                self.push_log("[SECURITY]", "Shared secret: [REDACTED]");
+                self.push_log("[SECURITY]", "HKDF output: [REDACTED]");
+            }
+            CloudOperation::SyncAuditLogs => {
+                self.record_audit_log_sync(message);
+                self.push_log("[DB]", "Audit log records synced");
+                self.push_log("[SECURITY]", "Sensitive audit material: [REDACTED]");
+            }
+            CloudOperation::SyncDiagnosticResults => {
+                self.record_diagnostic_result_sync(message);
+                self.push_log("[DB]", "Diagnostic result records synced");
+                self.push_log("[SECURITY]", "Raw attack payload material: [REDACTED]");
+            }
+            CloudOperation::SyncCaEncryptedKeyBlob
+            | CloudOperation::SyncKeyFobEncryptedKeyBlob
+            | CloudOperation::SyncEncryptedKeyBlobs => {
+                self.record_encrypted_key_sync(message);
+                self.push_log("[DB]", "Encrypted key blob sync completed");
+                self.push_log("[DB]", "Raw private key material: [REDACTED]");
+                self.push_log(
+                    "[DB]",
+                    "Protection: Client-side AES-256-GCM encryption before upload",
+                );
+            }
+            CloudOperation::AutoMetadata => {
+                self.record_auto_sync_result("Metadata", Ok(message));
+            }
+            CloudOperation::AutoCertificate => {
+                self.record_auto_sync_result("Certificate", Ok(message));
+            }
+            CloudOperation::AutoEncryptedKeyBlob => {
+                self.record_auto_sync_result("Encrypted Key Blob", Ok(message));
+            }
+            CloudOperation::AutoSession => {
+                self.record_auto_sync_result("Session", Ok(message));
+            }
+            CloudOperation::AutoAuditLogs => {
+                self.record_auto_sync_result("Audit Logs", Ok(message));
+            }
+            CloudOperation::AutoDiagnosticResults => {
+                self.record_auto_sync_result("Diagnostic Results", Ok(message));
+            }
+        }
+    }
+
+    fn apply_cloud_error(&mut self, operation: CloudOperation, error: String) {
+        self.management_state.cloud_sync_status = format!("Cloud sync failed: {}", error);
+        match operation {
+            CloudOperation::LoadCustomers => {
+                self.management_state.customer_load_status = "Customer load failed".to_string();
+                self.management_state.customer_note = format!("Customer load failed: {}", error);
+                self.selected_detail = self.management_state.customer_note.clone();
+                self.push_log("[ERROR]", self.management_state.customer_note.clone());
+            }
+            CloudOperation::CreateCustomer => {
+                self.record_customer_form_error(format!("Customer creation failed: {}", error))
+            }
+            CloudOperation::SelectCustomer => {
+                self.record_customer_form_error(format!("Customer selection failed: {}", error))
+            }
+            CloudOperation::LoadVehicles => {
+                self.management_state.vehicle_load_status = "Vehicle load failed".to_string();
+                self.management_state.vehicle_note = format!("Vehicle load failed: {}", error);
+                self.selected_detail = self.management_state.vehicle_note.clone();
+                self.push_log("[ERROR]", self.management_state.vehicle_note.clone());
+            }
+            CloudOperation::CreateVehicle => {
+                self.record_vehicle_form_error(format!("Vehicle creation failed: {}", error))
+            }
+            CloudOperation::SelectVehicle => {
+                self.record_vehicle_form_error(format!("Vehicle selection failed: {}", error))
+            }
+            CloudOperation::LoadKeyFobs => {
+                self.management_state.key_fob_load_status = "Key fob load failed".to_string();
+                self.management_state.keyfob_note = format!("Key fob load failed: {}", error);
+                self.selected_detail = self.management_state.keyfob_note.clone();
+                self.push_log("[ERROR]", self.management_state.keyfob_note.clone());
+            }
+            CloudOperation::CreateKeyFob => {
+                self.record_key_fob_form_error(format!("Key fob creation failed: {}", error))
+            }
+            CloudOperation::SelectKeyFob => {
+                self.record_key_fob_form_error(format!("Key fob selection failed: {}", error))
+            }
+            CloudOperation::CheckConnection => {
+                self.cloud_status = "Error".to_string();
+                self.selected_detail = format!("Cloud connection check failed: {}", error);
+                self.push_log("[DB]", self.selected_detail.clone());
+            }
+            CloudOperation::EnableAutoSync => {
+                self.cloud_auto_sync_status = "Disabled".to_string();
+                self.selected_detail = format!("Cloud auto-sync enable failed: {}", error);
+                self.push_log("[DB]", self.selected_detail.clone());
+            }
+            CloudOperation::DisableAutoSync => {
+                self.selected_detail = format!("Cloud auto-sync disable failed: {}", error);
+                self.push_log("[DB]", self.selected_detail.clone());
+            }
+            CloudOperation::SyncCustomerMetadata
+            | CloudOperation::SyncVehicleMetadata
+            | CloudOperation::SyncKeyFobMetadata
+            | CloudOperation::SyncDemoMetadata => {
+                self.record_metadata_sync_error(AppControllerError::Backend(error));
+            }
+            CloudOperation::SyncCertificateMetadata => {
+                self.record_certificate_sync_error(AppControllerError::Backend(error));
+            }
+            CloudOperation::SyncProvisioningSession => {
+                self.record_provisioning_session_sync_error(AppControllerError::Backend(error));
+            }
+            CloudOperation::SyncAuditLogs => {
+                self.record_audit_log_sync_error(AppControllerError::Backend(error));
+            }
+            CloudOperation::SyncDiagnosticResults => {
+                self.record_diagnostic_result_sync_error(AppControllerError::Backend(error));
+            }
+            CloudOperation::SyncCaEncryptedKeyBlob
+            | CloudOperation::SyncKeyFobEncryptedKeyBlob
+            | CloudOperation::SyncEncryptedKeyBlobs => {
+                self.record_encrypted_key_sync_error(AppControllerError::Backend(error));
+            }
+            CloudOperation::AutoMetadata => {
+                self.record_auto_sync_result("Metadata", Err(AppControllerError::Backend(error)));
+            }
+            CloudOperation::AutoCertificate => {
+                self.record_auto_sync_result(
+                    "Certificate",
+                    Err(AppControllerError::Backend(error)),
+                );
+            }
+            CloudOperation::AutoEncryptedKeyBlob => {
+                self.record_auto_sync_result(
+                    "Encrypted Key Blob",
+                    Err(AppControllerError::Backend(error)),
+                );
+            }
+            CloudOperation::AutoSession => {
+                self.record_auto_sync_result("Session", Err(AppControllerError::Backend(error)));
+            }
+            CloudOperation::AutoAuditLogs => {
+                self.record_auto_sync_result("Audit Logs", Err(AppControllerError::Backend(error)));
+            }
+            CloudOperation::AutoDiagnosticResults => {
+                self.record_auto_sync_result(
+                    "Diagnostic Results",
+                    Err(AppControllerError::Backend(error)),
+                );
+            }
+        }
+    }
+
+    fn customer_form_values(&self) -> Result<(String, String, Option<String>), String> {
+        let owner_name = self
+            .management_state
+            .customer_owner_input
+            .trim()
+            .to_string();
+        let email = self
+            .management_state
+            .customer_email_input
+            .trim()
+            .to_string();
+        let phone = optional_trimmed(&self.management_state.customer_phone_input);
+        if owner_name.is_empty() {
+            return Err("Owner name is required".to_string());
+        }
+        if !simple_email_is_valid(&email) {
+            return Err("Valid email is required".to_string());
+        }
+        Ok((owner_name, email, phone))
+    }
+
+    fn vehicle_form_values(&self) -> Result<VehicleFormValues, String> {
+        let display_name = self
+            .management_state
+            .vehicle_display_name_input
+            .trim()
+            .to_string();
+        let make = self.management_state.vehicle_make_input.trim().to_string();
+        let model = self.management_state.vehicle_model_input.trim().to_string();
+        let year_text = self.management_state.vehicle_year_input.trim();
+        if display_name.is_empty() {
+            return Err("Vehicle display name is required".to_string());
+        }
+        if make.is_empty() {
+            return Err("Make is required".to_string());
+        }
+        if model.is_empty() {
+            return Err("Model is required".to_string());
+        }
+        let year = year_text
+            .parse::<i32>()
+            .map_err(|_| "Vehicle year must be numeric".to_string())?;
+        Ok((
+            display_name,
+            make,
+            model,
+            year,
+            optional_trimmed(&self.management_state.vehicle_vin_input),
+            optional_trimmed(&self.management_state.vehicle_registration_input),
+        ))
+    }
+
+    fn key_fob_form_values(&self) -> Result<String, String> {
+        let label = self.management_state.key_fob_label_input.trim().to_string();
+        if label.is_empty() {
+            return Err("Key fob label is required".to_string());
+        }
+        Ok(label)
+    }
+
+    fn record_customer_form_error(&mut self, message: String) {
+        self.management_state.customer_create_status = message.clone();
+        self.management_state.customer_note = message.clone();
+        self.selected_detail = message.clone();
+        self.push_log("[ERROR]", message);
+    }
+
+    fn record_vehicle_form_error(&mut self, message: String) {
+        self.management_state.vehicle_create_status = message.clone();
+        self.management_state.vehicle_note = message.clone();
+        self.selected_detail = message.clone();
+        self.push_log("[ERROR]", message);
+    }
+
+    fn record_key_fob_form_error(&mut self, message: String) {
+        self.management_state.key_fob_create_status = message.clone();
+        self.management_state.keyfob_note = message.clone();
+        self.selected_detail = message.clone();
+        self.push_log("[ERROR]", message);
+    }
+
     fn view_core_system(&self) -> Element<'_, Message> {
         column![
             self.view_core_header(),
@@ -1054,15 +1445,64 @@ impl AIACSApp {
                     ("Provisioning Status", self.setup_status_label().to_string()),
                 ],
             ),
-            self.management_actions_panel(
-                "Customer Actions",
-                self.management_state.customer_note.as_str(),
-                vec![
-                    ("auth", "Load Customers", Message::LoadCustomers),
-                    ("auth", "Create Customer", Message::CreateCustomer),
-                    ("auth", "Select Customer", Message::SelectCustomer),
-                ],
-            ),
+            container(
+                scrollable(
+                    column![
+                        text("Customer Actions")
+                            .size(18)
+                            .font(Font::MONOSPACE)
+                            .style(theme::Text::Color(ACCENT_PINK)),
+                        text("Manual customer fields. Customer ID is generated automatically.")
+                            .size(12)
+                            .font(Font::MONOSPACE)
+                            .style(theme::Text::Color(SECONDARY_TEXT)),
+                        self.form_input(
+                            "Owner name",
+                            &self.management_state.customer_owner_input,
+                            Message::CustomerOwnerChanged,
+                        ),
+                        self.form_input(
+                            "Email",
+                            &self.management_state.customer_email_input,
+                            Message::CustomerEmailChanged,
+                        ),
+                        self.form_input(
+                            "Phone (optional)",
+                            &self.management_state.customer_phone_input,
+                            Message::CustomerPhoneChanged,
+                        ),
+                        self.cloud_action_button("auth", "Load Customers", Message::LoadCustomers),
+                        self.cloud_action_button(
+                            "auth",
+                            "Create Customer",
+                            Message::CreateCustomer
+                        ),
+                        self.cloud_action_button(
+                            "auth",
+                            "Select Customer",
+                            Message::SelectCustomer
+                        ),
+                        compact_button(
+                            "auth",
+                            "Fill Demo Customer",
+                            Message::FillDemoCustomer,
+                            ButtonKind::Nav
+                        ),
+                        self.status_text("Load", &self.management_state.customer_load_status),
+                        self.status_text("Create", &self.management_state.customer_create_status),
+                        text(self.management_state.customer_note.as_str())
+                            .size(12)
+                            .font(Font::MONOSPACE)
+                            .style(theme::Text::Color(SECONDARY_TEXT)),
+                    ]
+                    .spacing(8)
+                )
+                .height(Length::Fill),
+            )
+            .width(Length::FillPortion(2))
+            .height(Length::Fill)
+            .padding(14)
+            .style(container_style(PanelKind::Elevated)),
         ]
         .spacing(10)
         .height(Length::Fill)
@@ -1099,15 +1539,79 @@ impl AIACSApp {
                     ("Access Status", self.setup_status_label().to_string()),
                 ],
             ),
-            self.management_actions_panel(
-                "Vehicle Actions",
-                self.management_state.vehicle_note.as_str(),
-                vec![
-                    ("vehicle", "Load Vehicles", Message::LoadVehicles),
-                    ("vehicle", "Create Vehicle", Message::CreateVehicle),
-                    ("vehicle", "Select Vehicle", Message::SelectVehicle),
-                ],
-            ),
+            container(
+                scrollable(
+                    column![
+                        text("Vehicle Actions")
+                            .size(18)
+                            .font(Font::MONOSPACE)
+                            .style(theme::Text::Color(ACCENT_PINK)),
+                        text("Manual vehicle fields. Vehicle ID is generated automatically.")
+                            .size(12)
+                            .font(Font::MONOSPACE)
+                            .style(theme::Text::Color(SECONDARY_TEXT)),
+                        self.form_input(
+                            "Vehicle display name",
+                            &self.management_state.vehicle_display_name_input,
+                            Message::VehicleDisplayNameChanged,
+                        ),
+                        self.form_input(
+                            "Make",
+                            &self.management_state.vehicle_make_input,
+                            Message::VehicleMakeChanged,
+                        ),
+                        self.form_input(
+                            "Model",
+                            &self.management_state.vehicle_model_input,
+                            Message::VehicleModelChanged,
+                        ),
+                        self.form_input(
+                            "Year",
+                            &self.management_state.vehicle_year_input,
+                            Message::VehicleYearChanged,
+                        ),
+                        self.form_input(
+                            "VIN (optional)",
+                            &self.management_state.vehicle_vin_input,
+                            Message::VehicleVinChanged,
+                        ),
+                        self.form_input(
+                            "Registration number (optional)",
+                            &self.management_state.vehicle_registration_input,
+                            Message::VehicleRegistrationChanged,
+                        ),
+                        self.cloud_action_button("vehicle", "Load Vehicles", Message::LoadVehicles),
+                        self.cloud_action_button(
+                            "vehicle",
+                            "Create Vehicle",
+                            Message::CreateVehicle
+                        ),
+                        self.cloud_action_button(
+                            "vehicle",
+                            "Select Vehicle",
+                            Message::SelectVehicle
+                        ),
+                        compact_button(
+                            "vehicle",
+                            "Fill Demo Vehicle",
+                            Message::FillDemoVehicle,
+                            ButtonKind::Nav
+                        ),
+                        self.status_text("Load", &self.management_state.vehicle_load_status),
+                        self.status_text("Create", &self.management_state.vehicle_create_status),
+                        text(self.management_state.vehicle_note.as_str())
+                            .size(12)
+                            .font(Font::MONOSPACE)
+                            .style(theme::Text::Color(SECONDARY_TEXT)),
+                    ]
+                    .spacing(8)
+                )
+                .height(Length::Fill),
+            )
+            .width(Length::FillPortion(2))
+            .height(Length::Fill)
+            .padding(14)
+            .style(container_style(PanelKind::Elevated)),
         ]
         .spacing(10)
         .height(Length::Fill)
@@ -1146,29 +1650,66 @@ impl AIACSApp {
                     ),
                 ],
             ),
-            self.management_actions_panel(
-                "Key Fob Actions",
-                self.management_state.keyfob_note.as_str(),
-                vec![
-                    ("key", "Load Key Fobs", Message::LoadKeyFobs),
-                    (
-                        "register-key",
-                        "Create/Register Key Fob",
-                        Message::CreateKeyFobRecord
-                    ),
-                    ("key", "Select Key Fob", Message::SelectKeyFobRecord),
-                    (
-                        "certificate",
-                        "View Certificate",
-                        Message::ViewCertificateDetails
-                    ),
-                    (
-                        "secure-session",
-                        "Rotate Credential",
-                        Message::RotateCredential
-                    ),
-                ],
-            ),
+            container(
+                scrollable(
+                    column![
+                        text("Key Fob Actions")
+                            .size(18)
+                            .font(Font::MONOSPACE)
+                            .style(theme::Text::Color(ACCENT_PINK)),
+                        text("Manual key fob label. Fob ID is generated automatically.")
+                            .size(12)
+                            .font(Font::MONOSPACE)
+                            .style(theme::Text::Color(SECONDARY_TEXT)),
+                        self.form_input(
+                            "Fob label",
+                            &self.management_state.key_fob_label_input,
+                            Message::KeyFobLabelChanged,
+                        ),
+                        self.cloud_action_button("key", "Load Key Fobs", Message::LoadKeyFobs),
+                        self.cloud_action_button(
+                            "register-key",
+                            "Create/Register Key Fob",
+                            Message::CreateKeyFobRecord
+                        ),
+                        self.cloud_action_button(
+                            "key",
+                            "Select Key Fob",
+                            Message::SelectKeyFobRecord
+                        ),
+                        compact_button(
+                            "key",
+                            "Fill Demo Key Fob",
+                            Message::FillDemoKeyFob,
+                            ButtonKind::Nav
+                        ),
+                        compact_button(
+                            "certificate",
+                            "View Certificate",
+                            Message::ViewCertificateDetails,
+                            ButtonKind::Nav
+                        ),
+                        compact_button(
+                            "secure-session",
+                            "Rotate Credential",
+                            Message::RotateCredential,
+                            ButtonKind::Nav
+                        ),
+                        self.status_text("Load", &self.management_state.key_fob_load_status),
+                        self.status_text("Create", &self.management_state.key_fob_create_status),
+                        text(self.management_state.keyfob_note.as_str())
+                            .size(12)
+                            .font(Font::MONOSPACE)
+                            .style(theme::Text::Color(SECONDARY_TEXT)),
+                    ]
+                    .spacing(8)
+                )
+                .height(Length::Fill),
+            )
+            .width(Length::FillPortion(2))
+            .height(Length::Fill)
+            .padding(14)
+            .style(container_style(PanelKind::Elevated)),
         ]
         .spacing(10)
         .height(Length::Fill)
@@ -1767,36 +2308,48 @@ impl AIACSApp {
             .into()
     }
 
-    fn management_actions_panel<'a>(
+    fn form_input<'a>(
         &self,
-        title: &'static str,
-        note: &'a str,
-        actions: Vec<(&'static str, &'static str, Message)>,
+        placeholder: &'static str,
+        value: &'a str,
+        on_input: fn(String) -> Message,
     ) -> Element<'a, Message> {
-        let buttons = actions.into_iter().fold(
-            column![
-                text(title)
-                    .size(18)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(ACCENT_PINK)),
-                text(note)
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(SECONDARY_TEXT)),
-            ]
-            .spacing(8)
-            .width(Length::Fill),
-            |column, (icon_name, label, message)| {
-                column.push(compact_button(icon_name, label, message, ButtonKind::Nav))
-            },
-        );
-
-        container(buttons)
-            .width(Length::FillPortion(2))
-            .height(Length::Fill)
-            .padding(14)
-            .style(container_style(PanelKind::Elevated))
+        text_input(placeholder, value)
+            .on_input(on_input)
+            .padding(8)
+            .size(12)
+            .font(Font::MONOSPACE)
+            .style(theme::TextInput::Custom(Box::new(InputStyle)))
             .into()
+    }
+
+    fn cloud_action_button<'a>(
+        &self,
+        icon_name: &'static str,
+        label: &'a str,
+        message: Message,
+    ) -> Element<'a, Message> {
+        if self.management_state.cloud_operation_in_progress {
+            disabled_compact_button(icon_name, label, ButtonKind::Nav)
+        } else {
+            compact_button(icon_name, label, message, ButtonKind::Nav)
+        }
+    }
+
+    fn status_text<'a>(&self, label: &'static str, value: &'a str) -> Element<'a, Message> {
+        row![
+            text(label)
+                .size(11)
+                .font(Font::MONOSPACE)
+                .style(theme::Text::Color(MUTED_TEXT)),
+            text(value)
+                .size(11)
+                .font(Font::MONOSPACE)
+                .style(theme::Text::Color(status_color(value))),
+        ]
+        .spacing(8)
+        .align_items(Alignment::Center)
+        .into()
     }
 
     fn view_credential_storage_tab(&self) -> Element<'_, Message> {
@@ -2925,6 +3478,52 @@ impl iced::widget::button::StyleSheet for ButtonStyle {
     }
 }
 
+struct InputStyle;
+
+impl iced::widget::text_input::StyleSheet for InputStyle {
+    type Style = Theme;
+
+    fn active(&self, _style: &Self::Style) -> iced::widget::text_input::Appearance {
+        iced::widget::text_input::Appearance {
+            background: Background::Color(BUTTON_BG),
+            border: Border {
+                color: BUTTON_BORDER,
+                width: 1.0,
+                radius: 5.0.into(),
+            },
+            icon_color: SECONDARY_TEXT,
+        }
+    }
+
+    fn focused(&self, style: &Self::Style) -> iced::widget::text_input::Appearance {
+        let mut appearance = self.active(style);
+        appearance.border.color = ACCENT_BLUE;
+        appearance
+    }
+
+    fn placeholder_color(&self, _style: &Self::Style) -> Color {
+        MUTED_TEXT
+    }
+
+    fn value_color(&self, _style: &Self::Style) -> Color {
+        PRIMARY_TEXT
+    }
+
+    fn disabled_color(&self, _style: &Self::Style) -> Color {
+        MUTED_TEXT
+    }
+
+    fn selection_color(&self, _style: &Self::Style) -> Color {
+        ACCENT_BLUE
+    }
+
+    fn disabled(&self, style: &Self::Style) -> iced::widget::text_input::Appearance {
+        let mut appearance = self.active(style);
+        appearance.background = Background::Color(PENDING_BG);
+        appearance
+    }
+}
+
 fn container_style(kind: PanelKind) -> theme::Container {
     theme::Container::Custom(Box::new(PanelStyle { kind }))
 }
@@ -3016,6 +3615,88 @@ fn compact_button<'a>(
     .style(button_style(kind))
     .on_press(message)
     .into()
+}
+
+fn disabled_compact_button<'a>(
+    icon_name: &'static str,
+    label: &'a str,
+    kind: ButtonKind,
+) -> Element<'a, Message> {
+    button(
+        row![
+            icon(icon_name, 16),
+            text(label)
+                .size(11)
+                .font(Font::MONOSPACE)
+                .style(theme::Text::Color(MUTED_TEXT))
+        ]
+        .spacing(7)
+        .align_items(Alignment::Center),
+    )
+    .width(Length::Fixed(190.0))
+    .padding([7, 9])
+    .style(button_style(kind))
+    .into()
+}
+
+fn perform_cloud_operation(
+    mut controller: AppController,
+    operation: CloudOperation,
+) -> CloudOperationResult {
+    let result = match operation {
+        CloudOperation::LoadCustomers => controller.load_customer_records(),
+        CloudOperation::CreateCustomer
+        | CloudOperation::CreateVehicle
+        | CloudOperation::CreateKeyFob => unreachable!("create operations carry form values"),
+        CloudOperation::SelectCustomer
+        | CloudOperation::SelectVehicle
+        | CloudOperation::SelectKeyFob => unreachable!("select operations carry selected ids"),
+        CloudOperation::LoadVehicles => controller.load_vehicle_records(),
+        CloudOperation::LoadKeyFobs => controller.load_key_fob_records(),
+        CloudOperation::CheckConnection => controller.check_cloud_connection(),
+        CloudOperation::EnableAutoSync => controller.enable_cloud_auto_sync(),
+        CloudOperation::DisableAutoSync => controller.disable_cloud_auto_sync(),
+        CloudOperation::SyncCustomerMetadata => controller.sync_customer_metadata(),
+        CloudOperation::SyncVehicleMetadata => controller.sync_vehicle_metadata(),
+        CloudOperation::SyncKeyFobMetadata => controller.sync_key_fob_metadata(),
+        CloudOperation::SyncDemoMetadata => controller.sync_demo_cloud_metadata(),
+        CloudOperation::SyncCertificateMetadata => controller.sync_certificate_metadata(),
+        CloudOperation::SyncProvisioningSession => controller.sync_provisioning_session_record(),
+        CloudOperation::SyncAuditLogs => controller.sync_audit_log_records(),
+        CloudOperation::SyncDiagnosticResults => controller.sync_diagnostic_result_records(),
+        CloudOperation::SyncCaEncryptedKeyBlob => controller.sync_ca_encrypted_key_blob(),
+        CloudOperation::SyncKeyFobEncryptedKeyBlob => controller.sync_key_fob_encrypted_key_blob(),
+        CloudOperation::SyncEncryptedKeyBlobs => controller.sync_encrypted_key_blobs(),
+        CloudOperation::AutoMetadata => controller.auto_sync_after_metadata_ready(),
+        CloudOperation::AutoCertificate => controller.auto_sync_after_certificate_issued(),
+        CloudOperation::AutoEncryptedKeyBlob => controller.auto_sync_after_trust_initialized(),
+        CloudOperation::AutoSession => controller.auto_sync_after_secure_session_established(),
+        CloudOperation::AutoAuditLogs => controller.auto_sync_after_provisioning_finalized(),
+        CloudOperation::AutoDiagnosticResults => controller.auto_sync_after_diagnostics_completed(),
+    }
+    .map_err(|error| error.to_string());
+
+    CloudOperationResult {
+        operation,
+        controller,
+        result,
+    }
+}
+
+fn optional_trimmed(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn simple_email_is_valid(value: &str) -> bool {
+    let Some((local, domain)) = value.split_once('@') else {
+        return false;
+    };
+    !local.is_empty() && domain.contains('.') && !domain.ends_with('.')
 }
 
 fn status_chip(state: ChipState) -> Element<'static, Message> {
@@ -3325,5 +4006,117 @@ mod tests {
         let old_unwired_copy = concat!("not ", "wired");
         assert!(!source.contains(old_demo_action));
         assert!(!source.contains(old_unwired_copy));
+    }
+
+    #[test]
+    fn management_forms_start_empty_and_require_manual_input() {
+        let (app, _) = <AIACSApp as Application>::new(());
+
+        assert!(app.management_state.customer_owner_input.is_empty());
+        assert!(app.management_state.customer_email_input.is_empty());
+        assert!(app.management_state.customer_phone_input.is_empty());
+        assert!(app.management_state.vehicle_display_name_input.is_empty());
+        assert!(app.management_state.vehicle_make_input.is_empty());
+        assert!(app.management_state.vehicle_model_input.is_empty());
+        assert!(app.management_state.vehicle_year_input.is_empty());
+        assert!(app.management_state.key_fob_label_input.is_empty());
+        assert_eq!(
+            app.customer_form_values()
+                .expect_err("empty owner should fail"),
+            "Owner name is required"
+        );
+    }
+
+    #[test]
+    fn management_forms_accept_manually_supplied_values() {
+        let (mut app, _) = <AIACSApp as Application>::new(());
+        app.management_state.customer_owner_input = "Manual Owner".to_string();
+        app.management_state.customer_email_input = "manual@example.com".to_string();
+        app.management_state.customer_phone_input = "+977-9800000001".to_string();
+        app.management_state.vehicle_display_name_input = "Manual Vehicle".to_string();
+        app.management_state.vehicle_make_input = "Nissan".to_string();
+        app.management_state.vehicle_model_input = "Magnite".to_string();
+        app.management_state.vehicle_year_input = "2021".to_string();
+        app.management_state.key_fob_label_input = "Buyer Primary Fob".to_string();
+
+        let (owner, email, phone) = app
+            .customer_form_values()
+            .expect("manual customer form should parse");
+        assert_eq!(owner, "Manual Owner");
+        assert_eq!(email, "manual@example.com");
+        assert_eq!(phone.as_deref(), Some("+977-9800000001"));
+
+        let (display_name, make, model, year, _, _) = app
+            .vehicle_form_values()
+            .expect("manual vehicle form should parse");
+        assert_eq!(display_name, "Manual Vehicle");
+        assert_eq!(make, "Nissan");
+        assert_eq!(model, "Magnite");
+        assert_eq!(year, 2021);
+
+        assert_eq!(
+            app.key_fob_form_values()
+                .expect("manual key fob form should parse"),
+            "Buyer Primary Fob"
+        );
+    }
+
+    #[test]
+    fn gui_cloud_operations_use_async_command_pattern() {
+        let source = include_str!("main.rs");
+
+        for expected in [
+            "Command::perform",
+            "CloudOperationFinished",
+            "Loading customers...",
+            "Creating customer...",
+            "Loading vehicles...",
+            "Creating vehicle...",
+            "Loading key fobs...",
+            "Creating key fob...",
+            "Cloud sync running...",
+            "Cloud sync completed",
+        ] {
+            assert!(
+                source.contains(expected),
+                "missing async GUI marker: {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn gui_status_strings_do_not_expose_secret_names_or_material() {
+        let statuses = [
+            "Loading customers...",
+            "Customers loaded",
+            "Creating customer...",
+            "Customer created",
+            "Creating vehicle...",
+            "Vehicle created",
+            "Loading key fobs...",
+            "Key fobs loaded",
+            "Cloud sync running...",
+            "Cloud sync completed",
+            "Cloud sync failed: safe error",
+        ]
+        .join("\n");
+
+        for disallowed in [
+            "DATABASE_URL",
+            "AIACS_MASTER_KEY",
+            "private_key",
+            "session_key",
+            "shared_secret",
+            "raw AES",
+        ] {
+            assert!(!statuses.contains(disallowed));
+        }
+    }
+
+    #[test]
+    fn cargo_default_run_points_to_gui_binary() {
+        let cargo_toml = include_str!("../Cargo.toml");
+
+        assert!(cargo_toml.contains("default-run = \"aiacs\""));
     }
 }
