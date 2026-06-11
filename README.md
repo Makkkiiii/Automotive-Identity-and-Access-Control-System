@@ -421,6 +421,10 @@ AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metada
 - Cloud Phase 6D adds diagnostic result sync for rejected malicious scenarios.
 - Cloud Phase 7 adds automatic GUI workflow-to-cloud sync while preserving manual sync buttons for verification and recovery.
 - GUI cloud operations continue to call `AppController` only; the GUI does not call cloud storage or cryptographic modules directly.
+- Cloud Phase 8 adds database-backed customer, vehicle, and key fob record management.
+- Demo records remain available as fallback/sample records when cloud storage is not configured.
+- Full dynamic cryptographic identity binding for custom selected records remains a later phase; the stable demo crypto flow is preserved.
+- Customer, vehicle, and key fob tables store safe metadata only, never private keys or session secret material.
 
 ---
 

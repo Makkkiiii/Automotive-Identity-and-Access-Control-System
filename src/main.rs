@@ -168,12 +168,15 @@ enum ArtifactSection {
 enum Message {
     SelectTab(MainTab),
     SelectArtifact(ArtifactSection),
-    AddCustomer,
+    LoadCustomers,
+    CreateCustomer,
     SelectCustomer,
-    EditCustomer,
-    AddVehicle,
+    LoadVehicles,
+    CreateVehicle,
     SelectVehicle,
-    LinkVehicleToOwner,
+    LoadKeyFobs,
+    CreateKeyFobRecord,
+    SelectKeyFobRecord,
     RotateCredential,
     ConnectVehicle,
     DetectKeyFob,
@@ -288,59 +291,156 @@ impl Sandbox for AIACSApp {
             Message::SelectArtifact(section) => {
                 self.selected_artifact = section;
             }
-            Message::AddCustomer => {
-                self.management_state.customer_note =
-                    "View-only demo profile; database-backed customer creation is not enabled in this phase."
-                        .to_string();
-                self.selected_detail = self.management_state.customer_note.clone();
-                self.push_log("[INFO]", "View-only demo customer profile selected");
-            }
+            Message::LoadCustomers => match self.controller.load_customer_records() {
+                Ok(message) => {
+                    self.management_state.customer_note = message.clone();
+                    self.selected_detail = message.clone();
+                    self.push_log("[DB]", message);
+                }
+                Err(error) => {
+                    self.management_state.customer_note =
+                        format!("Customer load failed: {}", error);
+                    self.selected_detail = self.management_state.customer_note.clone();
+                    self.push_log("[ERROR]", self.management_state.customer_note.clone());
+                }
+            },
+            Message::CreateCustomer => match self.controller.create_customer_record(
+                "Cloud Customer",
+                Some(CUSTOMER_EMAIL.to_string()),
+                Some(CUSTOMER_PHONE.to_string()),
+            ) {
+                Ok(message) => {
+                    self.management_state.customer_note = message.clone();
+                    self.selected_detail = message.clone();
+                    self.push_log("[DB]", message);
+                    let auto_sync = self.controller.auto_sync_after_metadata_ready();
+                    self.record_auto_sync_result("Metadata", auto_sync);
+                }
+                Err(error) => {
+                    self.management_state.customer_note =
+                        format!("Customer creation failed: {}", error);
+                    self.selected_detail = self.management_state.customer_note.clone();
+                    self.push_log("[ERROR]", self.management_state.customer_note.clone());
+                }
+            },
             Message::SelectCustomer => {
-                self.management_state.customer_note =
-                    format!("Active customer selected: {}", OWNER_NAME);
-                self.selected_detail = self.management_state.customer_note.clone();
-                self.push_log("[INFO]", format!("Customer selected: {}", OWNER_NAME));
-                let auto_sync = self.controller.auto_sync_after_metadata_ready();
-                self.record_auto_sync_result("Metadata", auto_sync);
+                let customer = self.controller.active_customer_record();
+                match self.controller.select_customer(&customer.customer_id) {
+                    Ok(message) => {
+                        self.management_state.customer_note = message.clone();
+                        self.selected_detail = message.clone();
+                        self.push_log("[INFO]", message);
+                    }
+                    Err(error) => {
+                        self.management_state.customer_note =
+                            format!("Customer selection failed: {}", error);
+                        self.selected_detail = self.management_state.customer_note.clone();
+                        self.push_log("[ERROR]", self.management_state.customer_note.clone());
+                    }
+                }
             }
-            Message::EditCustomer => {
-                self.management_state.customer_note =
-                    "View-only demo profile; customer edits are not persisted in this phase."
-                        .to_string();
-                self.selected_detail = self.management_state.customer_note.clone();
-                self.push_log("[INFO]", "View-only demo customer edit selected");
-            }
-            Message::AddVehicle => {
-                self.management_state.vehicle_note =
-                    "Static demo vehicle profile; database-backed vehicle creation is not enabled in this phase."
-                        .to_string();
-                self.selected_detail = self.management_state.vehicle_note.clone();
-                self.push_log("[INFO]", "Static demo vehicle profile selected");
+            Message::LoadVehicles => match self.controller.load_vehicle_records() {
+                Ok(message) => {
+                    self.management_state.vehicle_note = message.clone();
+                    self.selected_detail = message.clone();
+                    self.push_log("[DB]", message);
+                }
+                Err(error) => {
+                    self.management_state.vehicle_note = format!("Vehicle load failed: {}", error);
+                    self.selected_detail = self.management_state.vehicle_note.clone();
+                    self.push_log("[ERROR]", self.management_state.vehicle_note.clone());
+                }
+            },
+            Message::CreateVehicle => {
+                let customer = self.controller.active_customer_record();
+                match self.controller.create_vehicle_record(
+                    customer.customer_id,
+                    "Cloud Vehicle",
+                    Some(VEHICLE_MAKE.to_string()),
+                    Some(VEHICLE_MODEL.to_string()),
+                    VEHICLE_YEAR.parse::<i32>().ok(),
+                    Some(VEHICLE_VIN.to_string()),
+                    Some(VEHICLE_REGISTRATION.to_string()),
+                ) {
+                    Ok(message) => {
+                        self.management_state.vehicle_note = message.clone();
+                        self.selected_detail = message.clone();
+                        self.push_log("[DB]", message);
+                        let auto_sync = self.controller.auto_sync_after_metadata_ready();
+                        self.record_auto_sync_result("Metadata", auto_sync);
+                    }
+                    Err(error) => {
+                        self.management_state.vehicle_note =
+                            format!("Vehicle creation failed: {}", error);
+                        self.selected_detail = self.management_state.vehicle_note.clone();
+                        self.push_log("[ERROR]", self.management_state.vehicle_note.clone());
+                    }
+                }
             }
             Message::SelectVehicle => {
-                self.management_state.vehicle_note =
-                    format!("Selected vehicle: {}", VEHICLE_DISPLAY_NAME);
-                self.selected_detail = self.management_state.vehicle_note.clone();
-                self.push_log(
-                    "[INFO]",
-                    format!("Vehicle selected: {}", VEHICLE_DISPLAY_NAME),
-                );
-                let auto_sync = self.controller.auto_sync_after_metadata_ready();
-                self.record_auto_sync_result("Metadata", auto_sync);
+                let vehicle = self.controller.active_vehicle_record();
+                match self.controller.select_vehicle(&vehicle.vehicle_id) {
+                    Ok(message) => {
+                        self.management_state.vehicle_note = message.clone();
+                        self.selected_detail = message.clone();
+                        self.push_log("[INFO]", message);
+                    }
+                    Err(error) => {
+                        self.management_state.vehicle_note =
+                            format!("Vehicle selection failed: {}", error);
+                        self.selected_detail = self.management_state.vehicle_note.clone();
+                        self.push_log("[ERROR]", self.management_state.vehicle_note.clone());
+                    }
+                }
             }
-            Message::LinkVehicleToOwner => {
-                self.management_state.vehicle_note =
-                    format!("{} linked to {}", VEHICLE_DISPLAY_NAME, OWNER_NAME);
-                self.selected_detail = self.management_state.vehicle_note.clone();
-                self.push_log(
-                    "[INFO]",
-                    format!(
-                        "Vehicle linked to owner: {} -> {}",
-                        VEHICLE_DISPLAY_NAME, OWNER_NAME
-                    ),
-                );
-                let auto_sync = self.controller.auto_sync_after_metadata_ready();
-                self.record_auto_sync_result("Metadata", auto_sync);
+            Message::LoadKeyFobs => match self.controller.load_key_fob_records() {
+                Ok(message) => {
+                    self.management_state.keyfob_note = message.clone();
+                    self.selected_detail = message.clone();
+                    self.push_log("[DB]", message);
+                }
+                Err(error) => {
+                    self.management_state.keyfob_note = format!("Key fob load failed: {}", error);
+                    self.selected_detail = self.management_state.keyfob_note.clone();
+                    self.push_log("[ERROR]", self.management_state.keyfob_note.clone());
+                }
+            },
+            Message::CreateKeyFobRecord => {
+                let vehicle = self.controller.active_vehicle_record();
+                match self
+                    .controller
+                    .create_key_fob_record(vehicle.vehicle_id, "Cloud Key Fob")
+                {
+                    Ok(message) => {
+                        self.management_state.keyfob_note = message.clone();
+                        self.selected_detail = message.clone();
+                        self.push_log("[DB]", message);
+                        let auto_sync = self.controller.auto_sync_after_key_fob_registered();
+                        self.record_auto_sync_result("Metadata", auto_sync);
+                    }
+                    Err(error) => {
+                        self.management_state.keyfob_note =
+                            format!("Key fob creation failed: {}", error);
+                        self.selected_detail = self.management_state.keyfob_note.clone();
+                        self.push_log("[ERROR]", self.management_state.keyfob_note.clone());
+                    }
+                }
+            }
+            Message::SelectKeyFobRecord => {
+                let key_fob = self.controller.active_key_fob_record();
+                match self.controller.select_key_fob(&key_fob.fob_id) {
+                    Ok(message) => {
+                        self.management_state.keyfob_note = message.clone();
+                        self.selected_detail = message.clone();
+                        self.push_log("[INFO]", message);
+                    }
+                    Err(error) => {
+                        self.management_state.keyfob_note =
+                            format!("Key fob selection failed: {}", error);
+                        self.selected_detail = self.management_state.keyfob_note.clone();
+                        self.push_log("[ERROR]", self.management_state.keyfob_note.clone());
+                    }
+                }
             }
             Message::RotateCredential => match self.controller.rotate_key_fob_credential() {
                 Ok(message) => {
@@ -865,17 +965,30 @@ impl AIACSApp {
         } else {
             "Provisioning In Progress"
         };
+        let customer = self.controller.active_customer_record();
+        let vehicle = self.controller.active_vehicle_record();
+        let key_fob = self.controller.active_key_fob_record();
 
         column![
             row![
-                self.dashboard_card("auth", "Active Customer", OWNER_NAME, "Dealer owner record"),
+                self.dashboard_card(
+                    "auth",
+                    "Active Customer",
+                    customer.owner_name,
+                    customer.customer_id
+                ),
                 self.dashboard_card(
                     "vehicle",
                     "Selected Vehicle",
-                    VEHICLE_DISPLAY_NAME,
-                    TECH_VEHICLE_ID,
+                    vehicle.vehicle_display_name,
+                    vehicle.vehicle_id,
                 ),
-                self.dashboard_card("key", "Registered Key Fob", KEY_FOB_LABEL, TECH_KEY_FOB_ID),
+                self.dashboard_card(
+                    "key",
+                    "Registered Key Fob",
+                    key_fob.fob_label,
+                    key_fob.fob_id
+                ),
                 self.dashboard_card(
                     "certificate",
                     "Certificate Status",
@@ -926,16 +1039,18 @@ impl AIACSApp {
     }
 
     fn view_customers_tab(&self) -> Element<'_, Message> {
+        let customer = self.controller.active_customer_record();
+        let vehicle = self.controller.active_vehicle_record();
         row![
             self.management_details_panel(
                 "Customer / Owner",
-                "Selected customer record used for access provisioning.",
+                "Cloud-backed customer record used for access provisioning.",
                 vec![
-                    ("Owner Name", OWNER_NAME.to_string()),
-                    ("Customer ID", CUSTOMER_ID.to_string()),
-                    ("Email", CUSTOMER_EMAIL.to_string()),
-                    ("Phone", CUSTOMER_PHONE.to_string()),
-                    ("Assigned Vehicle", VEHICLE_DISPLAY_NAME.to_string()),
+                    ("Owner Name", customer.owner_name),
+                    ("Customer ID", customer.customer_id),
+                    ("Email", customer.email.unwrap_or_else(|| "N/A".to_string())),
+                    ("Phone", customer.phone.unwrap_or_else(|| "N/A".to_string())),
+                    ("Assigned Vehicle", vehicle.vehicle_display_name),
                     ("Provisioning Status", self.setup_status_label().to_string()),
                 ],
             ),
@@ -943,9 +1058,9 @@ impl AIACSApp {
                 "Customer Actions",
                 self.management_state.customer_note.as_str(),
                 vec![
-                    ("auth", "Add Customer", Message::AddCustomer),
+                    ("auth", "Load Customers", Message::LoadCustomers),
+                    ("auth", "Create Customer", Message::CreateCustomer),
                     ("auth", "Select Customer", Message::SelectCustomer),
-                    ("auth", "Edit Customer", Message::EditCustomer),
                 ],
             ),
         ]
@@ -955,19 +1070,32 @@ impl AIACSApp {
     }
 
     fn view_vehicles_tab(&self) -> Element<'_, Message> {
+        let customer = self.controller.active_customer_record();
+        let vehicle = self.controller.active_vehicle_record();
         row![
             self.management_details_panel(
                 "Vehicle",
-                "Selected vehicle for dealer-side digital access setup.",
+                "Cloud-backed vehicle record for dealer-side digital access setup.",
                 vec![
-                    ("Vehicle Name", VEHICLE_DISPLAY_NAME.to_string()),
-                    ("Vehicle ID", TECH_VEHICLE_ID.to_string()),
-                    ("Make", VEHICLE_MAKE.to_string()),
-                    ("Model", VEHICLE_MODEL.to_string()),
-                    ("Year", VEHICLE_YEAR.to_string()),
-                    ("VIN", VEHICLE_VIN.to_string()),
-                    ("Registration Number", VEHICLE_REGISTRATION.to_string()),
-                    ("Assigned Owner", OWNER_NAME.to_string()),
+                    ("Vehicle Name", vehicle.vehicle_display_name),
+                    ("Vehicle ID", vehicle.vehicle_id),
+                    ("Make", vehicle.make.unwrap_or_else(|| "N/A".to_string())),
+                    ("Model", vehicle.model.unwrap_or_else(|| "N/A".to_string())),
+                    (
+                        "Year",
+                        vehicle
+                            .year
+                            .map(|year| year.to_string())
+                            .unwrap_or_else(|| "N/A".to_string())
+                    ),
+                    ("VIN", vehicle.vin.unwrap_or_else(|| "N/A".to_string())),
+                    (
+                        "Registration Number",
+                        vehicle
+                            .registration_number
+                            .unwrap_or_else(|| "N/A".to_string())
+                    ),
+                    ("Assigned Owner", customer.owner_name),
                     ("Access Status", self.setup_status_label().to_string()),
                 ],
             ),
@@ -975,13 +1103,9 @@ impl AIACSApp {
                 "Vehicle Actions",
                 self.management_state.vehicle_note.as_str(),
                 vec![
-                    ("vehicle", "Add Vehicle", Message::AddVehicle),
+                    ("vehicle", "Load Vehicles", Message::LoadVehicles),
+                    ("vehicle", "Create Vehicle", Message::CreateVehicle),
                     ("vehicle", "Select Vehicle", Message::SelectVehicle),
-                    (
-                        "vehicle",
-                        "Link Vehicle to Owner",
-                        Message::LinkVehicleToOwner
-                    ),
                 ],
             ),
         ]
@@ -991,19 +1115,29 @@ impl AIACSApp {
     }
 
     fn view_keyfobs_tab(&self) -> Element<'_, Message> {
+        let customer = self.controller.active_customer_record();
+        let vehicle = self.controller.active_vehicle_record();
+        let key_fob = self.controller.active_key_fob_record();
         row![
             self.management_details_panel(
                 "Digital Key Fob",
-                "Selected fob credential used for vehicle access provisioning.",
+                "Cloud-backed key fob metadata used for vehicle access provisioning.",
                 vec![
-                    ("Fob Label", KEY_FOB_LABEL.to_string()),
-                    ("Fob ID", TECH_KEY_FOB_ID.to_string()),
-                    ("Assigned Vehicle", VEHICLE_DISPLAY_NAME.to_string()),
-                    ("Assigned Owner", OWNER_NAME.to_string()),
-                    ("Certificate Status", self.status.certificate_status.clone()),
+                    ("Fob Label", key_fob.fob_label),
+                    ("Fob ID", key_fob.fob_id),
+                    ("Assigned Vehicle", vehicle.vehicle_display_name),
+                    ("Assigned Owner", customer.owner_name),
+                    (
+                        "Certificate Status",
+                        key_fob
+                            .certificate_status
+                            .unwrap_or_else(|| self.status.certificate_status.clone())
+                    ),
                     (
                         "Public Key Fingerprint",
-                        self.keyfob_public_key_fingerprint()
+                        key_fob
+                            .public_key_fingerprint
+                            .unwrap_or_else(|| self.keyfob_public_key_fingerprint())
                     ),
                     ("Private Key", "[REDACTED]".to_string()),
                     (
@@ -1016,12 +1150,13 @@ impl AIACSApp {
                 "Key Fob Actions",
                 self.management_state.keyfob_note.as_str(),
                 vec![
-                    ("key", "Detect Key Fob", Message::DetectKeyFob),
+                    ("key", "Load Key Fobs", Message::LoadKeyFobs),
                     (
                         "register-key",
-                        "Register Key Fob",
-                        Message::RegisterDigitalKeyFob
+                        "Create/Register Key Fob",
+                        Message::CreateKeyFobRecord
                     ),
+                    ("key", "Select Key Fob", Message::SelectKeyFobRecord),
                     (
                         "certificate",
                         "View Certificate",
@@ -1387,15 +1522,18 @@ impl AIACSApp {
     }
 
     fn view_provisioning_context_panel(&self) -> Element<'_, Message> {
+        let customer = self.controller.active_customer_record();
+        let vehicle = self.controller.active_vehicle_record();
+        let key_fob = self.controller.active_key_fob_record();
         container(
             column![
                 text("Selected Access Setup")
                     .size(16)
                     .font(Font::MONOSPACE)
                     .style(theme::Text::Color(ACCENT_PINK)),
-                self.selected_setup_card("auth", "Owner", OWNER_NAME),
-                self.selected_setup_card("vehicle", "Vehicle", VEHICLE_DISPLAY_NAME),
-                self.selected_setup_card("key", "Digital Key", KEY_FOB_LABEL),
+                self.selected_setup_card("auth", "Owner", customer.owner_name),
+                self.selected_setup_card("vehicle", "Vehicle", vehicle.vehicle_display_name),
+                self.selected_setup_card("key", "Digital Key", key_fob.fob_label),
                 text("Provisioning Status")
                     .size(16)
                     .font(Font::MONOSPACE)
@@ -1528,12 +1666,13 @@ impl AIACSApp {
         .into()
     }
 
-    fn selected_setup_card<'a>(
+    fn selected_setup_card(
         &self,
         icon_name: &'static str,
-        label: &'a str,
-        value: &'a str,
-    ) -> Element<'a, Message> {
+        label: &'static str,
+        value: impl Into<String>,
+    ) -> Element<'_, Message> {
+        let value = value.into();
         container(
             row![
                 icon(icon_name, 18),
@@ -1559,13 +1698,16 @@ impl AIACSApp {
         .into()
     }
 
-    fn dashboard_card<'a>(
+    fn dashboard_card(
         &self,
         icon_name: &'static str,
-        title: &'a str,
-        value: &'a str,
-        detail: &'a str,
-    ) -> Element<'a, Message> {
+        title: &'static str,
+        value: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Element<'_, Message> {
+        let value = value.into();
+        let detail = detail.into();
+        let value_color = status_color(&value);
         container(
             column![
                 row![
@@ -1580,7 +1722,7 @@ impl AIACSApp {
                 text(value)
                     .size(15)
                     .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(status_color(value))),
+                    .style(theme::Text::Color(value_color)),
                 text(detail)
                     .size(11)
                     .font(Font::MONOSPACE)
@@ -3152,5 +3294,36 @@ mod tests {
         ] {
             assert!(source.contains(security_label));
         }
+    }
+
+    #[test]
+    fn management_pages_use_cloud_backed_record_language() {
+        let source = include_str!("main.rs");
+
+        for expected in [
+            "Cloud-backed customer record",
+            "Cloud-backed vehicle record",
+            "Cloud-backed key fob metadata",
+            "Load Customers",
+            "Create Customer",
+            "Load Vehicles",
+            "Create Vehicle",
+            "Load Key Fobs",
+            "Create/Register Key Fob",
+            "Select Key Fob",
+        ] {
+            assert!(source.contains(expected), "missing GUI text: {expected}");
+        }
+
+        let old_vehicle_message = concat!(
+            "Static demo vehicle profile; ",
+            "database-backed vehicle creation ",
+            "is not enabled in this phase"
+        );
+        assert!(!source.contains(old_vehicle_message));
+        let old_demo_action = concat!("GUI-only ", "demo action");
+        let old_unwired_copy = concat!("not ", "wired");
+        assert!(!source.contains(old_demo_action));
+        assert!(!source.contains(old_unwired_copy));
     }
 }

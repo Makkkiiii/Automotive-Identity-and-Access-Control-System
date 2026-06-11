@@ -8,8 +8,9 @@ use crate::cloud_storage::{
     parse_master_key_from_env, CertificateMetadata, CloudStorageClient, CloudStorageError,
     CustomerMetadata, EncryptedKeyRecord, KeyFobMetadata, ProvisioningSessionMetadata,
     VehicleMetadata, AUDIT_LOG_IDS, CA_ENCRYPTED_KEY_ID, CA_KEY_PURPOSE,
-    DEFAULT_CERTIFICATE_STATUS, DEMO_FOB_ID, DEMO_VEHICLE_ID, DIAGNOSTIC_RESULT_IDS,
-    ENCRYPTED_KEY_STORAGE_STATUS, KEY_FOB_ENCRYPTED_KEY_ID, KEY_FOB_KEY_PURPOSE,
+    DEFAULT_CERTIFICATE_STATUS, DEFAULT_PROVISIONING_STATUS, DEMO_FOB_ID, DEMO_VEHICLE_ID,
+    DIAGNOSTIC_RESULT_IDS, ENCRYPTED_KEY_STORAGE_STATUS, KEY_FOB_ENCRYPTED_KEY_ID,
+    KEY_FOB_KEY_PURPOSE,
 };
 use crate::keyfob::{DigitalKeyFob, KeyFobError};
 use crate::session::{SessionState, SessionValidationEngine};
@@ -89,6 +90,12 @@ pub struct AppController {
     vehicle_connected: bool,
     keyfob_detected: bool,
     cloud_auto_sync_enabled: bool,
+    active_customer: CustomerMetadata,
+    active_vehicle: VehicleMetadata,
+    active_key_fob: KeyFobMetadata,
+    customer_records: Vec<CustomerMetadata>,
+    vehicle_records: Vec<VehicleMetadata>,
+    key_fob_records: Vec<KeyFobMetadata>,
 }
 
 impl Default for AppController {
@@ -112,6 +119,9 @@ impl fmt::Debug for AppController {
             .field("vehicle_connected", &self.vehicle_connected)
             .field("keyfob_detected", &self.keyfob_detected)
             .field("cloud_auto_sync_enabled", &self.cloud_auto_sync_enabled)
+            .field("active_customer", &self.active_customer)
+            .field("active_vehicle", &self.active_vehicle)
+            .field("active_key_fob", &self.active_key_fob)
             .finish()
     }
 }
@@ -127,6 +137,14 @@ impl AppController {
             .initialize()
             .expect("vehicle initialization should not fail for default controller");
 
+        let active_customer = demo_customer_metadata();
+        let active_vehicle = demo_vehicle_metadata(DEFAULT_PROVISIONING_STATUS);
+        let active_key_fob = demo_key_fob_metadata(
+            None,
+            DEFAULT_CERTIFICATE_STATUS,
+            DEFAULT_PROVISIONING_STATUS,
+        );
+
         Self {
             ca: None,
             keyfob: None,
@@ -140,6 +158,12 @@ impl AppController {
             vehicle_connected: false,
             keyfob_detected: false,
             cloud_auto_sync_enabled: false,
+            active_customer: active_customer.clone(),
+            active_vehicle: active_vehicle.clone(),
+            active_key_fob: active_key_fob.clone(),
+            customer_records: vec![active_customer],
+            vehicle_records: vec![active_vehicle],
+            key_fob_records: vec![active_key_fob],
         }
     }
 
@@ -929,6 +953,277 @@ impl AppController {
         })
     }
 
+    pub fn create_customer_record(
+        &mut self,
+        owner_name: impl Into<String>,
+        email: Option<String>,
+        phone: Option<String>,
+    ) -> Result<String, AppControllerError> {
+        let customer = CustomerMetadata {
+            customer_id: generated_record_id("CUST", self.customer_records.len() + 1),
+            owner_name: owner_name.into(),
+            email,
+            phone,
+        };
+        let message = self.persist_customer_record(customer.clone())?;
+        self.active_customer = customer.clone();
+        upsert_local_customer(&mut self.customer_records, customer);
+        Ok(message)
+    }
+
+    pub fn load_customer_records(&mut self) -> Result<String, AppControllerError> {
+        let runtime = Self::cloud_runtime()?;
+        match runtime.block_on(async {
+            let client = CloudStorageClient::connect_from_env().await?;
+            client.initialize_schema().await?;
+            client.list_customers().await
+        }) {
+            Ok(records) if !records.is_empty() => {
+                self.customer_records = records;
+                if !self
+                    .customer_records
+                    .iter()
+                    .any(|record| record.customer_id == self.active_customer.customer_id)
+                {
+                    self.active_customer = self.customer_records[0].clone();
+                }
+                Ok(format!("Customers loaded: {}", self.customer_records.len()))
+            }
+            Ok(_) => Ok("Customers loaded: using local demo records".to_string()),
+            Err(error) => self.safe_demo_fallback_or_error(error),
+        }
+    }
+
+    pub fn select_customer(&mut self, customer_id: &str) -> Result<String, AppControllerError> {
+        if let Some(customer) = self
+            .customer_records
+            .iter()
+            .find(|record| record.customer_id == customer_id)
+            .cloned()
+        {
+            self.active_customer = customer.clone();
+            return Ok(format!("Customer selected: {}", customer.customer_id));
+        }
+
+        let runtime = Self::cloud_runtime()?;
+        match runtime.block_on(async {
+            let client = CloudStorageClient::connect_from_env().await?;
+            client.get_customer(customer_id).await
+        }) {
+            Ok(Some(customer)) => {
+                self.active_customer = customer.clone();
+                upsert_local_customer(&mut self.customer_records, customer.clone());
+                Ok(format!("Customer selected: {}", customer.customer_id))
+            }
+            Ok(None) => Err(AppControllerError::Backend(
+                "Customer record is not available".to_string(),
+            )),
+            Err(error) => Err(Self::map_cloud_error(error)),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_vehicle_record(
+        &mut self,
+        customer_id: impl Into<String>,
+        vehicle_display_name: impl Into<String>,
+        make: Option<String>,
+        model: Option<String>,
+        year: Option<i32>,
+        vin: Option<String>,
+        registration_number: Option<String>,
+    ) -> Result<String, AppControllerError> {
+        let customer_id = customer_id.into();
+        if customer_id.trim().is_empty() {
+            return Err(AppControllerError::Backend(
+                "Select a customer before creating a vehicle".to_string(),
+            ));
+        }
+        let vehicle = VehicleMetadata {
+            vehicle_id: generated_record_id("VEH", self.vehicle_records.len() + 1),
+            customer_id,
+            vehicle_display_name: vehicle_display_name.into(),
+            make,
+            model,
+            year,
+            vin,
+            registration_number,
+            provisioning_status: Some(DEFAULT_PROVISIONING_STATUS.to_string()),
+        };
+        let message = self.persist_vehicle_record(vehicle.clone())?;
+        self.active_vehicle = vehicle.clone();
+        upsert_local_vehicle(&mut self.vehicle_records, vehicle);
+        Ok(message)
+    }
+
+    pub fn load_vehicle_records(&mut self) -> Result<String, AppControllerError> {
+        let runtime = Self::cloud_runtime()?;
+        match runtime.block_on(async {
+            let client = CloudStorageClient::connect_from_env().await?;
+            client.initialize_schema().await?;
+            client.list_vehicles().await
+        }) {
+            Ok(records) if !records.is_empty() => {
+                self.vehicle_records = records;
+                if !self
+                    .vehicle_records
+                    .iter()
+                    .any(|record| record.vehicle_id == self.active_vehicle.vehicle_id)
+                {
+                    self.active_vehicle = self.vehicle_records[0].clone();
+                }
+                Ok(format!("Vehicles loaded: {}", self.vehicle_records.len()))
+            }
+            Ok(_) => Ok("Vehicles loaded: using local demo records".to_string()),
+            Err(error) => self.safe_demo_fallback_or_error(error),
+        }
+    }
+
+    pub fn load_vehicle_records_for_customer(
+        &mut self,
+        customer_id: &str,
+    ) -> Result<String, AppControllerError> {
+        let runtime = Self::cloud_runtime()?;
+        match runtime.block_on(async {
+            let client = CloudStorageClient::connect_from_env().await?;
+            client.initialize_schema().await?;
+            client.list_vehicles_for_customer(customer_id).await
+        }) {
+            Ok(records) if !records.is_empty() => {
+                self.vehicle_records = records;
+                self.active_vehicle = self.vehicle_records[0].clone();
+                Ok(format!("Vehicles loaded: {}", self.vehicle_records.len()))
+            }
+            Ok(_) => Ok("Vehicles loaded: no cloud records for selected customer".to_string()),
+            Err(error) => Err(Self::map_cloud_error(error)),
+        }
+    }
+
+    pub fn select_vehicle(&mut self, vehicle_id: &str) -> Result<String, AppControllerError> {
+        if let Some(vehicle) = self
+            .vehicle_records
+            .iter()
+            .find(|record| record.vehicle_id == vehicle_id)
+            .cloned()
+        {
+            self.active_vehicle = vehicle.clone();
+            return Ok(format!("Vehicle selected: {}", vehicle.vehicle_id));
+        }
+
+        let runtime = Self::cloud_runtime()?;
+        match runtime.block_on(async {
+            let client = CloudStorageClient::connect_from_env().await?;
+            client.get_vehicle(vehicle_id).await
+        }) {
+            Ok(Some(vehicle)) => {
+                self.active_vehicle = vehicle.clone();
+                upsert_local_vehicle(&mut self.vehicle_records, vehicle.clone());
+                Ok(format!("Vehicle selected: {}", vehicle.vehicle_id))
+            }
+            Ok(None) => Err(AppControllerError::Backend(
+                "Vehicle record is not available".to_string(),
+            )),
+            Err(error) => Err(Self::map_cloud_error(error)),
+        }
+    }
+
+    pub fn create_key_fob_record(
+        &mut self,
+        vehicle_id: impl Into<String>,
+        fob_label: impl Into<String>,
+    ) -> Result<String, AppControllerError> {
+        let vehicle_id = vehicle_id.into();
+        if vehicle_id.trim().is_empty() {
+            return Err(AppControllerError::Backend(
+                "Select a vehicle before creating a key fob".to_string(),
+            ));
+        }
+        let key_fob = KeyFobMetadata {
+            fob_id: generated_record_id("FOB", self.key_fob_records.len() + 1),
+            vehicle_id,
+            customer_id: self.active_customer.customer_id.clone(),
+            fob_label: fob_label.into(),
+            public_key_fingerprint: self.key_fob_public_key_fingerprint(),
+            certificate_status: Some(self.certificate_status_label().to_string()),
+            provisioning_status: Some(self.provisioning_status_label().to_string()),
+        };
+        let message = self.persist_key_fob_record(key_fob.clone())?;
+        self.active_key_fob = key_fob.clone();
+        upsert_local_key_fob(&mut self.key_fob_records, key_fob);
+        Ok(message)
+    }
+
+    pub fn load_key_fob_records(&mut self) -> Result<String, AppControllerError> {
+        let runtime = Self::cloud_runtime()?;
+        match runtime.block_on(async {
+            let client = CloudStorageClient::connect_from_env().await?;
+            client.initialize_schema().await?;
+            client.list_key_fobs().await
+        }) {
+            Ok(records) if !records.is_empty() => {
+                self.key_fob_records = records;
+                if !self
+                    .key_fob_records
+                    .iter()
+                    .any(|record| record.fob_id == self.active_key_fob.fob_id)
+                {
+                    self.active_key_fob = self.key_fob_records[0].clone();
+                }
+                Ok(format!("Key fobs loaded: {}", self.key_fob_records.len()))
+            }
+            Ok(_) => Ok("Key fobs loaded: using local demo records".to_string()),
+            Err(error) => self.safe_demo_fallback_or_error(error),
+        }
+    }
+
+    pub fn load_key_fob_records_for_vehicle(
+        &mut self,
+        vehicle_id: &str,
+    ) -> Result<String, AppControllerError> {
+        let runtime = Self::cloud_runtime()?;
+        match runtime.block_on(async {
+            let client = CloudStorageClient::connect_from_env().await?;
+            client.initialize_schema().await?;
+            client.list_key_fobs_for_vehicle(vehicle_id).await
+        }) {
+            Ok(records) if !records.is_empty() => {
+                self.key_fob_records = records;
+                self.active_key_fob = self.key_fob_records[0].clone();
+                Ok(format!("Key fobs loaded: {}", self.key_fob_records.len()))
+            }
+            Ok(_) => Ok("Key fobs loaded: no cloud records for selected vehicle".to_string()),
+            Err(error) => Err(Self::map_cloud_error(error)),
+        }
+    }
+
+    pub fn select_key_fob(&mut self, fob_id: &str) -> Result<String, AppControllerError> {
+        if let Some(key_fob) = self
+            .key_fob_records
+            .iter()
+            .find(|record| record.fob_id == fob_id)
+            .cloned()
+        {
+            self.active_key_fob = key_fob.clone();
+            return Ok(format!("Key fob selected: {}", key_fob.fob_id));
+        }
+
+        let runtime = Self::cloud_runtime()?;
+        match runtime.block_on(async {
+            let client = CloudStorageClient::connect_from_env().await?;
+            client.get_key_fob(fob_id).await
+        }) {
+            Ok(Some(key_fob)) => {
+                self.active_key_fob = key_fob.clone();
+                upsert_local_key_fob(&mut self.key_fob_records, key_fob.clone());
+                Ok(format!("Key fob selected: {}", key_fob.fob_id))
+            }
+            Ok(None) => Err(AppControllerError::Backend(
+                "Key fob record is not available".to_string(),
+            )),
+            Err(error) => Err(Self::map_cloud_error(error)),
+        }
+    }
+
     pub fn sync_customer_metadata(&mut self) -> Result<String, AppControllerError> {
         let metadata = self.customer_metadata();
         let runtime = Self::cloud_runtime()?;
@@ -1180,6 +1475,39 @@ impl AppController {
         )
     }
 
+    pub fn get_active_customer_summary(&self) -> String {
+        format!(
+            "{} ({})",
+            self.active_customer.owner_name, self.active_customer.customer_id
+        )
+    }
+
+    pub fn get_active_vehicle_summary(&self) -> String {
+        format!(
+            "{} ({})",
+            self.active_vehicle.vehicle_display_name, self.active_vehicle.vehicle_id
+        )
+    }
+
+    pub fn get_active_key_fob_summary(&self) -> String {
+        format!(
+            "{} ({})",
+            self.active_key_fob.fob_label, self.active_key_fob.fob_id
+        )
+    }
+
+    pub fn active_customer_record(&self) -> CustomerMetadata {
+        self.active_customer.clone()
+    }
+
+    pub fn active_vehicle_record(&self) -> VehicleMetadata {
+        self.active_vehicle.clone()
+    }
+
+    pub fn active_key_fob_record(&self) -> KeyFobMetadata {
+        self.active_key_fob.clone()
+    }
+
     pub fn log_file_paths(&self) -> (PathBuf, PathBuf) {
         (self.gui_log_path(), self.protocol_trace_log_path())
     }
@@ -1213,19 +1541,21 @@ impl AppController {
     }
 
     fn customer_metadata(&self) -> CustomerMetadata {
-        demo_customer_metadata()
+        self.active_customer.clone()
     }
 
     fn vehicle_metadata(&self) -> VehicleMetadata {
-        demo_vehicle_metadata(self.provisioning_status_label())
+        let mut vehicle = self.active_vehicle.clone();
+        vehicle.provisioning_status = Some(self.provisioning_status_label().to_string());
+        vehicle
     }
 
     fn key_fob_metadata(&self) -> KeyFobMetadata {
-        demo_key_fob_metadata(
-            self.key_fob_public_key_fingerprint(),
-            self.certificate_status_label(),
-            self.provisioning_status_label(),
-        )
+        let mut key_fob = self.active_key_fob.clone();
+        key_fob.public_key_fingerprint = self.key_fob_public_key_fingerprint();
+        key_fob.certificate_status = Some(self.certificate_status_label().to_string());
+        key_fob.provisioning_status = Some(self.provisioning_status_label().to_string());
+        key_fob
     }
 
     fn certificate_metadata(&self) -> Result<CertificateMetadata, AppControllerError> {
@@ -1403,6 +1733,91 @@ impl AppController {
                 self.save_log_entry("[DB]", message.clone())?;
                 Ok(message)
             }
+        }
+    }
+
+    fn persist_customer_record(
+        &mut self,
+        customer: CustomerMetadata,
+    ) -> Result<String, AppControllerError> {
+        let runtime = Self::cloud_runtime()?;
+        match runtime.block_on(async {
+            let client = CloudStorageClient::connect_from_env().await?;
+            client.initialize_schema().await?;
+            client.create_customer(&customer).await
+        }) {
+            Ok(_) => {
+                self.save_log_entry(
+                    "[DB]",
+                    format!("Customer created: {}", customer.customer_id),
+                )?;
+                Ok(format!("Customer created: {}", customer.customer_id))
+            }
+            Err(error) => self.safe_local_create_message(error, "Customer", &customer.customer_id),
+        }
+    }
+
+    fn persist_vehicle_record(
+        &mut self,
+        vehicle: VehicleMetadata,
+    ) -> Result<String, AppControllerError> {
+        let runtime = Self::cloud_runtime()?;
+        match runtime.block_on(async {
+            let client = CloudStorageClient::connect_from_env().await?;
+            client.initialize_schema().await?;
+            client.create_vehicle(&vehicle).await
+        }) {
+            Ok(_) => {
+                self.save_log_entry("[DB]", format!("Vehicle created: {}", vehicle.vehicle_id))?;
+                Ok(format!("Vehicle created: {}", vehicle.vehicle_id))
+            }
+            Err(error) => self.safe_local_create_message(error, "Vehicle", &vehicle.vehicle_id),
+        }
+    }
+
+    fn persist_key_fob_record(
+        &mut self,
+        key_fob: KeyFobMetadata,
+    ) -> Result<String, AppControllerError> {
+        let runtime = Self::cloud_runtime()?;
+        match runtime.block_on(async {
+            let client = CloudStorageClient::connect_from_env().await?;
+            client.initialize_schema().await?;
+            client.create_key_fob_metadata(&key_fob).await
+        }) {
+            Ok(_) => {
+                self.save_log_entry("[DB]", format!("Key fob created: {}", key_fob.fob_id))?;
+                Ok(format!("Key fob created: {}", key_fob.fob_id))
+            }
+            Err(error) => self.safe_local_create_message(error, "Key fob", &key_fob.fob_id),
+        }
+    }
+
+    fn safe_local_create_message(
+        &self,
+        error: CloudStorageError,
+        label: &str,
+        id: &str,
+    ) -> Result<String, AppControllerError> {
+        let mapped = Self::map_cloud_error(error).to_string();
+        if mapped == "Cloud database is not configured" {
+            Ok(format!(
+                "{label} created locally: {id}; cloud database is not configured"
+            ))
+        } else {
+            Err(AppControllerError::Backend(mapped))
+        }
+    }
+
+    fn safe_demo_fallback_or_error(
+        &self,
+        error: CloudStorageError,
+    ) -> Result<String, AppControllerError> {
+        let mapped = Self::map_cloud_error(error).to_string();
+        if mapped == "Cloud database is not configured" {
+            Ok("Cloud database is not configured; using local demo records".to_string())
+        } else {
+            Err(AppControllerError::Backend(mapped))
         }
     }
 
@@ -1703,6 +2118,43 @@ fn parse_session_timestamp(value: &str) -> Result<DateTime<Utc>, AppControllerEr
                 "Provisioning session metadata is not available".to_string(),
             )
         })
+}
+
+fn generated_record_id(prefix: &str, index: usize) -> String {
+    format!("{prefix}-{index:04}")
+}
+
+fn upsert_local_customer(records: &mut Vec<CustomerMetadata>, record: CustomerMetadata) {
+    if let Some(existing) = records
+        .iter_mut()
+        .find(|existing| existing.customer_id == record.customer_id)
+    {
+        *existing = record;
+    } else {
+        records.push(record);
+    }
+}
+
+fn upsert_local_vehicle(records: &mut Vec<VehicleMetadata>, record: VehicleMetadata) {
+    if let Some(existing) = records
+        .iter_mut()
+        .find(|existing| existing.vehicle_id == record.vehicle_id)
+    {
+        *existing = record;
+    } else {
+        records.push(record);
+    }
+}
+
+fn upsert_local_key_fob(records: &mut Vec<KeyFobMetadata>, record: KeyFobMetadata) {
+    if let Some(existing) = records
+        .iter_mut()
+        .find(|existing| existing.fob_id == record.fob_id)
+    {
+        *existing = record;
+    } else {
+        records.push(record);
+    }
 }
 
 fn hex_preview(bytes: &[u8], take: usize) -> String {
@@ -2262,6 +2714,52 @@ mod tests {
         ] {
             assert!(!combined.contains(disallowed));
         }
+    }
+
+    #[test]
+    fn test_active_record_summaries_use_selected_records() {
+        let mut controller = AppController::new();
+
+        let customer_message = controller
+            .select_customer(crate::cloud_storage::DEMO_CUSTOMER_ID)
+            .expect("demo customer should select");
+        assert!(customer_message.contains("Customer selected"));
+        assert!(controller
+            .get_active_customer_summary()
+            .contains(crate::cloud_storage::DEMO_CUSTOMER_ID));
+
+        let vehicle_id = controller.active_vehicle_record().vehicle_id;
+        let vehicle_message = controller
+            .select_vehicle(&vehicle_id)
+            .expect("active vehicle should select");
+        assert!(vehicle_message.contains("Vehicle selected"));
+        assert!(controller
+            .get_active_vehicle_summary()
+            .contains(&vehicle_id));
+
+        let fob_id = controller.active_key_fob_record().fob_id;
+        let key_fob_message = controller
+            .select_key_fob(&fob_id)
+            .expect("active key fob should select");
+        assert!(key_fob_message.contains("Key fob selected"));
+        assert!(controller.get_active_key_fob_summary().contains(&fob_id));
+    }
+
+    #[test]
+    fn test_vehicle_and_key_fob_creation_require_parent_records() {
+        let mut controller = AppController::new();
+
+        let vehicle_error = controller
+            .create_vehicle_record("", "No Customer Vehicle", None, None, None, None, None)
+            .expect_err("empty customer id should fail safely")
+            .to_string();
+        assert_eq!(vehicle_error, "Select a customer before creating a vehicle");
+
+        let key_fob_error = controller
+            .create_key_fob_record("", "No Vehicle Fob")
+            .expect_err("empty vehicle id should fail safely")
+            .to_string();
+        assert_eq!(key_fob_error, "Select a vehicle before creating a key fob");
     }
 
     #[test]

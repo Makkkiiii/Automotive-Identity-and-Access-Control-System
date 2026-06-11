@@ -85,6 +85,22 @@ CREATE TABLE IF NOT EXISTS customers (
 );
 "#,
     r#"
+ALTER TABLE customers
+ADD COLUMN IF NOT EXISTS email TEXT;
+"#,
+    r#"
+ALTER TABLE customers
+ADD COLUMN IF NOT EXISTS phone TEXT;
+"#,
+    r#"
+ALTER TABLE customers
+ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+"#,
+    r#"
+ALTER TABLE customers
+ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+"#,
+    r#"
 CREATE TABLE IF NOT EXISTS vehicles (
     vehicle_id TEXT PRIMARY KEY,
     customer_id TEXT REFERENCES customers(customer_id),
@@ -99,6 +115,46 @@ CREATE TABLE IF NOT EXISTS vehicles (
 );
 "#,
     r#"
+ALTER TABLE vehicles
+ADD COLUMN IF NOT EXISTS customer_id TEXT;
+"#,
+    r#"
+ALTER TABLE vehicles
+ADD COLUMN IF NOT EXISTS vehicle_display_name TEXT;
+"#,
+    r#"
+ALTER TABLE vehicles
+ADD COLUMN IF NOT EXISTS make TEXT;
+"#,
+    r#"
+ALTER TABLE vehicles
+ADD COLUMN IF NOT EXISTS model TEXT;
+"#,
+    r#"
+ALTER TABLE vehicles
+ADD COLUMN IF NOT EXISTS year INTEGER;
+"#,
+    r#"
+ALTER TABLE vehicles
+ADD COLUMN IF NOT EXISTS vin TEXT;
+"#,
+    r#"
+ALTER TABLE vehicles
+ADD COLUMN IF NOT EXISTS registration_number TEXT;
+"#,
+    r#"
+ALTER TABLE vehicles
+ADD COLUMN IF NOT EXISTS provisioning_status TEXT;
+"#,
+    r#"
+ALTER TABLE vehicles
+ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+"#,
+    r#"
+ALTER TABLE vehicles
+ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+"#,
+    r#"
 CREATE TABLE IF NOT EXISTS key_fobs (
     fob_id TEXT PRIMARY KEY,
     vehicle_id TEXT REFERENCES vehicles(vehicle_id),
@@ -109,6 +165,38 @@ CREATE TABLE IF NOT EXISTS key_fobs (
     provisioning_status TEXT,
     created_at TIMESTAMPTZ NOT NULL
 );
+"#,
+    r#"
+ALTER TABLE key_fobs
+ADD COLUMN IF NOT EXISTS vehicle_id TEXT;
+"#,
+    r#"
+ALTER TABLE key_fobs
+ADD COLUMN IF NOT EXISTS customer_id TEXT;
+"#,
+    r#"
+ALTER TABLE key_fobs
+ADD COLUMN IF NOT EXISTS fob_label TEXT;
+"#,
+    r#"
+ALTER TABLE key_fobs
+ADD COLUMN IF NOT EXISTS public_key_fingerprint TEXT;
+"#,
+    r#"
+ALTER TABLE key_fobs
+ADD COLUMN IF NOT EXISTS certificate_status TEXT;
+"#,
+    r#"
+ALTER TABLE key_fobs
+ADD COLUMN IF NOT EXISTS provisioning_status TEXT;
+"#,
+    r#"
+ALTER TABLE key_fobs
+ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+"#,
+    r#"
+ALTER TABLE key_fobs
+ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
 "#,
     r#"
 CREATE TABLE IF NOT EXISTS certificates (
@@ -322,7 +410,20 @@ INSERT INTO customers (
 ON CONFLICT (customer_id) DO UPDATE SET
     owner_name = EXCLUDED.owner_name,
     email = EXCLUDED.email,
-    phone = EXCLUDED.phone;
+    phone = EXCLUDED.phone,
+    updated_at = NOW();
+"#;
+
+const LIST_CUSTOMERS_SQL: &str = r#"
+SELECT customer_id, owner_name, email, phone
+FROM customers
+ORDER BY created_at, customer_id;
+"#;
+
+const GET_CUSTOMER_SQL: &str = r#"
+SELECT customer_id, owner_name, email, phone
+FROM customers
+WHERE customer_id = $1;
 "#;
 
 const UPSERT_VEHICLE_SQL: &str = r#"
@@ -346,7 +447,27 @@ ON CONFLICT (vehicle_id) DO UPDATE SET
     year = EXCLUDED.year,
     vin = EXCLUDED.vin,
     registration_number = EXCLUDED.registration_number,
-    provisioning_status = EXCLUDED.provisioning_status;
+    provisioning_status = EXCLUDED.provisioning_status,
+    updated_at = NOW();
+"#;
+
+const LIST_VEHICLES_SQL: &str = r#"
+SELECT vehicle_id, customer_id, vehicle_display_name, make, model, year, vin, registration_number, provisioning_status
+FROM vehicles
+ORDER BY created_at, vehicle_id;
+"#;
+
+const LIST_VEHICLES_FOR_CUSTOMER_SQL: &str = r#"
+SELECT vehicle_id, customer_id, vehicle_display_name, make, model, year, vin, registration_number, provisioning_status
+FROM vehicles
+WHERE customer_id = $1
+ORDER BY created_at, vehicle_id;
+"#;
+
+const GET_VEHICLE_SQL: &str = r#"
+SELECT vehicle_id, customer_id, vehicle_display_name, make, model, year, vin, registration_number, provisioning_status
+FROM vehicles
+WHERE vehicle_id = $1;
 "#;
 
 const UPSERT_KEY_FOB_SQL: &str = r#"
@@ -366,7 +487,27 @@ ON CONFLICT (fob_id) DO UPDATE SET
     fob_label = EXCLUDED.fob_label,
     public_key_fingerprint = EXCLUDED.public_key_fingerprint,
     certificate_status = EXCLUDED.certificate_status,
-    provisioning_status = EXCLUDED.provisioning_status;
+    provisioning_status = EXCLUDED.provisioning_status,
+    updated_at = NOW();
+"#;
+
+const LIST_KEY_FOBS_SQL: &str = r#"
+SELECT fob_id, vehicle_id, customer_id, fob_label, public_key_fingerprint, certificate_status, provisioning_status
+FROM key_fobs
+ORDER BY created_at, fob_id;
+"#;
+
+const LIST_KEY_FOBS_FOR_VEHICLE_SQL: &str = r#"
+SELECT fob_id, vehicle_id, customer_id, fob_label, public_key_fingerprint, certificate_status, provisioning_status
+FROM key_fobs
+WHERE vehicle_id = $1
+ORDER BY created_at, fob_id;
+"#;
+
+const GET_KEY_FOB_SQL: &str = r#"
+SELECT fob_id, vehicle_id, customer_id, fob_label, public_key_fingerprint, certificate_status, provisioning_status
+FROM key_fobs
+WHERE fob_id = $1;
 "#;
 
 const UPSERT_CERTIFICATE_METADATA_SQL: &str = r#"
@@ -892,6 +1033,28 @@ pub struct CloudStorageClient {
     pool: PgPool,
 }
 
+type VehicleRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<i32>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+type KeyFobRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 impl CloudStorageClient {
     pub async fn connect_from_env() -> Result<Self, CloudStorageError> {
         let config = CloudStorageConfig::from_env()?;
@@ -940,6 +1103,49 @@ impl CloudStorageClient {
         Ok(CUSTOMER_SYNCED_MESSAGE.to_string())
     }
 
+    pub async fn create_customer(
+        &self,
+        metadata: &CustomerMetadata,
+    ) -> Result<String, CloudStorageError> {
+        self.upsert_customer(metadata).await
+    }
+
+    pub async fn list_customers(&self) -> Result<Vec<CustomerMetadata>, CloudStorageError> {
+        sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(LIST_CUSTOMERS_SQL)
+            .fetch_all(&self.pool)
+            .await
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|(customer_id, owner_name, email, phone)| CustomerMetadata {
+                        customer_id,
+                        owner_name,
+                        email,
+                        phone,
+                    })
+                    .collect()
+            })
+            .map_err(|_| CloudStorageError::MetadataSyncFailed)
+    }
+
+    pub async fn get_customer(
+        &self,
+        customer_id: &str,
+    ) -> Result<Option<CustomerMetadata>, CloudStorageError> {
+        sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(GET_CUSTOMER_SQL)
+            .bind(customer_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map(|row| {
+                row.map(|(customer_id, owner_name, email, phone)| CustomerMetadata {
+                    customer_id,
+                    owner_name,
+                    email,
+                    phone,
+                })
+            })
+            .map_err(|_| CloudStorageError::MetadataSyncFailed)
+    }
+
     pub async fn upsert_vehicle(
         &self,
         metadata: &VehicleMetadata,
@@ -961,6 +1167,37 @@ impl CloudStorageClient {
         Ok(VEHICLE_SYNCED_MESSAGE.to_string())
     }
 
+    pub async fn create_vehicle(
+        &self,
+        metadata: &VehicleMetadata,
+    ) -> Result<String, CloudStorageError> {
+        self.upsert_vehicle(metadata).await
+    }
+
+    pub async fn list_vehicles(&self) -> Result<Vec<VehicleMetadata>, CloudStorageError> {
+        self.fetch_vehicle_list(LIST_VEHICLES_SQL, None).await
+    }
+
+    pub async fn list_vehicles_for_customer(
+        &self,
+        customer_id: &str,
+    ) -> Result<Vec<VehicleMetadata>, CloudStorageError> {
+        self.fetch_vehicle_list(LIST_VEHICLES_FOR_CUSTOMER_SQL, Some(customer_id))
+            .await
+    }
+
+    pub async fn get_vehicle(
+        &self,
+        vehicle_id: &str,
+    ) -> Result<Option<VehicleMetadata>, CloudStorageError> {
+        sqlx::query_as::<_, VehicleRow>(GET_VEHICLE_SQL)
+            .bind(vehicle_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map(|row| row.map(vehicle_metadata_from_row))
+            .map_err(|_| CloudStorageError::MetadataSyncFailed)
+    }
+
     pub async fn upsert_key_fob(
         &self,
         metadata: &KeyFobMetadata,
@@ -978,6 +1215,37 @@ impl CloudStorageClient {
             .map_err(|_| CloudStorageError::MetadataSyncFailed)?;
 
         Ok(KEY_FOB_SYNCED_MESSAGE.to_string())
+    }
+
+    pub async fn create_key_fob_metadata(
+        &self,
+        metadata: &KeyFobMetadata,
+    ) -> Result<String, CloudStorageError> {
+        self.upsert_key_fob(metadata).await
+    }
+
+    pub async fn list_key_fobs(&self) -> Result<Vec<KeyFobMetadata>, CloudStorageError> {
+        self.fetch_key_fob_list(LIST_KEY_FOBS_SQL, None).await
+    }
+
+    pub async fn list_key_fobs_for_vehicle(
+        &self,
+        vehicle_id: &str,
+    ) -> Result<Vec<KeyFobMetadata>, CloudStorageError> {
+        self.fetch_key_fob_list(LIST_KEY_FOBS_FOR_VEHICLE_SQL, Some(vehicle_id))
+            .await
+    }
+
+    pub async fn get_key_fob(
+        &self,
+        fob_id: &str,
+    ) -> Result<Option<KeyFobMetadata>, CloudStorageError> {
+        sqlx::query_as::<_, KeyFobRow>(GET_KEY_FOB_SQL)
+            .bind(fob_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map(|row| row.map(key_fob_metadata_from_row))
+            .map_err(|_| CloudStorageError::MetadataSyncFailed)
     }
 
     pub async fn sync_demo_metadata(&self) -> Result<String, CloudStorageError> {
@@ -1148,6 +1416,38 @@ impl CloudStorageClient {
 
         Ok(ENCRYPTED_KEY_BLOBS_SYNCED_MESSAGE.to_string())
     }
+
+    async fn fetch_vehicle_list(
+        &self,
+        sql: &str,
+        customer_id: Option<&str>,
+    ) -> Result<Vec<VehicleMetadata>, CloudStorageError> {
+        let query = sqlx::query_as::<_, VehicleRow>(sql);
+        let rows = if let Some(customer_id) = customer_id {
+            query.bind(customer_id).fetch_all(&self.pool).await
+        } else {
+            query.fetch_all(&self.pool).await
+        }
+        .map_err(|_| CloudStorageError::MetadataSyncFailed)?;
+
+        Ok(rows.into_iter().map(vehicle_metadata_from_row).collect())
+    }
+
+    async fn fetch_key_fob_list(
+        &self,
+        sql: &str,
+        vehicle_id: Option<&str>,
+    ) -> Result<Vec<KeyFobMetadata>, CloudStorageError> {
+        let query = sqlx::query_as::<_, KeyFobRow>(sql);
+        let rows = if let Some(vehicle_id) = vehicle_id {
+            query.bind(vehicle_id).fetch_all(&self.pool).await
+        } else {
+            query.fetch_all(&self.pool).await
+        }
+        .map_err(|_| CloudStorageError::MetadataSyncFailed)?;
+
+        Ok(rows.into_iter().map(key_fob_metadata_from_row).collect())
+    }
 }
 
 impl fmt::Debug for CloudStorageClient {
@@ -1230,6 +1530,54 @@ fn encrypted_key_sync_message(key_id: &str) -> &'static str {
         CA_ENCRYPTED_KEY_ID => CA_ENCRYPTED_KEY_SYNCED_MESSAGE,
         KEY_FOB_ENCRYPTED_KEY_ID => KEY_FOB_ENCRYPTED_KEY_SYNCED_MESSAGE,
         _ => "Encrypted key blob uploaded",
+    }
+}
+
+fn vehicle_metadata_from_row(row: VehicleRow) -> VehicleMetadata {
+    let (
+        vehicle_id,
+        customer_id,
+        vehicle_display_name,
+        make,
+        model,
+        year,
+        vin,
+        registration_number,
+        provisioning_status,
+    ) = row;
+
+    VehicleMetadata {
+        vehicle_id,
+        customer_id,
+        vehicle_display_name,
+        make,
+        model,
+        year,
+        vin,
+        registration_number,
+        provisioning_status,
+    }
+}
+
+fn key_fob_metadata_from_row(row: KeyFobRow) -> KeyFobMetadata {
+    let (
+        fob_id,
+        vehicle_id,
+        customer_id,
+        fob_label,
+        public_key_fingerprint,
+        certificate_status,
+        provisioning_status,
+    ) = row;
+
+    KeyFobMetadata {
+        fob_id,
+        vehicle_id,
+        customer_id,
+        fob_label,
+        public_key_fingerprint,
+        certificate_status,
+        provisioning_status,
     }
 }
 
@@ -1372,6 +1720,26 @@ mod tests {
         assert!(schema.contains("ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ"));
         assert!(schema.contains("ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ"));
         assert!(schema.contains("ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()"));
+    }
+
+    #[test]
+    fn schema_sql_includes_management_metadata_migrations() {
+        let schema = schema_sql();
+
+        for migration in [
+            "ALTER TABLE customers",
+            "ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
+            "ALTER TABLE vehicles",
+            "ADD COLUMN IF NOT EXISTS customer_id TEXT",
+            "ADD COLUMN IF NOT EXISTS vehicle_display_name TEXT",
+            "ADD COLUMN IF NOT EXISTS registration_number TEXT",
+            "ALTER TABLE key_fobs",
+            "ADD COLUMN IF NOT EXISTS vehicle_id TEXT",
+            "ADD COLUMN IF NOT EXISTS fob_label TEXT",
+            "ADD COLUMN IF NOT EXISTS public_key_fingerprint TEXT",
+        ] {
+            assert!(schema.contains(migration), "missing migration: {migration}");
+        }
     }
 
     #[test]
@@ -1526,6 +1894,35 @@ mod tests {
         assert!(!sql.contains("shared_secret"));
         assert!(!sql.contains("encrypted_key_blob"));
         assert!(!sql.contains("certificate_json"));
+    }
+
+    #[test]
+    fn management_metadata_models_use_safe_fields_only() {
+        let customer = demo_customer_metadata();
+        let vehicle = demo_vehicle_metadata(DEFAULT_PROVISIONING_STATUS);
+        let key_fob = demo_key_fob_metadata(
+            None,
+            DEFAULT_CERTIFICATE_STATUS,
+            DEFAULT_PROVISIONING_STATUS,
+        );
+        let debug = format!("{customer:?}\n{vehicle:?}\n{key_fob:?}").to_lowercase();
+
+        for disallowed in [
+            "database_url",
+            "aiacs_master_key",
+            "private_key",
+            "raw_key",
+            "session_key",
+            "shared_secret",
+            "master_key",
+            "hkdf_output",
+            "x25519_private_key",
+            "aes_key",
+            "encrypted_key_blob",
+            "encryption_nonce",
+        ] {
+            assert!(!debug.contains(disallowed));
+        }
     }
 
     #[test]
