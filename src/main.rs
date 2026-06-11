@@ -1026,12 +1026,20 @@ impl AIACSApp {
             }
             CloudOperation::SyncCertificateMetadata => {
                 self.record_certificate_sync(message);
-                self.push_log("[DB]", "Certificate metadata synced: CERT-FOB-0001");
+                let context = self.controller.get_active_provisioning_context();
+                self.push_log(
+                    "[DB]",
+                    format!("Certificate metadata synced: {}", context.certificate_id),
+                );
                 self.push_log("[DB]", "Certificate private material: [REDACTED]");
             }
             CloudOperation::SyncProvisioningSession => {
                 self.record_provisioning_session_sync(message);
-                self.push_log("[DB]", "Provisioning session synced: SESSION-0001");
+                let context = self.controller.get_active_provisioning_context();
+                self.push_log(
+                    "[DB]",
+                    format!("Provisioning session synced: {}", context.session_id),
+                );
                 self.push_log(
                     "[DB]",
                     "Session algorithm: X25519 + HKDF-SHA256 + AES-256-GCM",
@@ -2078,18 +2086,35 @@ impl AIACSApp {
     }
 
     fn view_provisioning_context_panel(&self) -> Element<'_, Message> {
-        let customer = self.controller.active_customer_record();
-        let vehicle = self.controller.active_vehicle_record();
-        let key_fob = self.controller.active_key_fob_record();
+        let context = self.controller.get_active_provisioning_context();
         container(
             column![
-                text("Selected Access Setup")
+                text("Active Provisioning Context")
                     .size(16)
                     .font(Font::MONOSPACE)
                     .style(theme::Text::Color(ACCENT_PINK)),
-                self.selected_setup_card("auth", "Owner", customer.owner_name),
-                self.selected_setup_card("vehicle", "Vehicle", vehicle.vehicle_display_name),
-                self.selected_setup_card("key", "Digital Key", key_fob.fob_label),
+                self.selected_setup_card(
+                    "auth",
+                    "Customer",
+                    format!("{} / {}", context.owner_name, context.customer_id)
+                ),
+                self.selected_setup_card(
+                    "vehicle",
+                    "Vehicle",
+                    format!("{} / {}", context.vehicle_display_name, context.vehicle_id)
+                ),
+                self.selected_setup_card(
+                    "key",
+                    "Key Fob",
+                    format!("{} / {}", context.fob_label, context.fob_id)
+                ),
+                self.selected_setup_card("certificate", "Certificate", context.certificate_id),
+                self.selected_setup_card("lock", "Session", context.session_id),
+                self.selected_setup_card("terminal", "Source", context.context_source),
+                text("Metadata context uses selected records. Cryptographic key material remains managed by the prototype engine.")
+                    .size(10)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(SECONDARY_TEXT)),
                 text("Provisioning Status")
                     .size(16)
                     .font(Font::MONOSPACE)
@@ -2573,7 +2598,7 @@ impl AIACSApp {
                     ),
                     compact_button(
                         "terminal",
-                        "Sync Demo Metadata",
+                        "Sync Active Metadata",
                         Message::SyncDemoMetadata,
                         ButtonKind::Nav
                     ),
@@ -2987,12 +3012,15 @@ impl AIACSApp {
         }
     }
 
-    fn view_summary_row<'a>(
+    fn view_summary_row(
         &self,
         icon_name: &'static str,
-        label: &'a str,
-        value: &'a str,
-    ) -> Element<'a, Message> {
+        label: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Element<'static, Message> {
+        let label = label.into();
+        let value = value.into();
+        let value_color = status_color(&value);
         row![
             icon(icon_name, 18),
             text(label)
@@ -3003,7 +3031,7 @@ impl AIACSApp {
             text(value)
                 .size(12)
                 .font(Font::MONOSPACE)
-                .style(theme::Text::Color(status_color(value)))
+                .style(theme::Text::Color(value_color))
                 .horizontal_alignment(alignment::Horizontal::Right),
         ]
         .spacing(8)
@@ -3012,10 +3040,13 @@ impl AIACSApp {
     }
 
     fn view_provisioning_summary_rows(&self) -> Element<'_, Message> {
+        let context = self.controller.get_active_provisioning_context();
         column![
-            self.view_summary_row("auth", "Owner", OWNER_NAME),
-            self.view_summary_row("vehicle", "Vehicle", VEHICLE_DISPLAY_NAME),
-            self.view_summary_row("key", "Digital Key", KEY_FOB_LABEL),
+            self.view_summary_row("auth", "Owner", &context.owner_name),
+            self.view_summary_row("vehicle", "Vehicle", &context.vehicle_display_name),
+            self.view_summary_row("key", "Digital Key", &context.fob_label),
+            self.view_summary_row("certificate", "Certificate ID", &context.certificate_id),
+            self.view_summary_row("lock", "Session ID", &context.session_id),
             self.view_summary_row(
                 "certificate",
                 "Certificate",
@@ -3952,7 +3983,7 @@ mod tests {
             "Sync Customer Metadata",
             "Sync Vehicle Metadata",
             "Sync Key Fob Metadata",
-            "Sync Demo Metadata",
+            "Sync Active Metadata",
             "Sync Certificate Metadata",
             "Sync Provisioning Session",
             "Sync Audit Logs",

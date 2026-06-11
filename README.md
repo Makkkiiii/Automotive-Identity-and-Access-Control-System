@@ -425,6 +425,8 @@ AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metada
 - Cloud Phase 8.5 moves cloud-connected GUI actions onto asynchronous Iced commands so the interface remains responsive during load/create/sync operations.
 - Customers, Vehicles, and Key Fobs pages use manual record input; only generated metadata IDs are automatic.
 - Cloud Phase 8.6 persists GUI-created customer, vehicle, and key fob metadata to Neon with unique generated IDs, cached cloud connection reuse, and cached schema initialization.
+- Cloud Phase 8.7 maintains an active provisioning context so created or selected customer, vehicle, and key fob records flow into the Provisioning page and safe certificate/session/audit metadata syncs when Cloud Auto Sync is enabled.
+- Certificate and provisioning session metadata can reference the active selected context; full hardware-grade cryptographic key lifecycle binding remains out of scope for this prototype phase.
 - The first cloud request can be slower while the hosted database connection warms up; later operations reuse the active PostgreSQL pool.
 - Demo records remain available as fallback/sample records when cloud storage is not configured.
 - Full dynamic cryptographic identity binding for custom selected records remains a later phase; the stable demo crypto flow is preserved.

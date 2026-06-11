@@ -3,14 +3,15 @@ use crate::attacks::{AdversarialValidationEngine, AttackResult, AttackType};
 use crate::auth::{AuthResult, AuthenticationEngine};
 use crate::ca::{CAError, Certificate, CertificateAuthority};
 use crate::cloud_storage::{
-    demo_certificate_metadata, demo_customer_metadata, demo_key_fob_metadata,
-    demo_provisioning_session_metadata, demo_vehicle_metadata, encrypt_private_key_for_cloud,
-    parse_master_key_from_env, CertificateMetadata, CloudStorageClient, CloudStorageError,
-    CustomerMetadata, EncryptedKeyRecord, KeyFobMetadata, ProvisioningSessionMetadata,
-    VehicleMetadata, AUDIT_LOG_IDS, CA_ENCRYPTED_KEY_ID, CA_KEY_PURPOSE,
-    DEFAULT_CERTIFICATE_STATUS, DEFAULT_PROVISIONING_STATUS, DEMO_FOB_ID, DEMO_VEHICLE_ID,
-    DIAGNOSTIC_RESULT_IDS, ENCRYPTED_KEY_STORAGE_STATUS, KEY_FOB_ENCRYPTED_KEY_ID,
-    KEY_FOB_KEY_PURPOSE,
+    demo_customer_metadata, demo_key_fob_metadata, demo_vehicle_metadata,
+    encrypt_private_key_for_cloud, parse_master_key_from_env, AuditLogRecord, CertificateMetadata,
+    CloudStorageClient, CloudStorageError, CustomerMetadata, EncryptedKeyRecord, KeyFobMetadata,
+    ProvisioningSessionMetadata, VehicleMetadata, AUTHENTICATED_STATUS, CA_ENCRYPTED_KEY_ID,
+    CA_KEY_PURPOSE, CERTIFICATE_SIGNATURE_ALGORITHM, DEFAULT_CERTIFICATE_STATUS,
+    DEFAULT_PROVISIONING_STATUS, DEMO_CERTIFICATE_ID, DEMO_CUSTOMER_ID, DEMO_FOB_ID,
+    DEMO_SESSION_ID, DEMO_VEHICLE_ID, DIAGNOSTIC_RESULT_IDS, ENCRYPTED_KEY_STORAGE_STATUS,
+    GRANT_ACCESS_DECISION, ISSUED_CERTIFICATE_STATUS, KEY_FOB_ENCRYPTED_KEY_ID,
+    KEY_FOB_KEY_PURPOSE, SECURE_SESSION_ESTABLISHED_STATUS, SESSION_ALGORITHM,
 };
 use crate::keyfob::{DigitalKeyFob, KeyFobError};
 use crate::session::{SessionState, SessionValidationEngine};
@@ -29,7 +30,7 @@ use uuid::Uuid;
 const DEFAULT_CA_NAME: &str = "AIACS-Demo-CA";
 const DEFAULT_FOB_ID: &str = DEMO_FOB_ID;
 const DEFAULT_VEHICLE_ID: &str = DEMO_VEHICLE_ID;
-const DEFAULT_SESSION_ID: &str = "SESSION-0001";
+const DEFAULT_SESSION_ID: &str = DEMO_SESSION_ID;
 const DEFAULT_TIMEOUT_SECONDS: i64 = 60;
 const DEFAULT_LOG_DIR: &str = "logs";
 const GUI_LOG_FILE: &str = "aiacs_gui.log";
@@ -44,6 +45,23 @@ const KEYFOB_CERTIFICATE_PATH: &str = "certs/fob_FOB-0001.json";
 #[derive(Debug)]
 pub enum AppControllerError {
     Backend(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveProvisioningContext {
+    pub customer_id: String,
+    pub owner_name: String,
+    pub customer_email: Option<String>,
+    pub vehicle_id: String,
+    pub vehicle_display_name: String,
+    pub make: Option<String>,
+    pub model: Option<String>,
+    pub year: Option<i32>,
+    pub fob_id: String,
+    pub fob_label: String,
+    pub certificate_id: String,
+    pub session_id: String,
+    pub context_source: String,
 }
 
 impl fmt::Display for AppControllerError {
@@ -97,6 +115,7 @@ pub struct AppController {
     active_customer: CustomerMetadata,
     active_vehicle: VehicleMetadata,
     active_key_fob: KeyFobMetadata,
+    active_session_id: String,
     customer_records: Vec<CustomerMetadata>,
     vehicle_records: Vec<VehicleMetadata>,
     key_fob_records: Vec<KeyFobMetadata>,
@@ -129,6 +148,7 @@ impl fmt::Debug for AppController {
             .field("active_customer", &self.active_customer)
             .field("active_vehicle", &self.active_vehicle)
             .field("active_key_fob", &self.active_key_fob)
+            .field("active_session_id", &self.active_session_id)
             .field("cloud_client_cached", &self.cloud_client.is_some())
             .field("schema_initialized", &self.schema_initialized)
             .field("cloud_runtime", &"[REDACTED]")
@@ -171,6 +191,7 @@ impl AppController {
             active_customer: active_customer.clone(),
             active_vehicle: active_vehicle.clone(),
             active_key_fob: active_key_fob.clone(),
+            active_session_id: DEMO_SESSION_ID.to_string(),
             customer_records: vec![active_customer],
             vehicle_records: vec![active_vehicle],
             key_fob_records: vec![active_key_fob],
@@ -405,7 +426,7 @@ impl AppController {
         };
 
         let session = SessionValidationEngine::create_session(
-            DEFAULT_SESSION_ID.to_string(),
+            self.active_session_id.clone(),
             DEFAULT_VEHICLE_ID.to_string(),
             proof.subject_id.clone(),
             300,
@@ -442,7 +463,7 @@ impl AppController {
         let (session, material) = SessionValidationEngine::establish_session(
             DEFAULT_VEHICLE_ID,
             &keyfob.subject_id,
-            DEFAULT_SESSION_ID,
+            &self.active_session_id,
             &vehicle_keypair,
             &keyfob_keypair,
             300,
@@ -453,12 +474,15 @@ impl AppController {
 
         let message = format!(
             "Secure session established: {} for subject {}; key material [REDACTED]; material lengths {:?}",
-            DEFAULT_SESSION_ID, keyfob.subject_id, key_lengths
+            self.active_session_id, keyfob.subject_id, key_lengths
         );
         self.append_protocol_trace("[SESSION]", "X25519 ephemeral key exchange: Completed")?;
         self.append_protocol_trace("[SESSION]", "HKDF-SHA256 derivation: Completed")?;
         self.append_protocol_trace("[SESSION]", "AES-GCM secure channel: Active")?;
-        self.append_protocol_trace("[SESSION]", format!("Session ID: {}", DEFAULT_SESSION_ID))?;
+        self.append_protocol_trace(
+            "[SESSION]",
+            format!("Session ID: {}", self.active_session_id),
+        )?;
         self.append_protocol_trace("[SESSION]", "Session key: [REDACTED]")?;
         self.append_protocol_trace("[SESSION]", "Shared secret: [REDACTED]")?;
         self.append_protocol_trace("[SESSION]", "Ephemeral private keys: [REDACTED]")?;
@@ -933,8 +957,8 @@ impl AppController {
     }
 
     pub fn auto_sync_after_metadata_ready(&mut self) -> Result<String, AppControllerError> {
-        self.run_auto_sync("metadata synced", |controller| {
-            controller.sync_demo_cloud_metadata()
+        self.run_auto_sync("active provisioning metadata synced", |controller| {
+            controller.sync_active_cloud_metadata()
         })
     }
 
@@ -1008,6 +1032,7 @@ impl AppController {
         let message = self.persist_customer_record(customer.clone())?;
         self.active_customer = customer.clone();
         upsert_local_customer(&mut self.customer_records, customer);
+        self.refresh_session_id_for_active_context();
         Ok(message)
     }
 
@@ -1044,6 +1069,7 @@ impl AppController {
             .cloned()
         {
             self.active_customer = customer.clone();
+            self.refresh_session_id_for_active_context();
             return Ok(format!("Customer selected: {}", customer.customer_id));
         }
 
@@ -1052,6 +1078,7 @@ impl AppController {
             Ok(Some(customer)) => {
                 self.active_customer = customer.clone();
                 upsert_local_customer(&mut self.customer_records, customer.clone());
+                self.refresh_session_id_for_active_context();
                 Ok(format!("Customer selected: {}", customer.customer_id))
             }
             Ok(None) => Err(AppControllerError::Backend(
@@ -1113,6 +1140,8 @@ impl AppController {
         let message = self.persist_vehicle_record(vehicle.clone())?;
         self.active_vehicle = vehicle.clone();
         upsert_local_vehicle(&mut self.vehicle_records, vehicle);
+        self.align_active_customer_to_vehicle();
+        self.refresh_session_id_for_active_context();
         Ok(message)
     }
 
@@ -1133,6 +1162,8 @@ impl AppController {
                     .any(|record| record.vehicle_id == self.active_vehicle.vehicle_id)
                 {
                     self.active_vehicle = self.vehicle_records[0].clone();
+                    self.align_active_customer_to_vehicle();
+                    self.refresh_session_id_for_active_context();
                 }
                 Ok(format!("Vehicles loaded: {}", self.vehicle_records.len()))
             }
@@ -1156,6 +1187,8 @@ impl AppController {
             Ok(records) if !records.is_empty() => {
                 self.vehicle_records = records;
                 self.active_vehicle = self.vehicle_records[0].clone();
+                self.align_active_customer_to_vehicle();
+                self.refresh_session_id_for_active_context();
                 Ok(format!("Vehicles loaded: {}", self.vehicle_records.len()))
             }
             Ok(_) => Ok("Vehicles loaded: no cloud records for selected customer".to_string()),
@@ -1171,6 +1204,8 @@ impl AppController {
             .cloned()
         {
             self.active_vehicle = vehicle.clone();
+            self.align_active_customer_to_vehicle();
+            self.refresh_session_id_for_active_context();
             return Ok(format!("Vehicle selected: {}", vehicle.vehicle_id));
         }
 
@@ -1179,6 +1214,8 @@ impl AppController {
             Ok(Some(vehicle)) => {
                 self.active_vehicle = vehicle.clone();
                 upsert_local_vehicle(&mut self.vehicle_records, vehicle.clone());
+                self.align_active_customer_to_vehicle();
+                self.refresh_session_id_for_active_context();
                 Ok(format!("Vehicle selected: {}", vehicle.vehicle_id))
             }
             Ok(None) => Err(AppControllerError::Backend(
@@ -1217,6 +1254,8 @@ impl AppController {
         let message = self.persist_key_fob_record(key_fob.clone())?;
         self.active_key_fob = key_fob.clone();
         upsert_local_key_fob(&mut self.key_fob_records, key_fob);
+        self.align_active_vehicle_to_key_fob();
+        self.refresh_session_id_for_active_context();
         Ok(message)
     }
 
@@ -1237,6 +1276,8 @@ impl AppController {
                     .any(|record| record.fob_id == self.active_key_fob.fob_id)
                 {
                     self.active_key_fob = self.key_fob_records[0].clone();
+                    self.align_active_vehicle_to_key_fob();
+                    self.refresh_session_id_for_active_context();
                 }
                 Ok(format!("Key fobs loaded: {}", self.key_fob_records.len()))
             }
@@ -1260,6 +1301,8 @@ impl AppController {
             Ok(records) if !records.is_empty() => {
                 self.key_fob_records = records;
                 self.active_key_fob = self.key_fob_records[0].clone();
+                self.align_active_vehicle_to_key_fob();
+                self.refresh_session_id_for_active_context();
                 Ok(format!("Key fobs loaded: {}", self.key_fob_records.len()))
             }
             Ok(_) => Ok("Key fobs loaded: no cloud records for selected vehicle".to_string()),
@@ -1275,6 +1318,8 @@ impl AppController {
             .cloned()
         {
             self.active_key_fob = key_fob.clone();
+            self.align_active_vehicle_to_key_fob();
+            self.refresh_session_id_for_active_context();
             return Ok(format!("Key fob selected: {}", key_fob.fob_id));
         }
 
@@ -1283,6 +1328,8 @@ impl AppController {
             Ok(Some(key_fob)) => {
                 self.active_key_fob = key_fob.clone();
                 upsert_local_key_fob(&mut self.key_fob_records, key_fob.clone());
+                self.align_active_vehicle_to_key_fob();
+                self.refresh_session_id_for_active_context();
                 Ok(format!("Key fob selected: {}", key_fob.fob_id))
             }
             Ok(None) => Err(AppControllerError::Backend(
@@ -1334,7 +1381,7 @@ impl AppController {
         Ok(message)
     }
 
-    pub fn sync_demo_cloud_metadata(&mut self) -> Result<String, AppControllerError> {
+    pub fn sync_active_cloud_metadata(&mut self) -> Result<String, AppControllerError> {
         let customer = self.customer_metadata();
         let vehicle = self.vehicle_metadata();
         let key_fob = self.key_fob_metadata();
@@ -1345,13 +1392,20 @@ impl AppController {
                 client.upsert_vehicle(&vehicle).await?;
                 client.upsert_key_fob(&key_fob).await?;
                 Ok::<String, CloudStorageError>(
-                    "Demo metadata synced to cloud database".to_string(),
+                    "Active provisioning metadata synced to cloud database".to_string(),
                 )
             })
             .map_err(Self::map_cloud_error)?;
 
-        self.save_log_entry("[DB]", "Demo metadata synced to company cloud database")?;
+        self.save_log_entry(
+            "[DB]",
+            "Active provisioning metadata synced to company cloud database",
+        )?;
         Ok(message)
+    }
+
+    pub fn sync_demo_cloud_metadata(&mut self) -> Result<String, AppControllerError> {
+        self.sync_active_cloud_metadata()
     }
 
     pub fn sync_certificate_metadata(&mut self) -> Result<String, AppControllerError> {
@@ -1391,14 +1445,33 @@ impl AppController {
     }
 
     pub fn sync_audit_log_records(&mut self) -> Result<String, AppControllerError> {
+        let records = self.active_audit_log_records();
         let client = self.ensure_schema_initialized()?;
         let message = self
-            .run_cloud(async { client.sync_demo_audit_logs().await })
+            .run_cloud(async {
+                for record in &records {
+                    client.upsert_audit_log(record).await?;
+                }
+                Ok::<String, CloudStorageError>("Audit log records synced".to_string())
+            })
             .map_err(Self::map_cloud_error)?;
 
         self.save_log_entry("[DB]", "Audit log records synced")?;
-        self.save_log_entry("[DB]", format!("Audit event synced: {}", AUDIT_LOG_IDS[0]))?;
-        self.save_log_entry("[DB]", format!("Audit event synced: {}", AUDIT_LOG_IDS[6]))?;
+        self.save_log_entry(
+            "[DB]",
+            format!(
+                "Audit context customer: {}",
+                self.active_customer.customer_id
+            ),
+        )?;
+        self.save_log_entry(
+            "[DB]",
+            format!("Audit context vehicle: {}", self.active_vehicle.vehicle_id),
+        )?;
+        self.save_log_entry(
+            "[DB]",
+            format!("Audit context key fob: {}", self.active_key_fob.fob_id),
+        )?;
         self.save_log_entry("[SECURITY]", "Sensitive audit material: [REDACTED]")?;
         Ok(message)
     }
@@ -1547,6 +1620,44 @@ impl AppController {
         self.active_key_fob.clone()
     }
 
+    pub fn get_active_provisioning_context(&self) -> ActiveProvisioningContext {
+        ActiveProvisioningContext {
+            customer_id: self.active_customer.customer_id.clone(),
+            owner_name: self.active_customer.owner_name.clone(),
+            customer_email: self.active_customer.email.clone(),
+            vehicle_id: self.active_vehicle.vehicle_id.clone(),
+            vehicle_display_name: self.active_vehicle.vehicle_display_name.clone(),
+            make: self.active_vehicle.make.clone(),
+            model: self.active_vehicle.model.clone(),
+            year: self.active_vehicle.year,
+            fob_id: self.active_key_fob.fob_id.clone(),
+            fob_label: self.active_key_fob.fob_label.clone(),
+            certificate_id: self.derive_certificate_id_for_active_context(),
+            session_id: self.derive_session_id_for_active_context(),
+            context_source: self.context_source_label().to_string(),
+        }
+    }
+
+    pub fn derive_certificate_id_for_active_context(&self) -> String {
+        if self.active_key_fob.fob_id == DEMO_FOB_ID {
+            DEMO_CERTIFICATE_ID.to_string()
+        } else {
+            format!("CERT-{}", self.active_key_fob.fob_id)
+        }
+    }
+
+    pub fn derive_session_id_for_active_context(&self) -> String {
+        self.active_session_id.clone()
+    }
+
+    pub fn get_cloud_sync_status_summary(&self) -> String {
+        if self.cloud_auto_sync_enabled {
+            "Cloud auto-sync enabled; safe provisioning metadata will sync after successful workflow actions".to_string()
+        } else {
+            "Cloud auto-sync disabled; cloud sync skipped until enabled".to_string()
+        }
+    }
+
     pub fn log_file_paths(&self) -> (PathBuf, PathBuf) {
         (self.gui_log_path(), self.protocol_trace_log_path())
     }
@@ -1597,6 +1708,56 @@ impl AppController {
         key_fob
     }
 
+    fn context_source_label(&self) -> &'static str {
+        let customer_is_demo = self.active_customer.customer_id == DEMO_CUSTOMER_ID;
+        let vehicle_is_demo = self.active_vehicle.vehicle_id == DEMO_VEHICLE_ID;
+        let fob_is_demo = self.active_key_fob.fob_id == DEMO_FOB_ID;
+
+        if customer_is_demo && vehicle_is_demo && fob_is_demo {
+            "DemoDefault"
+        } else if !customer_is_demo && !vehicle_is_demo && !fob_is_demo {
+            "CloudSelected"
+        } else {
+            "MixedSelection"
+        }
+    }
+
+    fn refresh_session_id_for_active_context(&mut self) {
+        if self.context_source_label() == "DemoDefault" {
+            self.active_session_id = DEMO_SESSION_ID.to_string();
+        } else if self.active_session_id == DEMO_SESSION_ID {
+            self.active_session_id = generated_record_id("SESSION");
+        }
+    }
+
+    fn align_active_customer_to_vehicle(&mut self) {
+        if self.active_customer.customer_id == self.active_vehicle.customer_id {
+            return;
+        }
+        if let Some(customer) = self
+            .customer_records
+            .iter()
+            .find(|record| record.customer_id == self.active_vehicle.customer_id)
+            .cloned()
+        {
+            self.active_customer = customer;
+        }
+    }
+
+    fn align_active_vehicle_to_key_fob(&mut self) {
+        if self.active_vehicle.vehicle_id != self.active_key_fob.vehicle_id {
+            if let Some(vehicle) = self
+                .vehicle_records
+                .iter()
+                .find(|record| record.vehicle_id == self.active_key_fob.vehicle_id)
+                .cloned()
+            {
+                self.active_vehicle = vehicle;
+            }
+        }
+        self.align_active_customer_to_vehicle();
+    }
+
     fn certificate_metadata(&self) -> Result<CertificateMetadata, AppControllerError> {
         let certificate = self.current_certificate().ok_or_else(|| {
             AppControllerError::Backend(
@@ -1606,11 +1767,17 @@ impl AppController {
         let issued_at = parse_certificate_timestamp(&certificate.issued_at)?;
         let expires_at = parse_certificate_timestamp(&certificate.expires_at)?;
 
-        Ok(demo_certificate_metadata(
-            Some(fingerprint(&certificate.public_key)),
-            Some(issued_at),
-            Some(expires_at),
-        ))
+        Ok(CertificateMetadata {
+            certificate_id: self.derive_certificate_id_for_active_context(),
+            fob_id: self.active_key_fob.fob_id.clone(),
+            subject_id: self.active_key_fob.fob_id.clone(),
+            issuer: certificate.issuer,
+            issued_at: Some(issued_at),
+            expires_at: Some(expires_at),
+            public_key_fingerprint: Some(fingerprint(&certificate.public_key)),
+            signature_algorithm: CERTIFICATE_SIGNATURE_ALGORITHM.to_string(),
+            certificate_status: ISSUED_CERTIFICATE_STATUS.to_string(),
+        })
     }
 
     fn provisioning_session_metadata(
@@ -1629,10 +1796,50 @@ impl AppController {
         let started_at = parse_session_timestamp(&session.created_at)?;
         let completed_at = Utc::now();
 
-        Ok(demo_provisioning_session_metadata(
-            Some(started_at),
-            Some(completed_at),
-        ))
+        Ok(ProvisioningSessionMetadata {
+            session_id: self.derive_session_id_for_active_context(),
+            customer_id: self.active_customer.customer_id.clone(),
+            vehicle_id: self.active_vehicle.vehicle_id.clone(),
+            fob_id: self.active_key_fob.fob_id.clone(),
+            certificate_id: self.derive_certificate_id_for_active_context(),
+            auth_status: AUTHENTICATED_STATUS.to_string(),
+            session_status: SECURE_SESSION_ESTABLISHED_STATUS.to_string(),
+            access_decision: GRANT_ACCESS_DECISION.to_string(),
+            session_algorithm: SESSION_ALGORITHM.to_string(),
+            started_at: Some(started_at),
+            completed_at: Some(completed_at),
+        })
+    }
+
+    fn active_audit_log_records(&self) -> Vec<AuditLogRecord> {
+        let now = Utc::now();
+        let context = self.get_active_provisioning_context();
+        vec![
+            AuditLogRecord {
+                log_id: generated_record_id("AUDIT"),
+                session_id: context.session_id.clone(),
+                event_type: "provisioning_context".to_string(),
+                event_message: format!(
+                    "Provisioning context selected: customer {}, vehicle {}, key fob {}",
+                    context.customer_id, context.vehicle_id, context.fob_id
+                ),
+                severity: "info".to_string(),
+                actor: "AIACS-GUI".to_string(),
+                created_at: now,
+            },
+            AuditLogRecord {
+                log_id: generated_record_id("AUDIT"),
+                session_id: context.session_id,
+                event_type: "provisioning_status".to_string(),
+                event_message: format!(
+                    "Provisioning finalized for certificate {} with sensitive material [REDACTED]",
+                    context.certificate_id
+                ),
+                severity: "info".to_string(),
+                actor: "AIACS-GUI".to_string(),
+                created_at: now,
+            },
+        ]
     }
 
     fn key_fob_public_key_fingerprint(&self) -> Option<String> {
@@ -2852,6 +3059,109 @@ mod tests {
             .expect("active key fob should select");
         assert!(key_fob_message.contains("Key fob selected"));
         assert!(controller.get_active_key_fob_summary().contains(&fob_id));
+    }
+
+    #[test]
+    fn test_active_provisioning_context_defaults_and_custom_binding() {
+        let mut controller = AppController::new();
+        let default_context = controller.get_active_provisioning_context();
+
+        assert_eq!(default_context.customer_id, DEMO_CUSTOMER_ID);
+        assert_eq!(default_context.vehicle_id, DEMO_VEHICLE_ID);
+        assert_eq!(default_context.fob_id, DEMO_FOB_ID);
+        assert_eq!(default_context.certificate_id, DEMO_CERTIFICATE_ID);
+        assert_eq!(default_context.session_id, DEMO_SESSION_ID);
+        assert_eq!(default_context.context_source, "DemoDefault");
+
+        controller.active_customer = CustomerMetadata {
+            customer_id: "CUST-BIND-TEST".to_string(),
+            owner_name: "Bind Test Owner".to_string(),
+            email: Some("bind@example.com".to_string()),
+            phone: None,
+        };
+        controller.active_vehicle = VehicleMetadata {
+            vehicle_id: "VEH-BIND-TEST".to_string(),
+            customer_id: "CUST-BIND-TEST".to_string(),
+            vehicle_display_name: "Bind Test Vehicle".to_string(),
+            make: Some("Nissan".to_string()),
+            model: Some("Magnite".to_string()),
+            year: Some(2021),
+            vin: None,
+            registration_number: None,
+            provisioning_status: Some(DEFAULT_PROVISIONING_STATUS.to_string()),
+        };
+        controller.active_key_fob = KeyFobMetadata {
+            fob_id: "FOB-BIND-TEST".to_string(),
+            vehicle_id: "VEH-BIND-TEST".to_string(),
+            customer_id: "CUST-BIND-TEST".to_string(),
+            fob_label: "Bind Test Fob".to_string(),
+            public_key_fingerprint: None,
+            certificate_status: Some(DEFAULT_CERTIFICATE_STATUS.to_string()),
+            provisioning_status: Some(DEFAULT_PROVISIONING_STATUS.to_string()),
+        };
+        controller.refresh_session_id_for_active_context();
+
+        let context = controller.get_active_provisioning_context();
+        assert_eq!(context.customer_id, "CUST-BIND-TEST");
+        assert_eq!(context.vehicle_id, "VEH-BIND-TEST");
+        assert_eq!(context.fob_id, "FOB-BIND-TEST");
+        assert_eq!(context.certificate_id, "CERT-FOB-BIND-TEST");
+        assert_ne!(context.session_id, DEMO_SESSION_ID);
+        assert_eq!(context.context_source, "CloudSelected");
+    }
+
+    #[test]
+    fn test_certificate_and_session_metadata_use_active_context() {
+        let mut controller = AppController::new();
+        controller.active_customer = CustomerMetadata {
+            customer_id: "CUST-META-TEST".to_string(),
+            owner_name: "Meta Owner".to_string(),
+            email: Some("meta@example.com".to_string()),
+            phone: None,
+        };
+        controller.active_vehicle = VehicleMetadata {
+            vehicle_id: "VEH-META-TEST".to_string(),
+            customer_id: "CUST-META-TEST".to_string(),
+            vehicle_display_name: "Meta Vehicle".to_string(),
+            make: Some("Nissan".to_string()),
+            model: Some("Magnite".to_string()),
+            year: Some(2021),
+            vin: None,
+            registration_number: None,
+            provisioning_status: Some(DEFAULT_PROVISIONING_STATUS.to_string()),
+        };
+        controller.active_key_fob = KeyFobMetadata {
+            fob_id: "FOB-META-TEST".to_string(),
+            vehicle_id: "VEH-META-TEST".to_string(),
+            customer_id: "CUST-META-TEST".to_string(),
+            fob_label: "Meta Fob".to_string(),
+            public_key_fingerprint: None,
+            certificate_status: Some(DEFAULT_CERTIFICATE_STATUS.to_string()),
+            provisioning_status: Some(DEFAULT_PROVISIONING_STATUS.to_string()),
+        };
+        controller.refresh_session_id_for_active_context();
+        controller
+            .issue_keyfob_certificate()
+            .expect("certificate should issue for metadata test");
+        controller
+            .establish_secure_session_demo()
+            .expect("session should establish for metadata test");
+
+        let certificate = controller
+            .certificate_metadata()
+            .expect("certificate metadata should exist");
+        assert_eq!(certificate.certificate_id, "CERT-FOB-META-TEST");
+        assert_eq!(certificate.fob_id, "FOB-META-TEST");
+        assert_eq!(certificate.subject_id, "FOB-META-TEST");
+
+        let session = controller
+            .provisioning_session_metadata()
+            .expect("session metadata should exist");
+        assert_eq!(session.customer_id, "CUST-META-TEST");
+        assert_eq!(session.vehicle_id, "VEH-META-TEST");
+        assert_eq!(session.fob_id, "FOB-META-TEST");
+        assert_eq!(session.certificate_id, "CERT-FOB-META-TEST");
+        assert_ne!(session.session_id, DEMO_SESSION_ID);
     }
 
     #[test]
