@@ -201,12 +201,17 @@ enum CloudOperation {
     SyncCaEncryptedKeyBlob,
     SyncKeyFobEncryptedKeyBlob,
     SyncEncryptedKeyBlobs,
-    AutoMetadata,
-    AutoCertificate,
-    AutoEncryptedKeyBlob,
-    AutoSession,
-    AutoAuditLogs,
-    AutoDiagnosticResults,
+    ProvisioningConnectVehicle,
+    ProvisioningDetectKeyFob,
+    ProvisioningRegisterKeyFob,
+    ProvisioningInitializeTrust,
+    ProvisioningIssueCertificate,
+    ProvisioningGenerateChallenge,
+    ProvisioningSignCanonicalPayload,
+    ProvisioningVerifyAuthentication,
+    ProvisioningActivateSession,
+    ProvisioningFinalize,
+    ProvisioningDiagnostics,
 }
 
 #[derive(Debug, Clone)]
@@ -570,94 +575,49 @@ impl Application for AIACSApp {
                     self.push_log("[ERROR]", format!("Credential rotation failed: {}", error));
                 }
             },
-            Message::ConnectVehicle => match self.controller.connect_vehicle() {
-                Ok(message) => {
-                    self.workflow_state.vehicle_connected = true;
-                    self.status.top_badge = "Vehicle Connected".to_string();
-                    self.selected_detail = message.clone();
-                    self.push_log("[INFO]", message);
-                }
-                Err(error) => {
-                    self.selected_detail = format!("Vehicle connection failed: {}", error);
-                    self.push_log("[ERROR]", format!("Vehicle connection failed: {}", error));
-                }
-            },
-            Message::DetectKeyFob => match self.controller.detect_key_fob() {
-                Ok(message) => {
-                    self.workflow_state.keyfob_detected = true;
-                    self.management_state.keyfob_note = format!("{} detected", KEY_FOB_LABEL);
-                    self.selected_detail = message.clone();
-                    self.push_log("[INFO]", message);
-                }
-                Err(error) => {
-                    self.selected_detail = format!("Key fob detection failed: {}", error);
-                    self.push_log("[ERROR]", format!("Key fob detection failed: {}", error));
-                }
-            },
-            Message::InitializeVehicleTrust => match self.controller.initialize_ca() {
-                Ok(message) => {
-                    self.workflow_state.trust_initialized = true;
-                    self.status.trust_status = "Initialized".to_string();
-                    self.status.top_badge = "Trust Ready".to_string();
-                    self.selected_detail = message.clone();
-                    self.push_log("[INFO]", format!("Vehicle trust initialized: {}", message));
-                    self.cloud_sync_encrypted_key_status = "Cloud sync running...".to_string();
-                    return self.run_cloud_operation(CloudOperation::AutoEncryptedKeyBlob);
-                }
-                Err(error) => {
-                    self.status.trust_status = "Error".to_string();
-                    self.selected_detail =
-                        format!("Vehicle trust initialization failed: {}", error);
-                    self.push_log(
-                        "[WARN]",
-                        format!("Vehicle trust initialization failed: {}", error),
-                    );
-                }
-            },
-            Message::RegisterDigitalKeyFob => match self.controller.register_digital_key_fob() {
-                Ok(message) => {
-                    self.workflow_state.keyfob_registered = true;
-                    self.management_state.keyfob_note = format!("{} registered", KEY_FOB_LABEL);
-                    self.status.key_fob_status = "Registered".to_string();
-                    self.status.top_badge = "Key Fob Registered".to_string();
-                    self.selected_detail = message.clone();
-                    self.push_log("[INFO]", format!("Digital key fob registered: {}", message));
-                    self.cloud_sync_metadata_status = "Cloud sync running...".to_string();
-                    return self.run_cloud_operation(CloudOperation::AutoMetadata);
-                }
-                Err(error) => {
-                    self.status.key_fob_status = "Error".to_string();
-                    self.selected_detail =
-                        format!("Digital key fob registration failed: {}", error);
-                    self.push_log(
-                        "[WARN]",
-                        format!("Digital key fob registration failed: {}", error),
-                    );
-                }
-            },
-            Message::IssueCertificate => match self.controller.issue_keyfob_certificate() {
-                Ok(message) => {
-                    self.workflow_state.trust_initialized = true;
-                    self.workflow_state.keyfob_registered = true;
-                    self.workflow_state.certificate_issued = true;
-                    self.status.trust_status = "Initialized".to_string();
-                    self.status.key_fob_status = "Registered".to_string();
-                    self.status.certificate_status = "Issued".to_string();
-                    self.status.top_badge = "Access Certificate Issued".to_string();
-                    self.selected_detail = message.clone();
-                    self.push_log("[INFO]", format!("Access certificate issued: {}", message));
-                    self.cloud_sync_certificate_status = "Cloud sync running...".to_string();
-                    return self.run_cloud_operation(CloudOperation::AutoCertificate);
-                }
-                Err(error) => {
-                    self.status.certificate_status = "Error".to_string();
-                    self.selected_detail = format!("Access certificate issuance failed: {}", error);
-                    self.push_log(
-                        "[WARN]",
-                        format!("Access certificate issuance failed: {}", error),
-                    );
-                }
-            },
+            Message::ConnectVehicle => {
+                self.workflow_state.vehicle_connected = true;
+                self.status.top_badge = "Vehicle Connected".to_string();
+                self.cloud_sync_metadata_status = "Syncing metadata...".to_string();
+                self.begin_cloud_operation("Connecting vehicle and syncing metadata...");
+                return self.run_cloud_operation(CloudOperation::ProvisioningConnectVehicle);
+            }
+            Message::DetectKeyFob => {
+                self.workflow_state.keyfob_detected = true;
+                self.management_state.keyfob_note = format!("{} detected", KEY_FOB_LABEL);
+                self.cloud_sync_metadata_status = "Syncing metadata...".to_string();
+                self.begin_cloud_operation("Detecting key fob and syncing metadata...");
+                return self.run_cloud_operation(CloudOperation::ProvisioningDetectKeyFob);
+            }
+            Message::InitializeVehicleTrust => {
+                self.workflow_state.trust_initialized = true;
+                self.status.trust_status = "Initialized".to_string();
+                self.status.top_badge = "Trust Ready".to_string();
+                self.cloud_sync_encrypted_key_status = "Syncing encrypted key blob...".to_string();
+                self.begin_cloud_operation("Initializing vehicle trust...");
+                return self.run_cloud_operation(CloudOperation::ProvisioningInitializeTrust);
+            }
+            Message::RegisterDigitalKeyFob => {
+                self.workflow_state.keyfob_registered = true;
+                self.management_state.keyfob_note = format!("{} registered", KEY_FOB_LABEL);
+                self.status.key_fob_status = "Registered".to_string();
+                self.status.top_badge = "Key Fob Registered".to_string();
+                self.cloud_sync_metadata_status = "Syncing metadata...".to_string();
+                self.begin_cloud_operation("Registering digital key fob...");
+                return self.run_cloud_operation(CloudOperation::ProvisioningRegisterKeyFob);
+            }
+            Message::IssueCertificate => {
+                self.workflow_state.trust_initialized = true;
+                self.workflow_state.keyfob_registered = true;
+                self.workflow_state.certificate_issued = true;
+                self.status.trust_status = "Initialized".to_string();
+                self.status.key_fob_status = "Registered".to_string();
+                self.status.certificate_status = "Issued".to_string();
+                self.status.top_badge = "Access Certificate Issued".to_string();
+                self.cloud_sync_certificate_status = "Syncing certificate metadata...".to_string();
+                self.begin_cloud_operation("Issuing certificate and syncing metadata...");
+                return self.run_cloud_operation(CloudOperation::ProvisioningIssueCertificate);
+            }
             Message::ViewCertificateDetails => {
                 self.workflow_state.certificate_viewed = true;
                 self.management_state.keyfob_note =
@@ -666,104 +626,52 @@ impl Application for AIACSApp {
                     "Certificate details are shown in the Protocol Artifact Viewer.".to_string();
                 self.push_log("[INFO]", "Certificate details viewed");
             }
-            Message::GenerateChallenge => match self.controller.generate_authentication_challenge()
-            {
-                Ok(message) => {
-                    self.workflow_state.challenge_generated = true;
-                    self.selected_detail = message.clone();
-                    self.push_log("[AUTH]", message);
-                }
-                Err(error) => {
-                    self.selected_detail = format!("Challenge generation failed: {}", error);
-                    self.push_log("[WARN]", format!("Challenge generation failed: {}", error));
-                }
-            },
-            Message::SignCanonicalPayload => match self.controller.sign_canonical_auth_payload() {
-                Ok(message) => {
-                    self.workflow_state.payload_signed = true;
-                    self.selected_detail = message.clone();
-                    self.push_log("[AUTH]", message);
-                }
-                Err(error) => {
-                    self.selected_detail = format!("Canonical payload signing failed: {}", error);
-                    self.push_log(
-                        "[WARN]",
-                        format!("Canonical payload signing failed: {}", error),
-                    );
-                }
-            },
+            Message::GenerateChallenge => {
+                self.workflow_state.challenge_generated = true;
+                self.cloud_sync_metadata_status = "No sync required".to_string();
+                self.begin_cloud_operation("Generating authentication challenge...");
+                return self.run_cloud_operation(CloudOperation::ProvisioningGenerateChallenge);
+            }
+            Message::SignCanonicalPayload => {
+                self.workflow_state.payload_signed = true;
+                self.cloud_sync_metadata_status = "No sync required".to_string();
+                self.begin_cloud_operation("Signing canonical authentication payload...");
+                return self.run_cloud_operation(CloudOperation::ProvisioningSignCanonicalPayload);
+            }
             Message::VerifyAuthentication => {
-                match self.controller.run_legitimate_authentication_demo() {
-                    Ok(message) => {
-                        self.workflow_state.trust_initialized = true;
-                        self.workflow_state.keyfob_registered = true;
-                        self.workflow_state.certificate_issued = true;
-                        self.workflow_state.authentication_verified = true;
-                        self.status.trust_status = "Initialized".to_string();
-                        self.status.key_fob_status = "Registered".to_string();
-                        self.status.certificate_status = "Issued".to_string();
-                        self.status.authentication_status = "Verified".to_string();
-                        self.status.access_decision = "Access Granted".to_string();
-                        self.status.top_badge = "Key Verified".to_string();
-                        self.selected_detail = message.clone();
-                        self.push_log(
-                            "[AUTH]",
-                            format!("Key authentication verified: {}", message),
-                        );
-                    }
-                    Err(error) => {
-                        self.status.authentication_status = "Failed".to_string();
-                        self.status.access_decision = "Error".to_string();
-                        self.selected_detail = format!("Key authentication failed: {}", error);
-                        self.push_log("[WARN]", format!("Key authentication failed: {}", error));
-                    }
-                }
+                self.workflow_state.trust_initialized = true;
+                self.workflow_state.keyfob_registered = true;
+                self.workflow_state.certificate_issued = true;
+                self.workflow_state.authentication_verified = true;
+                self.status.trust_status = "Initialized".to_string();
+                self.status.key_fob_status = "Registered".to_string();
+                self.status.certificate_status = "Issued".to_string();
+                self.status.authentication_status = "Verified".to_string();
+                self.status.access_decision = "Access Granted".to_string();
+                self.status.top_badge = "Key Verified".to_string();
+                self.cloud_sync_session_status = "Pending secure session activation".to_string();
+                self.begin_cloud_operation("Verifying key authentication...");
+                return self.run_cloud_operation(CloudOperation::ProvisioningVerifyAuthentication);
             }
             Message::ActivateSecureChannel => {
-                match self.controller.establish_secure_session_demo() {
-                    Ok(_message) => {
-                        self.workflow_state.trust_initialized = true;
-                        self.workflow_state.keyfob_registered = true;
-                        self.workflow_state.certificate_issued = true;
-                        self.workflow_state.session_active = true;
-                        self.status.trust_status = "Initialized".to_string();
-                        self.status.key_fob_status = "Registered".to_string();
-                        self.status.certificate_status = "Issued".to_string();
-                        self.status.session_status = "Active".to_string();
-                        self.status.top_badge = "Session Active".to_string();
-                        self.selected_detail =
-                            "Secure access session activated for the provisioned key fob."
-                                .to_string();
-                        self.push_log(
-                            "[SESSION]",
-                            "Secure access session activated for provisioned key fob",
-                        );
-                        self.cloud_sync_session_status = "Cloud sync running...".to_string();
-                        return self.run_cloud_operation(CloudOperation::AutoSession);
-                    }
-                    Err(error) => {
-                        self.status.session_status = "Error".to_string();
-                        self.selected_detail =
-                            format!("Secure session activation failed: {}", error);
-                        self.push_log(
-                            "[WARN]",
-                            format!("Secure session activation failed: {}", error),
-                        );
-                    }
-                }
+                self.workflow_state.trust_initialized = true;
+                self.workflow_state.keyfob_registered = true;
+                self.workflow_state.certificate_issued = true;
+                self.workflow_state.session_active = true;
+                self.status.trust_status = "Initialized".to_string();
+                self.status.key_fob_status = "Registered".to_string();
+                self.status.certificate_status = "Issued".to_string();
+                self.status.session_status = "Active".to_string();
+                self.status.top_badge = "Session Active".to_string();
+                self.cloud_sync_session_status = "Syncing provisioning session...".to_string();
+                self.begin_cloud_operation("Activating secure session...");
+                return self.run_cloud_operation(CloudOperation::ProvisioningActivateSession);
             }
-            Message::LaunchDiagnosticsTool => match self.controller.launch_diagnostics_tool() {
-                Ok(message) => {
-                    self.selected_detail = message.clone();
-                    self.push_log("[INFO]", message);
-                    self.cloud_sync_diagnostic_status = "Cloud sync running...".to_string();
-                    return self.run_cloud_operation(CloudOperation::AutoDiagnosticResults);
-                }
-                Err(error) => {
-                    self.selected_detail = format!("Diagnostics launch failed: {}", error);
-                    self.push_log("[ERROR]", format!("Diagnostics launch failed: {}", error));
-                }
-            },
+            Message::LaunchDiagnosticsTool => {
+                self.cloud_sync_diagnostic_status = "Syncing diagnostic results...".to_string();
+                self.begin_cloud_operation("Launching diagnostics tool...");
+                return self.run_cloud_operation(CloudOperation::ProvisioningDiagnostics);
+            }
             Message::CheckCloudConnection => {
                 self.begin_cloud_operation("Checking cloud connection...");
                 return self.run_cloud_operation(CloudOperation::CheckConnection);
@@ -844,23 +752,12 @@ impl Application for AIACSApp {
                     self.push_log("[ERROR]", format!("Save / Export Logs failed: {}", error));
                 }
             },
-            Message::ExportProvisioningReport => match self.controller.export_provisioning_report()
-            {
-                Ok(message) => {
-                    self.workflow_state.report_exported = true;
-                    self.selected_detail = message.clone();
-                    self.push_log("[INFO]", message);
-                    self.cloud_sync_audit_status = "Cloud sync running...".to_string();
-                    return self.run_cloud_operation(CloudOperation::AutoAuditLogs);
-                }
-                Err(error) => {
-                    self.selected_detail = format!("Provisioning report export failed: {}", error);
-                    self.push_log(
-                        "[ERROR]",
-                        format!("Provisioning report export failed: {}", error),
-                    );
-                }
-            },
+            Message::ExportProvisioningReport => {
+                self.workflow_state.report_exported = true;
+                self.cloud_sync_audit_status = "Syncing audit logs...".to_string();
+                self.begin_cloud_operation("Finalizing provisioning...");
+                return self.run_cloud_operation(CloudOperation::ProvisioningFinalize);
+            }
         }
 
         Command::none()
@@ -1069,23 +966,64 @@ impl AIACSApp {
                     "Protection: Client-side AES-256-GCM encryption before upload",
                 );
             }
-            CloudOperation::AutoMetadata => {
-                self.record_auto_sync_result("Metadata", Ok(message));
+            CloudOperation::ProvisioningConnectVehicle => {
+                self.workflow_state.vehicle_connected = true;
+                self.status.top_badge = "Vehicle Connected".to_string();
+                self.record_provisioning_cloud_result("Metadata", "[INFO]", message);
             }
-            CloudOperation::AutoCertificate => {
-                self.record_auto_sync_result("Certificate", Ok(message));
+            CloudOperation::ProvisioningDetectKeyFob => {
+                self.workflow_state.keyfob_detected = true;
+                self.record_provisioning_cloud_result("Metadata", "[INFO]", message);
             }
-            CloudOperation::AutoEncryptedKeyBlob => {
-                self.record_auto_sync_result("Encrypted Key Blob", Ok(message));
+            CloudOperation::ProvisioningRegisterKeyFob => {
+                self.workflow_state.keyfob_registered = true;
+                self.status.key_fob_status = "Registered".to_string();
+                self.status.top_badge = "Key Fob Registered".to_string();
+                self.record_provisioning_cloud_result("Metadata", "[INFO]", message);
             }
-            CloudOperation::AutoSession => {
-                self.record_auto_sync_result("Session", Ok(message));
+            CloudOperation::ProvisioningInitializeTrust => {
+                self.workflow_state.trust_initialized = true;
+                self.status.trust_status = "Initialized".to_string();
+                self.status.top_badge = "Trust Ready".to_string();
+                self.record_provisioning_cloud_result("Encrypted Key Blob", "[INFO]", message);
             }
-            CloudOperation::AutoAuditLogs => {
-                self.record_auto_sync_result("Audit Logs", Ok(message));
+            CloudOperation::ProvisioningIssueCertificate => {
+                self.workflow_state.trust_initialized = true;
+                self.workflow_state.keyfob_registered = true;
+                self.workflow_state.certificate_issued = true;
+                self.status.trust_status = "Initialized".to_string();
+                self.status.key_fob_status = "Registered".to_string();
+                self.status.certificate_status = "Issued".to_string();
+                self.status.top_badge = "Access Certificate Issued".to_string();
+                self.record_provisioning_cloud_result("Certificate", "[INFO]", message);
             }
-            CloudOperation::AutoDiagnosticResults => {
-                self.record_auto_sync_result("Diagnostic Results", Ok(message));
+            CloudOperation::ProvisioningGenerateChallenge => {
+                self.workflow_state.challenge_generated = true;
+                self.record_provisioning_cloud_result("Metadata", "[AUTH]", message);
+            }
+            CloudOperation::ProvisioningSignCanonicalPayload => {
+                self.workflow_state.payload_signed = true;
+                self.record_provisioning_cloud_result("Metadata", "[AUTH]", message);
+            }
+            CloudOperation::ProvisioningVerifyAuthentication => {
+                self.workflow_state.authentication_verified = true;
+                self.status.authentication_status = "Verified".to_string();
+                self.status.access_decision = "Access Granted".to_string();
+                self.status.top_badge = "Key Verified".to_string();
+                self.record_provisioning_cloud_result("Session", "[AUTH]", message);
+            }
+            CloudOperation::ProvisioningActivateSession => {
+                self.workflow_state.session_active = true;
+                self.status.session_status = "Active".to_string();
+                self.status.top_badge = "Session Active".to_string();
+                self.record_provisioning_cloud_result("Session", "[SESSION]", message);
+            }
+            CloudOperation::ProvisioningFinalize => {
+                self.workflow_state.report_exported = true;
+                self.record_provisioning_cloud_result("Audit Logs", "[INFO]", message);
+            }
+            CloudOperation::ProvisioningDiagnostics => {
+                self.record_provisioning_cloud_result("Diagnostic Results", "[INFO]", message);
             }
         }
     }
@@ -1166,31 +1104,77 @@ impl AIACSApp {
             | CloudOperation::SyncEncryptedKeyBlobs => {
                 self.record_encrypted_key_sync_error(AppControllerError::Backend(error));
             }
-            CloudOperation::AutoMetadata => {
-                self.record_auto_sync_result("Metadata", Err(AppControllerError::Backend(error)));
+            CloudOperation::ProvisioningConnectVehicle => {
+                self.workflow_state.vehicle_connected = false;
+                self.record_provisioning_cloud_error("Metadata", "Vehicle connection", error);
             }
-            CloudOperation::AutoCertificate => {
-                self.record_auto_sync_result(
-                    "Certificate",
-                    Err(AppControllerError::Backend(error)),
+            CloudOperation::ProvisioningDetectKeyFob => {
+                self.workflow_state.keyfob_detected = false;
+                self.record_provisioning_cloud_error("Metadata", "Key fob detection", error);
+            }
+            CloudOperation::ProvisioningRegisterKeyFob => {
+                self.workflow_state.keyfob_registered = false;
+                self.status.key_fob_status = "Error".to_string();
+                self.record_provisioning_cloud_error(
+                    "Metadata",
+                    "Digital key fob registration",
+                    error,
                 );
             }
-            CloudOperation::AutoEncryptedKeyBlob => {
-                self.record_auto_sync_result(
+            CloudOperation::ProvisioningInitializeTrust => {
+                self.workflow_state.trust_initialized = false;
+                self.status.trust_status = "Error".to_string();
+                self.record_provisioning_cloud_error(
                     "Encrypted Key Blob",
-                    Err(AppControllerError::Backend(error)),
+                    "Vehicle trust initialization",
+                    error,
                 );
             }
-            CloudOperation::AutoSession => {
-                self.record_auto_sync_result("Session", Err(AppControllerError::Backend(error)));
+            CloudOperation::ProvisioningIssueCertificate => {
+                self.workflow_state.certificate_issued = false;
+                self.status.certificate_status = "Error".to_string();
+                self.record_provisioning_cloud_error(
+                    "Certificate",
+                    "Access certificate issuance",
+                    error,
+                );
             }
-            CloudOperation::AutoAuditLogs => {
-                self.record_auto_sync_result("Audit Logs", Err(AppControllerError::Backend(error)));
+            CloudOperation::ProvisioningGenerateChallenge => {
+                self.workflow_state.challenge_generated = false;
+                self.record_provisioning_cloud_error("Metadata", "Challenge generation", error);
             }
-            CloudOperation::AutoDiagnosticResults => {
-                self.record_auto_sync_result(
+            CloudOperation::ProvisioningSignCanonicalPayload => {
+                self.workflow_state.payload_signed = false;
+                self.record_provisioning_cloud_error(
+                    "Metadata",
+                    "Canonical payload signing",
+                    error,
+                );
+            }
+            CloudOperation::ProvisioningVerifyAuthentication => {
+                self.workflow_state.authentication_verified = false;
+                self.status.authentication_status = "Failed".to_string();
+                self.status.access_decision = "Error".to_string();
+                self.record_provisioning_cloud_error("Session", "Key authentication", error);
+            }
+            CloudOperation::ProvisioningActivateSession => {
+                self.workflow_state.session_active = false;
+                self.status.session_status = "Error".to_string();
+                self.record_provisioning_cloud_error("Session", "Secure session activation", error);
+            }
+            CloudOperation::ProvisioningFinalize => {
+                self.workflow_state.report_exported = false;
+                self.record_provisioning_cloud_error(
+                    "Audit Logs",
+                    "Provisioning finalization",
+                    error,
+                );
+            }
+            CloudOperation::ProvisioningDiagnostics => {
+                self.record_provisioning_cloud_error(
                     "Diagnostic Results",
-                    Err(AppControllerError::Backend(error)),
+                    "Diagnostics launch",
+                    error,
                 );
             }
         }
@@ -3307,25 +3291,37 @@ impl AIACSApp {
         self.push_log("[DB]", self.last_diagnostic_result_sync_status.clone());
     }
 
-    fn record_auto_sync_result(
+    fn record_provisioning_cloud_result(
         &mut self,
         area: &'static str,
-        result: Result<String, AppControllerError>,
+        tag: &'static str,
+        message: String,
     ) {
-        let message = match result {
-            Ok(message) => message,
-            Err(error) => format!("Cloud auto-sync failed: {}", error),
-        };
-        let status = if message.contains("completed") {
-            "Synced"
-        } else if message.contains("skipped") {
-            "Skipped"
-        } else if message.contains("failed") {
-            "Failed"
-        } else {
-            "Pending"
-        };
+        let cloud_status = cloud_status_from_provisioning_result(&message);
+        self.management_state.cloud_sync_status = format!("Cloud sync {}", cloud_status);
+        self.selected_detail = message.clone();
+        self.update_cloud_sync_area(area, &cloud_status);
+        if cloud_status == "Synced" {
+            self.cloud_status = "Connected".to_string();
+        }
+        self.push_log(tag, message);
+        self.push_log("[SECURITY]", "Cloud secret material: [REDACTED]");
+    }
 
+    fn record_provisioning_cloud_error(
+        &mut self,
+        area: &'static str,
+        action_name: &'static str,
+        error: String,
+    ) {
+        let message = format!("{} failed: {}", action_name, error);
+        self.management_state.cloud_sync_status = message.clone();
+        self.selected_detail = message.clone();
+        self.update_cloud_sync_area(area, "Failed");
+        self.push_log("[ERROR]", message);
+    }
+
+    fn update_cloud_sync_area(&mut self, area: &'static str, status: &str) {
         match area {
             "Metadata" => self.cloud_sync_metadata_status = status.to_string(),
             "Certificate" => self.cloud_sync_certificate_status = status.to_string(),
@@ -3334,14 +3330,6 @@ impl AIACSApp {
             "Audit Logs" => self.cloud_sync_audit_status = status.to_string(),
             "Diagnostic Results" => self.cloud_sync_diagnostic_status = status.to_string(),
             _ => {}
-        }
-
-        if status == "Synced" {
-            self.cloud_status = "Connected".to_string();
-        }
-        self.push_log("[DB]", message.clone());
-        if status == "Synced" {
-            self.push_log("[SECURITY]", "Cloud secret material: [REDACTED]");
         }
     }
 
@@ -3713,12 +3701,39 @@ fn perform_cloud_operation(
         CloudOperation::SyncCaEncryptedKeyBlob => controller.sync_ca_encrypted_key_blob(),
         CloudOperation::SyncKeyFobEncryptedKeyBlob => controller.sync_key_fob_encrypted_key_blob(),
         CloudOperation::SyncEncryptedKeyBlobs => controller.sync_encrypted_key_blobs(),
-        CloudOperation::AutoMetadata => controller.auto_sync_after_metadata_ready(),
-        CloudOperation::AutoCertificate => controller.auto_sync_after_certificate_issued(),
-        CloudOperation::AutoEncryptedKeyBlob => controller.auto_sync_after_trust_initialized(),
-        CloudOperation::AutoSession => controller.auto_sync_after_secure_session_established(),
-        CloudOperation::AutoAuditLogs => controller.auto_sync_after_provisioning_finalized(),
-        CloudOperation::AutoDiagnosticResults => controller.auto_sync_after_diagnostics_completed(),
+        CloudOperation::ProvisioningConnectVehicle => controller
+            .connect_vehicle_with_cloud_sync()
+            .map(|result| result.to_string()),
+        CloudOperation::ProvisioningDetectKeyFob => controller
+            .detect_key_fob_with_cloud_sync()
+            .map(|result| result.to_string()),
+        CloudOperation::ProvisioningRegisterKeyFob => controller
+            .register_key_fob_with_cloud_sync()
+            .map(|result| result.to_string()),
+        CloudOperation::ProvisioningInitializeTrust => controller
+            .initialize_vehicle_trust_with_cloud_sync()
+            .map(|result| result.to_string()),
+        CloudOperation::ProvisioningIssueCertificate => controller
+            .issue_access_certificate_with_cloud_sync()
+            .map(|result| result.to_string()),
+        CloudOperation::ProvisioningGenerateChallenge => controller
+            .generate_challenge_with_cloud_sync()
+            .map(|result| result.to_string()),
+        CloudOperation::ProvisioningSignCanonicalPayload => controller
+            .sign_canonical_payload_with_cloud_sync()
+            .map(|result| result.to_string()),
+        CloudOperation::ProvisioningVerifyAuthentication => controller
+            .verify_authentication_with_cloud_sync()
+            .map(|result| result.to_string()),
+        CloudOperation::ProvisioningActivateSession => controller
+            .activate_secure_session_with_cloud_sync()
+            .map(|result| result.to_string()),
+        CloudOperation::ProvisioningFinalize => controller
+            .finalize_provisioning_with_cloud_sync()
+            .map(|result| result.to_string()),
+        CloudOperation::ProvisioningDiagnostics => controller
+            .run_diagnostics_with_cloud_sync()
+            .map(|result| result.to_string()),
     }
     .map_err(|error| error.to_string());
 
@@ -3736,6 +3751,15 @@ fn optional_trimmed(value: &str) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+fn cloud_status_from_provisioning_result(message: &str) -> String {
+    message
+        .split("Cloud Sync: ")
+        .nth(1)
+        .and_then(|tail| tail.split(" |").next())
+        .unwrap_or("Pending")
+        .to_string()
 }
 
 fn simple_email_is_valid(value: &str) -> bool {

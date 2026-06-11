@@ -64,6 +64,44 @@ pub struct ActiveProvisioningContext {
     pub context_source: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvisioningCloudSyncResult {
+    pub action_name: String,
+    pub provisioning_status: String,
+    pub local_success: bool,
+    pub cloud_sync_attempted: bool,
+    pub cloud_sync_status: String,
+    pub cloud_table_updated: String,
+    pub safe_error: Option<String>,
+    pub active_customer_id: String,
+    pub active_vehicle_id: String,
+    pub active_fob_id: String,
+    pub active_certificate_id: String,
+    pub active_session_id: String,
+}
+
+impl fmt::Display for ProvisioningCloudSyncResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} | Provisioning: {} | Cloud Sync: {} | Table: {} | Customer: {} | Vehicle: {} | Key Fob: {} | Certificate: {} | Session: {}",
+            self.action_name,
+            self.provisioning_status,
+            self.cloud_sync_status,
+            self.cloud_table_updated,
+            self.active_customer_id,
+            self.active_vehicle_id,
+            self.active_fob_id,
+            self.active_certificate_id,
+            self.active_session_id
+        )?;
+        if let Some(error) = &self.safe_error {
+            write!(f, " | Safe Error: {}", error)?;
+        }
+        Ok(())
+    }
+}
+
 impl fmt::Display for AppControllerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -998,6 +1036,135 @@ impl AppController {
         self.run_auto_sync("diagnostic results synced", |controller| {
             controller.sync_diagnostic_result_records()
         })
+    }
+
+    pub fn connect_vehicle_with_cloud_sync(
+        &mut self,
+    ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
+        self.connect_vehicle()?;
+        Ok(self.provisioning_sync_result(
+            "Connect Vehicle",
+            "Vehicle connected",
+            "customers, vehicles, key_fobs",
+            |controller| controller.sync_active_cloud_metadata(),
+        ))
+    }
+
+    pub fn detect_key_fob_with_cloud_sync(
+        &mut self,
+    ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
+        self.detect_key_fob()?;
+        Ok(self.provisioning_sync_result(
+            "Detect Key Fob",
+            "Key fob detected",
+            "key_fobs",
+            |controller| controller.sync_key_fob_metadata(),
+        ))
+    }
+
+    pub fn register_key_fob_with_cloud_sync(
+        &mut self,
+    ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
+        self.register_digital_key_fob()?;
+        Ok(self.provisioning_sync_result(
+            "Register Digital Key Fob",
+            "Key fob registered",
+            "key_fobs",
+            |controller| controller.sync_key_fob_metadata(),
+        ))
+    }
+
+    pub fn initialize_vehicle_trust_with_cloud_sync(
+        &mut self,
+    ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
+        self.initialize_ca()?;
+        Ok(self.provisioning_sync_result(
+            "Initialize Vehicle Trust",
+            "Vehicle trust initialized",
+            "encrypted_keys",
+            |controller| controller.sync_ca_encrypted_key_blob(),
+        ))
+    }
+
+    pub fn issue_access_certificate_with_cloud_sync(
+        &mut self,
+    ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
+        self.issue_keyfob_certificate()?;
+        Ok(self.provisioning_sync_result(
+            "Issue Access Certificate",
+            "Certificate issued",
+            "certificates",
+            |controller| controller.sync_certificate_metadata(),
+        ))
+    }
+
+    pub fn generate_challenge_with_cloud_sync(
+        &mut self,
+    ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
+        self.generate_authentication_challenge()?;
+        Ok(self.no_cloud_sync_result(
+            "Generate Challenge",
+            "Challenge generated",
+            "No sync required",
+        ))
+    }
+
+    pub fn sign_canonical_payload_with_cloud_sync(
+        &mut self,
+    ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
+        self.sign_canonical_auth_payload()?;
+        Ok(self.no_cloud_sync_result(
+            "Sign Canonical Payload",
+            "Canonical payload signed",
+            "No sync required",
+        ))
+    }
+
+    pub fn verify_authentication_with_cloud_sync(
+        &mut self,
+    ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
+        self.run_legitimate_authentication_demo()?;
+        Ok(self.no_cloud_sync_result(
+            "Verify Key Authentication",
+            "Authentication verified",
+            "Pending secure session activation",
+        ))
+    }
+
+    pub fn activate_secure_session_with_cloud_sync(
+        &mut self,
+    ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
+        self.establish_secure_session_demo()?;
+        Ok(self.provisioning_sync_result(
+            "Activate Secure Session",
+            "Secure session activated",
+            "provisioning_sessions",
+            |controller| controller.sync_provisioning_session_record(),
+        ))
+    }
+
+    pub fn finalize_provisioning_with_cloud_sync(
+        &mut self,
+    ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
+        self.export_provisioning_report()?;
+        Ok(self.provisioning_sync_result(
+            "Finalize Provisioning",
+            "Provisioning finalized",
+            "audit_logs",
+            |controller| controller.sync_audit_log_records(),
+        ))
+    }
+
+    pub fn run_diagnostics_with_cloud_sync(
+        &mut self,
+    ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
+        self.launch_diagnostics_tool()?;
+        Ok(self.provisioning_sync_result(
+            "Run Diagnostics",
+            "Diagnostics completed",
+            "diagnostic_results",
+            |controller| controller.sync_diagnostic_result_records(),
+        ))
     }
 
     pub fn create_customer_record(
@@ -2016,6 +2183,100 @@ impl AppController {
                 self.save_log_entry("[DB]", message.clone())?;
                 Ok(message)
             }
+        }
+    }
+
+    fn provisioning_sync_result(
+        &mut self,
+        action_name: &'static str,
+        provisioning_status: &'static str,
+        cloud_table_updated: &'static str,
+        sync: impl FnOnce(&mut Self) -> Result<String, AppControllerError>,
+    ) -> ProvisioningCloudSyncResult {
+        if !self.cloud_auto_sync_enabled {
+            let _ = self.save_log_entry("[DB]", "Cloud sync skipped: disabled");
+            return self.build_provisioning_cloud_sync_result(
+                action_name,
+                provisioning_status,
+                false,
+                "Skipped - disabled".to_string(),
+                "None",
+                None,
+            );
+        }
+
+        match sync(self) {
+            Ok(_) => {
+                let _ = self
+                    .save_log_entry("[DB]", format!("Cloud sync completed for {}", action_name));
+                let _ = self.save_log_entry("[SECURITY]", "Cloud secret material: [REDACTED]");
+                self.build_provisioning_cloud_sync_result(
+                    action_name,
+                    provisioning_status,
+                    true,
+                    "Synced".to_string(),
+                    cloud_table_updated,
+                    None,
+                )
+            }
+            Err(error) => {
+                let safe_error = error.to_string();
+                let _ = self.save_log_entry(
+                    "[DB]",
+                    format!("Cloud sync failed for {}: {}", action_name, safe_error),
+                );
+                self.build_provisioning_cloud_sync_result(
+                    action_name,
+                    provisioning_status,
+                    true,
+                    format!("Failed - {}", safe_error),
+                    cloud_table_updated,
+                    Some(safe_error),
+                )
+            }
+        }
+    }
+
+    fn no_cloud_sync_result(
+        &mut self,
+        action_name: &'static str,
+        provisioning_status: &'static str,
+        cloud_sync_status: &'static str,
+    ) -> ProvisioningCloudSyncResult {
+        let _ = self.save_log_entry("[DB]", cloud_sync_status);
+        self.build_provisioning_cloud_sync_result(
+            action_name,
+            provisioning_status,
+            false,
+            cloud_sync_status.to_string(),
+            "None",
+            None,
+        )
+    }
+
+    fn build_provisioning_cloud_sync_result(
+        &self,
+        action_name: &'static str,
+        provisioning_status: &'static str,
+        cloud_sync_attempted: bool,
+        cloud_sync_status: String,
+        cloud_table_updated: &'static str,
+        safe_error: Option<String>,
+    ) -> ProvisioningCloudSyncResult {
+        let context = self.get_active_provisioning_context();
+        ProvisioningCloudSyncResult {
+            action_name: action_name.to_string(),
+            provisioning_status: provisioning_status.to_string(),
+            local_success: true,
+            cloud_sync_attempted,
+            cloud_sync_status,
+            cloud_table_updated: cloud_table_updated.to_string(),
+            safe_error,
+            active_customer_id: context.customer_id,
+            active_vehicle_id: context.vehicle_id,
+            active_fob_id: context.fob_id,
+            active_certificate_id: context.certificate_id,
+            active_session_id: context.session_id,
         }
     }
 
@@ -3162,6 +3423,154 @@ mod tests {
         assert_eq!(session.fob_id, "FOB-META-TEST");
         assert_eq!(session.certificate_id, "CERT-FOB-META-TEST");
         assert_ne!(session.session_id, DEMO_SESSION_ID);
+    }
+
+    #[test]
+    fn test_provisioning_cloud_sync_skips_when_disabled() {
+        let mut controller = AppController::new();
+
+        let connect = controller
+            .connect_vehicle_with_cloud_sync()
+            .expect("connect should succeed locally");
+        assert_eq!(connect.provisioning_status, "Vehicle connected");
+        assert!(!connect.cloud_sync_attempted);
+        assert_eq!(connect.cloud_sync_status, "Skipped - disabled");
+        assert_eq!(connect.cloud_table_updated, "None");
+
+        let certificate = controller
+            .issue_access_certificate_with_cloud_sync()
+            .expect("certificate should issue locally");
+        assert_eq!(certificate.provisioning_status, "Certificate issued");
+        assert!(!certificate.cloud_sync_attempted);
+        assert_eq!(certificate.cloud_sync_status, "Skipped - disabled");
+
+        let session = controller
+            .activate_secure_session_with_cloud_sync()
+            .expect("session should establish locally");
+        assert_eq!(session.provisioning_status, "Secure session activated");
+        assert!(!session.cloud_sync_attempted);
+        assert_eq!(session.cloud_sync_status, "Skipped - disabled");
+
+        let finalized = controller
+            .finalize_provisioning_with_cloud_sync()
+            .expect("report export should succeed locally");
+        assert_eq!(finalized.provisioning_status, "Provisioning finalized");
+        assert!(!finalized.cloud_sync_attempted);
+        assert_eq!(finalized.cloud_sync_status, "Skipped - disabled");
+    }
+
+    #[test]
+    fn test_provisioning_no_sync_required_statuses() {
+        let mut controller = AppController::new();
+        controller
+            .issue_keyfob_certificate()
+            .expect("certificate should issue");
+
+        let challenge = controller
+            .generate_challenge_with_cloud_sync()
+            .expect("challenge should generate");
+        assert_eq!(challenge.cloud_sync_status, "No sync required");
+        assert!(!challenge.cloud_sync_attempted);
+
+        let signed = controller
+            .sign_canonical_payload_with_cloud_sync()
+            .expect("payload should sign");
+        assert_eq!(signed.cloud_sync_status, "No sync required");
+        assert!(!signed.cloud_sync_attempted);
+
+        let verified = controller
+            .verify_authentication_with_cloud_sync()
+            .expect("authentication should verify");
+        assert_eq!(
+            verified.cloud_sync_status,
+            "Pending secure session activation"
+        );
+        assert!(!verified.cloud_sync_attempted);
+    }
+
+    #[test]
+    fn test_provisioning_sync_result_uses_active_context_and_safe_strings() {
+        let mut controller = AppController::new();
+        controller.active_customer = CustomerMetadata {
+            customer_id: "CUST-PROVSYNC-TEST".to_string(),
+            owner_name: "Provisioning Sync Owner".to_string(),
+            email: Some("provsync@example.com".to_string()),
+            phone: None,
+        };
+        controller.active_vehicle = VehicleMetadata {
+            vehicle_id: "VEH-PROVSYNC-TEST".to_string(),
+            customer_id: "CUST-PROVSYNC-TEST".to_string(),
+            vehicle_display_name: "Provisioning Sync Vehicle".to_string(),
+            make: Some("Nissan".to_string()),
+            model: Some("Magnite".to_string()),
+            year: Some(2021),
+            vin: None,
+            registration_number: None,
+            provisioning_status: Some(DEFAULT_PROVISIONING_STATUS.to_string()),
+        };
+        controller.active_key_fob = KeyFobMetadata {
+            fob_id: "FOB-PROVSYNC-TEST".to_string(),
+            vehicle_id: "VEH-PROVSYNC-TEST".to_string(),
+            customer_id: "CUST-PROVSYNC-TEST".to_string(),
+            fob_label: "Provisioning Sync Fob".to_string(),
+            public_key_fingerprint: None,
+            certificate_status: Some(DEFAULT_CERTIFICATE_STATUS.to_string()),
+            provisioning_status: Some(DEFAULT_PROVISIONING_STATUS.to_string()),
+        };
+        controller.refresh_session_id_for_active_context();
+
+        let result = controller
+            .issue_access_certificate_with_cloud_sync()
+            .expect("certificate should issue locally");
+        assert_eq!(result.active_customer_id, "CUST-PROVSYNC-TEST");
+        assert_eq!(result.active_vehicle_id, "VEH-PROVSYNC-TEST");
+        assert_eq!(result.active_fob_id, "FOB-PROVSYNC-TEST");
+        assert_eq!(result.active_certificate_id, "CERT-FOB-PROVSYNC-TEST");
+        assert_ne!(result.active_session_id, DEMO_SESSION_ID);
+
+        let display = result.to_string();
+        for forbidden in [
+            "DATABASE_URL",
+            "AIACS_MASTER_KEY",
+            "private_key",
+            "session_key",
+            "shared_secret",
+            "hkdf_output",
+            "AES key",
+            "raw_nonce",
+            "encrypted_key_blob",
+            "encryption_nonce",
+        ] {
+            assert!(!display.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn test_cloud_sync_failure_does_not_fail_local_provisioning_action() {
+        let mut controller = AppController::new();
+        controller.cloud_auto_sync_enabled = true;
+
+        controller
+            .connect_vehicle()
+            .expect("local connect should succeed");
+        let result = controller.provisioning_sync_result(
+            "Connect Vehicle",
+            "Vehicle connected",
+            "customers, vehicles, key_fobs",
+            |_| {
+                Err(AppControllerError::Backend(
+                    "Cloud database connection failed. Retry after database warm-up.".to_string(),
+                ))
+            },
+        );
+
+        assert!(result.local_success);
+        assert!(result.cloud_sync_attempted);
+        assert!(result.cloud_sync_status.starts_with("Failed -"));
+        assert!(result.safe_error.is_some());
+        assert_eq!(result.provisioning_status, "Vehicle connected");
+        assert!(!result.cloud_sync_status.contains("DATABASE_URL"));
+        assert!(!result.cloud_sync_status.contains("AIACS_MASTER_KEY"));
     }
 
     #[test]
