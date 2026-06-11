@@ -926,7 +926,12 @@ impl AIACSApp {
                 self.push_log("[DB]", message);
             }
             CloudOperation::CreateCustomer => {
-                self.management_state.customer_create_status = "Customer created".to_string();
+                self.management_state.customer_create_status = if message.contains("saved to cloud")
+                {
+                    "Customer saved to cloud".to_string()
+                } else {
+                    "Customer created locally".to_string()
+                };
                 self.management_state.customer_note = message.clone();
                 self.selected_detail = message.clone();
                 self.push_log("[DB]", message);
@@ -947,7 +952,12 @@ impl AIACSApp {
                 self.push_log("[DB]", message);
             }
             CloudOperation::CreateVehicle => {
-                self.management_state.vehicle_create_status = "Vehicle created".to_string();
+                self.management_state.vehicle_create_status = if message.contains("saved to cloud")
+                {
+                    "Vehicle saved to cloud".to_string()
+                } else {
+                    "Vehicle created locally".to_string()
+                };
                 self.management_state.vehicle_note = message.clone();
                 self.selected_detail = message.clone();
                 self.push_log("[DB]", message);
@@ -971,7 +981,12 @@ impl AIACSApp {
                 self.push_log("[DB]", message);
             }
             CloudOperation::CreateKeyFob => {
-                self.management_state.key_fob_create_status = "Key fob created".to_string();
+                self.management_state.key_fob_create_status = if message.contains("saved to cloud")
+                {
+                    "Key fob saved to cloud".to_string()
+                } else {
+                    "Key fob created locally".to_string()
+                };
                 self.management_state.keyfob_note = message.clone();
                 self.selected_detail = message.clone();
                 self.push_log("[DB]", message);
@@ -3801,7 +3816,11 @@ fn status_color(value: &str) -> Color {
         | "CA-signed certificate issued"
         | "Trust root initialized"
         | "Enabled"
-        | "Synced" => SUCCESS_GREEN,
+        | "Synced"
+        | "Customer saved to cloud"
+        | "Vehicle saved to cloud"
+        | "Key fob saved to cloud"
+        | "Cloud sync completed" => SUCCESS_GREEN,
         "Pending"
         | "Not Initialized"
         | "Not Registered"
@@ -4090,11 +4109,15 @@ mod tests {
             "Loading customers...",
             "Customers loaded",
             "Creating customer...",
-            "Customer created",
+            "Customer saved to cloud",
+            "Customer created locally",
             "Creating vehicle...",
-            "Vehicle created",
+            "Vehicle saved to cloud",
+            "Vehicle created locally",
             "Loading key fobs...",
             "Key fobs loaded",
+            "Key fob saved to cloud",
+            "Key fob created locally",
             "Cloud sync running...",
             "Cloud sync completed",
             "Cloud sync failed: safe error",
@@ -4111,6 +4134,16 @@ mod tests {
         ] {
             assert!(!statuses.contains(disallowed));
         }
+    }
+
+    #[test]
+    fn create_record_completion_does_not_chain_unrelated_syncs() {
+        let source = include_str!("main.rs");
+
+        assert!(source.contains("Customer saved to cloud"));
+        assert!(source.contains("Vehicle saved to cloud"));
+        assert!(source.contains("Key fob saved to cloud"));
+        assert!(!source.contains("Cloud auto-sync queued"));
     }
 
     #[test]

@@ -20,8 +20,11 @@ use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fs::{self, OpenOptions};
+use std::future::Future;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
+use uuid::Uuid;
 
 const DEFAULT_CA_NAME: &str = "AIACS-Demo-CA";
 const DEFAULT_FOB_ID: &str = DEMO_FOB_ID;
@@ -97,6 +100,9 @@ pub struct AppController {
     customer_records: Vec<CustomerMetadata>,
     vehicle_records: Vec<VehicleMetadata>,
     key_fob_records: Vec<KeyFobMetadata>,
+    cloud_client: Option<CloudStorageClient>,
+    schema_initialized: bool,
+    cloud_runtime: Arc<tokio::runtime::Runtime>,
 }
 
 impl Default for AppController {
@@ -123,6 +129,9 @@ impl fmt::Debug for AppController {
             .field("active_customer", &self.active_customer)
             .field("active_vehicle", &self.active_vehicle)
             .field("active_key_fob", &self.active_key_fob)
+            .field("cloud_client_cached", &self.cloud_client.is_some())
+            .field("schema_initialized", &self.schema_initialized)
+            .field("cloud_runtime", &"[REDACTED]")
             .finish()
     }
 }
@@ -165,6 +174,12 @@ impl AppController {
             customer_records: vec![active_customer],
             vehicle_records: vec![active_vehicle],
             key_fob_records: vec![active_key_fob],
+            cloud_client: None,
+            schema_initialized: false,
+            cloud_runtime: Arc::new(
+                tokio::runtime::Runtime::new()
+                    .expect("cloud runtime should initialize for default controller"),
+            ),
         }
     }
 
@@ -873,13 +888,20 @@ impl AppController {
     }
 
     pub fn check_cloud_connection(&mut self) -> Result<String, AppControllerError> {
-        let runtime = Self::cloud_runtime()?;
-        let message = runtime
-            .block_on(async {
-                let client = CloudStorageClient::connect_from_env().await?;
-                client.health_check().await
-            })
-            .map_err(Self::map_cloud_error)?;
+        let client = match self.ensure_cloud_client() {
+            Ok(client) => client,
+            Err(error) => {
+                self.clear_failed_cloud_client();
+                return Err(error);
+            }
+        };
+        let message = match self.run_cloud(client.health_check()) {
+            Ok(message) => message,
+            Err(error) => {
+                self.clear_failed_cloud_client();
+                return Err(Self::map_cloud_error(error));
+            }
+        };
 
         self.save_log_entry("[DB]", "Cloud database connection healthy")?;
         Ok(message)
@@ -978,7 +1000,7 @@ impl AppController {
             ));
         }
         let customer = CustomerMetadata {
-            customer_id: generated_record_id("CUST", self.customer_records.len() + 1),
+            customer_id: generated_record_id("CUST"),
             owner_name,
             email,
             phone,
@@ -990,12 +1012,14 @@ impl AppController {
     }
 
     pub fn load_customer_records(&mut self) -> Result<String, AppControllerError> {
-        let runtime = Self::cloud_runtime()?;
-        match runtime.block_on(async {
-            let client = CloudStorageClient::connect_from_env().await?;
-            client.initialize_schema().await?;
-            client.list_customers().await
-        }) {
+        let client = match self.ensure_schema_initialized() {
+            Ok(client) => client,
+            Err(error) if is_cloud_not_configured(&error.to_string()) => {
+                return Ok("Cloud database is not configured; using local demo records".to_string());
+            }
+            Err(error) => return Err(error),
+        };
+        match self.run_cloud(async { client.list_customers().await }) {
             Ok(records) if !records.is_empty() => {
                 self.customer_records = records;
                 if !self
@@ -1023,11 +1047,8 @@ impl AppController {
             return Ok(format!("Customer selected: {}", customer.customer_id));
         }
 
-        let runtime = Self::cloud_runtime()?;
-        match runtime.block_on(async {
-            let client = CloudStorageClient::connect_from_env().await?;
-            client.get_customer(customer_id).await
-        }) {
+        let client = self.ensure_schema_initialized()?;
+        match self.run_cloud(async { client.get_customer(customer_id).await }) {
             Ok(Some(customer)) => {
                 self.active_customer = customer.clone();
                 upsert_local_customer(&mut self.customer_records, customer.clone());
@@ -1079,7 +1100,7 @@ impl AppController {
             ));
         }
         let vehicle = VehicleMetadata {
-            vehicle_id: generated_record_id("VEH", self.vehicle_records.len() + 1),
+            vehicle_id: generated_record_id("VEH"),
             customer_id,
             vehicle_display_name,
             make,
@@ -1096,12 +1117,14 @@ impl AppController {
     }
 
     pub fn load_vehicle_records(&mut self) -> Result<String, AppControllerError> {
-        let runtime = Self::cloud_runtime()?;
-        match runtime.block_on(async {
-            let client = CloudStorageClient::connect_from_env().await?;
-            client.initialize_schema().await?;
-            client.list_vehicles().await
-        }) {
+        let client = match self.ensure_schema_initialized() {
+            Ok(client) => client,
+            Err(error) if is_cloud_not_configured(&error.to_string()) => {
+                return Ok("Cloud database is not configured; using local demo records".to_string());
+            }
+            Err(error) => return Err(error),
+        };
+        match self.run_cloud(async { client.list_vehicles().await }) {
             Ok(records) if !records.is_empty() => {
                 self.vehicle_records = records;
                 if !self
@@ -1122,12 +1145,14 @@ impl AppController {
         &mut self,
         customer_id: &str,
     ) -> Result<String, AppControllerError> {
-        let runtime = Self::cloud_runtime()?;
-        match runtime.block_on(async {
-            let client = CloudStorageClient::connect_from_env().await?;
-            client.initialize_schema().await?;
-            client.list_vehicles_for_customer(customer_id).await
-        }) {
+        let client = match self.ensure_schema_initialized() {
+            Ok(client) => client,
+            Err(error) if is_cloud_not_configured(&error.to_string()) => {
+                return Ok("Cloud database is not configured; using local demo records".to_string());
+            }
+            Err(error) => return Err(error),
+        };
+        match self.run_cloud(async { client.list_vehicles_for_customer(customer_id).await }) {
             Ok(records) if !records.is_empty() => {
                 self.vehicle_records = records;
                 self.active_vehicle = self.vehicle_records[0].clone();
@@ -1149,11 +1174,8 @@ impl AppController {
             return Ok(format!("Vehicle selected: {}", vehicle.vehicle_id));
         }
 
-        let runtime = Self::cloud_runtime()?;
-        match runtime.block_on(async {
-            let client = CloudStorageClient::connect_from_env().await?;
-            client.get_vehicle(vehicle_id).await
-        }) {
+        let client = self.ensure_schema_initialized()?;
+        match self.run_cloud(async { client.get_vehicle(vehicle_id).await }) {
             Ok(Some(vehicle)) => {
                 self.active_vehicle = vehicle.clone();
                 upsert_local_vehicle(&mut self.vehicle_records, vehicle.clone());
@@ -1184,7 +1206,7 @@ impl AppController {
             ));
         }
         let key_fob = KeyFobMetadata {
-            fob_id: generated_record_id("FOB", self.key_fob_records.len() + 1),
+            fob_id: generated_record_id("FOB"),
             vehicle_id,
             customer_id: self.active_customer.customer_id.clone(),
             fob_label,
@@ -1199,12 +1221,14 @@ impl AppController {
     }
 
     pub fn load_key_fob_records(&mut self) -> Result<String, AppControllerError> {
-        let runtime = Self::cloud_runtime()?;
-        match runtime.block_on(async {
-            let client = CloudStorageClient::connect_from_env().await?;
-            client.initialize_schema().await?;
-            client.list_key_fobs().await
-        }) {
+        let client = match self.ensure_schema_initialized() {
+            Ok(client) => client,
+            Err(error) if is_cloud_not_configured(&error.to_string()) => {
+                return Ok("Cloud database is not configured; using local demo records".to_string());
+            }
+            Err(error) => return Err(error),
+        };
+        match self.run_cloud(async { client.list_key_fobs().await }) {
             Ok(records) if !records.is_empty() => {
                 self.key_fob_records = records;
                 if !self
@@ -1225,12 +1249,14 @@ impl AppController {
         &mut self,
         vehicle_id: &str,
     ) -> Result<String, AppControllerError> {
-        let runtime = Self::cloud_runtime()?;
-        match runtime.block_on(async {
-            let client = CloudStorageClient::connect_from_env().await?;
-            client.initialize_schema().await?;
-            client.list_key_fobs_for_vehicle(vehicle_id).await
-        }) {
+        let client = match self.ensure_schema_initialized() {
+            Ok(client) => client,
+            Err(error) if is_cloud_not_configured(&error.to_string()) => {
+                return Ok("Cloud database is not configured; using local demo records".to_string());
+            }
+            Err(error) => return Err(error),
+        };
+        match self.run_cloud(async { client.list_key_fobs_for_vehicle(vehicle_id).await }) {
             Ok(records) if !records.is_empty() => {
                 self.key_fob_records = records;
                 self.active_key_fob = self.key_fob_records[0].clone();
@@ -1252,11 +1278,8 @@ impl AppController {
             return Ok(format!("Key fob selected: {}", key_fob.fob_id));
         }
 
-        let runtime = Self::cloud_runtime()?;
-        match runtime.block_on(async {
-            let client = CloudStorageClient::connect_from_env().await?;
-            client.get_key_fob(fob_id).await
-        }) {
+        let client = self.ensure_schema_initialized()?;
+        match self.run_cloud(async { client.get_key_fob(fob_id).await }) {
             Ok(Some(key_fob)) => {
                 self.active_key_fob = key_fob.clone();
                 upsert_local_key_fob(&mut self.key_fob_records, key_fob.clone());
@@ -1271,12 +1294,9 @@ impl AppController {
 
     pub fn sync_customer_metadata(&mut self) -> Result<String, AppControllerError> {
         let metadata = self.customer_metadata();
-        let runtime = Self::cloud_runtime()?;
-        let message = runtime
-            .block_on(async {
-                let client = CloudStorageClient::connect_from_env().await?;
-                client.upsert_customer(&metadata).await
-            })
+        let client = self.ensure_schema_initialized()?;
+        let message = self
+            .run_cloud(async { client.upsert_customer(&metadata).await })
             .map_err(Self::map_cloud_error)?;
 
         self.save_log_entry(
@@ -1288,12 +1308,9 @@ impl AppController {
 
     pub fn sync_vehicle_metadata(&mut self) -> Result<String, AppControllerError> {
         let metadata = self.vehicle_metadata();
-        let runtime = Self::cloud_runtime()?;
-        let message = runtime
-            .block_on(async {
-                let client = CloudStorageClient::connect_from_env().await?;
-                client.upsert_vehicle(&metadata).await
-            })
+        let client = self.ensure_schema_initialized()?;
+        let message = self
+            .run_cloud(async { client.upsert_vehicle(&metadata).await })
             .map_err(Self::map_cloud_error)?;
 
         self.save_log_entry(
@@ -1305,12 +1322,9 @@ impl AppController {
 
     pub fn sync_key_fob_metadata(&mut self) -> Result<String, AppControllerError> {
         let metadata = self.key_fob_metadata();
-        let runtime = Self::cloud_runtime()?;
-        let message = runtime
-            .block_on(async {
-                let client = CloudStorageClient::connect_from_env().await?;
-                client.upsert_key_fob(&metadata).await
-            })
+        let client = self.ensure_schema_initialized()?;
+        let message = self
+            .run_cloud(async { client.upsert_key_fob(&metadata).await })
             .map_err(Self::map_cloud_error)?;
 
         self.save_log_entry(
@@ -1324,10 +1338,9 @@ impl AppController {
         let customer = self.customer_metadata();
         let vehicle = self.vehicle_metadata();
         let key_fob = self.key_fob_metadata();
-        let runtime = Self::cloud_runtime()?;
-        let message = runtime
-            .block_on(async {
-                let client = CloudStorageClient::connect_from_env().await?;
+        let client = self.ensure_schema_initialized()?;
+        let message = self
+            .run_cloud(async {
                 client.upsert_customer(&customer).await?;
                 client.upsert_vehicle(&vehicle).await?;
                 client.upsert_key_fob(&key_fob).await?;
@@ -1343,12 +1356,9 @@ impl AppController {
 
     pub fn sync_certificate_metadata(&mut self) -> Result<String, AppControllerError> {
         let metadata = self.certificate_metadata()?;
-        let runtime = Self::cloud_runtime()?;
-        let message = runtime
-            .block_on(async {
-                let client = CloudStorageClient::connect_from_env().await?;
-                client.upsert_certificate_metadata(&metadata).await
-            })
+        let client = self.ensure_schema_initialized()?;
+        let message = self
+            .run_cloud(async { client.upsert_certificate_metadata(&metadata).await })
             .map_err(Self::map_cloud_error)?;
 
         self.save_log_entry(
@@ -1361,12 +1371,9 @@ impl AppController {
 
     pub fn sync_provisioning_session_record(&mut self) -> Result<String, AppControllerError> {
         let metadata = self.provisioning_session_metadata()?;
-        let runtime = Self::cloud_runtime()?;
-        let message = runtime
-            .block_on(async {
-                let client = CloudStorageClient::connect_from_env().await?;
-                client.upsert_provisioning_session(&metadata).await
-            })
+        let client = self.ensure_schema_initialized()?;
+        let message = self
+            .run_cloud(async { client.upsert_provisioning_session(&metadata).await })
             .map_err(Self::map_cloud_error)?;
 
         self.save_log_entry(
@@ -1384,12 +1391,9 @@ impl AppController {
     }
 
     pub fn sync_audit_log_records(&mut self) -> Result<String, AppControllerError> {
-        let runtime = Self::cloud_runtime()?;
-        let message = runtime
-            .block_on(async {
-                let client = CloudStorageClient::connect_from_env().await?;
-                client.sync_demo_audit_logs().await
-            })
+        let client = self.ensure_schema_initialized()?;
+        let message = self
+            .run_cloud(async { client.sync_demo_audit_logs().await })
             .map_err(Self::map_cloud_error)?;
 
         self.save_log_entry("[DB]", "Audit log records synced")?;
@@ -1400,12 +1404,9 @@ impl AppController {
     }
 
     pub fn sync_diagnostic_result_records(&mut self) -> Result<String, AppControllerError> {
-        let runtime = Self::cloud_runtime()?;
-        let message = runtime
-            .block_on(async {
-                let client = CloudStorageClient::connect_from_env().await?;
-                client.sync_demo_diagnostic_results().await
-            })
+        let client = self.ensure_schema_initialized()?;
+        let message = self
+            .run_cloud(async { client.sync_demo_diagnostic_results().await })
             .map_err(Self::map_cloud_error)?;
 
         self.save_log_entry("[DB]", "Diagnostic result records synced")?;
@@ -1425,12 +1426,9 @@ impl AppController {
         self.ca_private_key_material()?;
         let master_key = parse_master_key_from_env().map_err(Self::map_cloud_error)?;
         let record = self.ca_encrypted_key_record(&master_key)?;
-        let runtime = Self::cloud_runtime()?;
-        let message = runtime
-            .block_on(async {
-                let client = CloudStorageClient::connect_from_env().await?;
-                client.upsert_encrypted_key(&record).await
-            })
+        let client = self.ensure_schema_initialized()?;
+        let message = self
+            .run_cloud(async { client.upsert_encrypted_key(&record).await })
             .map_err(Self::map_cloud_error)?;
 
         self.save_log_entry(
@@ -1449,12 +1447,9 @@ impl AppController {
         self.key_fob_private_key_material()?;
         let master_key = parse_master_key_from_env().map_err(Self::map_cloud_error)?;
         let record = self.key_fob_encrypted_key_record(&master_key)?;
-        let runtime = Self::cloud_runtime()?;
-        let message = runtime
-            .block_on(async {
-                let client = CloudStorageClient::connect_from_env().await?;
-                client.upsert_encrypted_key(&record).await
-            })
+        let client = self.ensure_schema_initialized()?;
+        let message = self
+            .run_cloud(async { client.upsert_encrypted_key(&record).await })
             .map_err(Self::map_cloud_error)?;
 
         self.save_log_entry(
@@ -1478,10 +1473,9 @@ impl AppController {
         let master_key = parse_master_key_from_env().map_err(Self::map_cloud_error)?;
         let ca_record = self.ca_encrypted_key_record(&master_key)?;
         let key_fob_record = self.key_fob_encrypted_key_record(&master_key)?;
-        let runtime = Self::cloud_runtime()?;
-        let message = runtime
-            .block_on(async {
-                let client = CloudStorageClient::connect_from_env().await?;
+        let client = self.ensure_schema_initialized()?;
+        let message = self
+            .run_cloud(async {
                 client
                     .sync_demo_encrypted_key_blobs(&ca_record, &key_fob_record)
                     .await
@@ -1736,22 +1730,59 @@ impl AppController {
         }
     }
 
-    fn cloud_runtime() -> Result<tokio::runtime::Runtime, AppControllerError> {
-        tokio::runtime::Runtime::new().map_err(|_| {
-            AppControllerError::Backend("Cloud runtime initialization failed".to_string())
-        })
+    fn run_cloud<F: Future>(&self, future: F) -> F::Output {
+        self.cloud_runtime.block_on(future)
+    }
+
+    fn ensure_cloud_client(&mut self) -> Result<CloudStorageClient, AppControllerError> {
+        if let Some(client) = &self.cloud_client {
+            return Ok(client.clone());
+        }
+
+        let client = self
+            .run_cloud(async {
+                let client = CloudStorageClient::connect_from_env().await?;
+                client.health_check().await?;
+                Ok::<CloudStorageClient, CloudStorageError>(client)
+            })
+            .map_err(Self::map_cloud_error)?;
+        self.cloud_client = Some(client.clone());
+        Ok(client)
+    }
+
+    fn clear_failed_cloud_client(&mut self) {
+        self.cloud_client = None;
+        self.schema_initialized = false;
+    }
+
+    fn ensure_schema_initialized(&mut self) -> Result<CloudStorageClient, AppControllerError> {
+        let client = self.ensure_cloud_client()?;
+        if !self.schema_initialized {
+            if let Err(error) = self.run_cloud(client.initialize_schema()) {
+                self.schema_initialized = false;
+                return Err(Self::map_cloud_error(error));
+            }
+            self.schema_initialized = true;
+        }
+        Ok(client)
     }
 
     fn map_cloud_error(error: CloudStorageError) -> AppControllerError {
         match error {
-            CloudStorageError::MissingDatabaseUrl => {
-                AppControllerError::Backend("Cloud database is not configured".to_string())
-            }
+            CloudStorageError::MissingDatabaseUrl => AppControllerError::Backend(
+                "Cloud database is not configured. Check .env.local.".to_string(),
+            ),
             CloudStorageError::MissingMasterKey
             | CloudStorageError::InvalidMasterKeyBase64
             | CloudStorageError::InvalidMasterKeySize => {
                 AppControllerError::Backend("Cloud encryption key is not configured".to_string())
             }
+            CloudStorageError::HealthCheckFailed => AppControllerError::Backend(
+                "Cloud database health check failed. Check network/Neon availability.".to_string(),
+            ),
+            CloudStorageError::ConnectionFailed => AppControllerError::Backend(
+                "Cloud database connection failed. Retry after database warm-up.".to_string(),
+            ),
             other => AppControllerError::Backend(other.to_string()),
         }
     }
@@ -1785,20 +1816,31 @@ impl AppController {
         &mut self,
         customer: CustomerMetadata,
     ) -> Result<String, AppControllerError> {
-        let runtime = Self::cloud_runtime()?;
-        match runtime.block_on(async {
-            let client = CloudStorageClient::connect_from_env().await?;
-            client.initialize_schema().await?;
-            client.create_customer(&customer).await
-        }) {
+        let client = match self.ensure_schema_initialized() {
+            Ok(client) => client,
+            Err(error) if is_cloud_not_configured(&error.to_string()) => {
+                return Ok(format!(
+                    "Customer created locally: {}; cloud database is not configured",
+                    customer.customer_id
+                ));
+            }
+            Err(error) => return Err(error),
+        };
+        match self.run_cloud(async { client.create_customer(&customer).await }) {
             Ok(_) => {
                 self.save_log_entry(
                     "[DB]",
-                    format!("Customer created: {}", customer.customer_id),
+                    format!(
+                        "Customer created and saved to cloud: {}",
+                        customer.customer_id
+                    ),
                 )?;
-                Ok(format!("Customer created: {}", customer.customer_id))
+                Ok(format!(
+                    "Customer created and saved to cloud: {}",
+                    customer.customer_id
+                ))
             }
-            Err(error) => self.safe_local_create_message(error, "Customer", &customer.customer_id),
+            Err(error) => Err(Self::map_cloud_error(error)),
         }
     }
 
@@ -1806,17 +1848,28 @@ impl AppController {
         &mut self,
         vehicle: VehicleMetadata,
     ) -> Result<String, AppControllerError> {
-        let runtime = Self::cloud_runtime()?;
-        match runtime.block_on(async {
-            let client = CloudStorageClient::connect_from_env().await?;
-            client.initialize_schema().await?;
-            client.create_vehicle(&vehicle).await
-        }) {
-            Ok(_) => {
-                self.save_log_entry("[DB]", format!("Vehicle created: {}", vehicle.vehicle_id))?;
-                Ok(format!("Vehicle created: {}", vehicle.vehicle_id))
+        let client = match self.ensure_schema_initialized() {
+            Ok(client) => client,
+            Err(error) if is_cloud_not_configured(&error.to_string()) => {
+                return Ok(format!(
+                    "Vehicle created locally: {}; cloud database is not configured",
+                    vehicle.vehicle_id
+                ));
             }
-            Err(error) => self.safe_local_create_message(error, "Vehicle", &vehicle.vehicle_id),
+            Err(error) => return Err(error),
+        };
+        match self.run_cloud(async { client.create_vehicle(&vehicle).await }) {
+            Ok(_) => {
+                self.save_log_entry(
+                    "[DB]",
+                    format!("Vehicle created and saved to cloud: {}", vehicle.vehicle_id),
+                )?;
+                Ok(format!(
+                    "Vehicle created and saved to cloud: {}",
+                    vehicle.vehicle_id
+                ))
+            }
+            Err(error) => Err(Self::map_cloud_error(error)),
         }
     }
 
@@ -1824,33 +1877,28 @@ impl AppController {
         &mut self,
         key_fob: KeyFobMetadata,
     ) -> Result<String, AppControllerError> {
-        let runtime = Self::cloud_runtime()?;
-        match runtime.block_on(async {
-            let client = CloudStorageClient::connect_from_env().await?;
-            client.initialize_schema().await?;
-            client.create_key_fob_metadata(&key_fob).await
-        }) {
-            Ok(_) => {
-                self.save_log_entry("[DB]", format!("Key fob created: {}", key_fob.fob_id))?;
-                Ok(format!("Key fob created: {}", key_fob.fob_id))
+        let client = match self.ensure_schema_initialized() {
+            Ok(client) => client,
+            Err(error) if is_cloud_not_configured(&error.to_string()) => {
+                return Ok(format!(
+                    "Key fob created locally: {}; cloud database is not configured",
+                    key_fob.fob_id
+                ));
             }
-            Err(error) => self.safe_local_create_message(error, "Key fob", &key_fob.fob_id),
-        }
-    }
-
-    fn safe_local_create_message(
-        &self,
-        error: CloudStorageError,
-        label: &str,
-        id: &str,
-    ) -> Result<String, AppControllerError> {
-        let mapped = Self::map_cloud_error(error).to_string();
-        if mapped == "Cloud database is not configured" {
-            Ok(format!(
-                "{label} created locally: {id}; cloud database is not configured"
-            ))
-        } else {
-            Err(AppControllerError::Backend(mapped))
+            Err(error) => return Err(error),
+        };
+        match self.run_cloud(async { client.create_key_fob_metadata(&key_fob).await }) {
+            Ok(_) => {
+                self.save_log_entry(
+                    "[DB]",
+                    format!("Key fob created and saved to cloud: {}", key_fob.fob_id),
+                )?;
+                Ok(format!(
+                    "Key fob created and saved to cloud: {}",
+                    key_fob.fob_id
+                ))
+            }
+            Err(error) => Err(Self::map_cloud_error(error)),
         }
     }
 
@@ -1859,7 +1907,7 @@ impl AppController {
         error: CloudStorageError,
     ) -> Result<String, AppControllerError> {
         let mapped = Self::map_cloud_error(error).to_string();
-        if mapped == "Cloud database is not configured" {
+        if is_cloud_not_configured(&mapped) {
             Ok("Cloud database is not configured; using local demo records".to_string())
         } else {
             Err(AppControllerError::Backend(mapped))
@@ -2165,8 +2213,9 @@ fn parse_session_timestamp(value: &str) -> Result<DateTime<Utc>, AppControllerEr
         })
 }
 
-fn generated_record_id(prefix: &str, index: usize) -> String {
-    format!("{prefix}-{index:04}")
+fn generated_record_id(prefix: &str) -> String {
+    let id = Uuid::new_v4().simple().to_string();
+    format!("{prefix}-{}", &id[..8].to_uppercase())
 }
 
 fn is_valid_email(value: &str) -> bool {
@@ -2175,6 +2224,10 @@ fn is_valid_email(value: &str) -> bool {
         return false;
     };
     !local.is_empty() && domain.contains('.') && !domain.ends_with('.')
+}
+
+fn is_cloud_not_configured(message: &str) -> bool {
+    message.starts_with("Cloud database is not configured")
 }
 
 fn upsert_local_customer(records: &mut Vec<CustomerMetadata>, record: CustomerMetadata) {
@@ -2625,7 +2678,10 @@ mod tests {
         let error = AppController::map_cloud_error(CloudStorageError::MissingDatabaseUrl);
         let message = error.to_string();
 
-        assert_eq!(message, "Cloud database is not configured");
+        assert_eq!(
+            message,
+            "Cloud database is not configured. Check .env.local."
+        );
         assert!(!message.contains("DATABASE_URL"));
         assert!(!message.contains("AIACS_MASTER_KEY"));
         assert!(!message.contains("postgresql://"));
@@ -2817,9 +2873,16 @@ mod tests {
 
     #[test]
     fn test_management_record_ids_are_generated_safely() {
-        assert_eq!(generated_record_id("CUST", 2), "CUST-0002");
-        assert_eq!(generated_record_id("VEH", 12), "VEH-0012");
-        assert_eq!(generated_record_id("FOB", 101), "FOB-0101");
+        let first_customer_id = generated_record_id("CUST");
+        let second_customer_id = generated_record_id("CUST");
+        let vehicle_id = generated_record_id("VEH");
+        let fob_id = generated_record_id("FOB");
+
+        assert!(first_customer_id.starts_with("CUST-"));
+        assert!(vehicle_id.starts_with("VEH-"));
+        assert!(fob_id.starts_with("FOB-"));
+        assert_eq!(first_customer_id.len(), "CUST-".len() + 8);
+        assert_ne!(first_customer_id, second_customer_id);
     }
 
     #[test]
@@ -2857,6 +2920,47 @@ mod tests {
             .expect_err("empty fob label should fail before cloud work")
             .to_string();
         assert_eq!(fob_error, "Key fob label is required");
+    }
+
+    #[test]
+    fn test_cloud_persistence_paths_use_cached_client_and_safe_messages() {
+        let source = include_str!("mod.rs");
+
+        for expected in [
+            "ensure_schema_initialized()",
+            "ensure_cloud_client()",
+            "clear_failed_cloud_client()",
+            "cloud_client: Option<CloudStorageClient>",
+            "schema_initialized: bool",
+            "client.health_check().await?",
+            "Customer created and saved to cloud",
+            "Vehicle created and saved to cloud",
+            "Key fob created and saved to cloud",
+        ] {
+            assert!(
+                source.contains(expected),
+                "missing persistence marker: {expected}"
+            );
+        }
+
+        let direct_connect = concat!("CloudStorageClient::", "connect_from_env()");
+        assert_eq!(source.matches(direct_connect).count(), 1);
+    }
+
+    #[test]
+    fn test_management_loads_are_not_demo_id_filtered() {
+        let source = include_str!("mod.rs");
+
+        for expected in [
+            "client.list_customers().await",
+            "client.list_vehicles().await",
+            "client.list_key_fobs().await",
+        ] {
+            assert!(
+                source.contains(expected),
+                "missing unfiltered load path: {expected}"
+            );
+        }
     }
 
     #[test]

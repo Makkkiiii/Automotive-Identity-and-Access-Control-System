@@ -4,6 +4,7 @@
 use crate::access::{AccessDecision, AccessDecisionEngine, AccessDenialReason};
 use crate::auth::{AuthResult, AuthenticationEngine};
 use crate::ca::CertificateAuthority;
+use crate::crypto::CryptoEngine;
 use crate::keyfob::DigitalKeyFob;
 use crate::session::SessionState;
 use crate::vehicle::VehicleControlModule;
@@ -56,8 +57,12 @@ pub struct AdversarialValidationEngine;
 
 impl AdversarialValidationEngine {
     fn setup_test_environment() -> (CertificateAuthority, VehicleControlModule, DigitalKeyFob) {
-        let mut ca = CertificateAuthority::new("Test-CA".to_string());
-        ca.initialize().expect("CA init failed");
+        let keypair = CryptoEngine::generate_ed25519_keypair().expect("CA keygen failed");
+        let ca = CertificateAuthority {
+            name: "Test-CA".to_string(),
+            root_public_key: Some(keypair.public_key),
+            root_private_key: Some(keypair.private_key),
+        };
 
         let mut vehicle = VehicleControlModule::new("VEH-TEST-001".to_string());
         vehicle.initialize().expect("Vehicle init failed");

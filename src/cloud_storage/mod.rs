@@ -8,6 +8,8 @@ use rand::{rngs::OsRng, RngCore};
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use std::env;
 use std::fmt;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 const ENV_FILE: &str = ".env.local";
 const DATABASE_URL_ENV: &str = "DATABASE_URL";
@@ -1008,7 +1010,7 @@ pub struct CloudStorageConfig {
 
 impl CloudStorageConfig {
     pub fn from_env() -> Result<Self, CloudStorageError> {
-        let _ = dotenvy::from_filename(ENV_FILE);
+        load_local_env_files();
         Self::from_database_url(env::var(DATABASE_URL_ENV).ok())
     }
 
@@ -1021,6 +1023,29 @@ impl CloudStorageConfig {
     }
 }
 
+fn load_local_env_files() {
+    let _ = dotenvy::from_filename(ENV_FILE);
+    if let Ok(current_dir) = env::current_dir() {
+        load_env_from_ancestors(&current_dir);
+    }
+    if let Ok(current_exe) = env::current_exe() {
+        if let Some(exe_dir) = current_exe.parent() {
+            load_env_from_ancestors(exe_dir);
+        }
+    }
+    let _ = dotenvy::dotenv();
+}
+
+fn load_env_from_ancestors(start: &Path) {
+    for ancestor in start.ancestors() {
+        let path: PathBuf = ancestor.join(ENV_FILE);
+        if path.exists() {
+            let _ = dotenvy::from_path(path);
+            break;
+        }
+    }
+}
+
 impl fmt::Debug for CloudStorageConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CloudStorageConfig")
@@ -1029,6 +1054,7 @@ impl fmt::Debug for CloudStorageConfig {
     }
 }
 
+#[derive(Clone)]
 pub struct CloudStorageClient {
     pool: PgPool,
 }
@@ -1068,10 +1094,13 @@ impl CloudStorageClient {
     }
 
     pub async fn health_check(&self) -> Result<String, CloudStorageError> {
-        sqlx::query_scalar::<_, i32>("SELECT 1;")
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|_| CloudStorageError::HealthCheckFailed)?;
+        tokio::time::timeout(
+            Duration::from_secs(8),
+            sqlx::query_scalar::<_, i32>("SELECT 1;").fetch_one(&self.pool),
+        )
+        .await
+        .map_err(|_| CloudStorageError::HealthCheckFailed)?
+        .map_err(|_| CloudStorageError::HealthCheckFailed)?;
 
         Ok(HEALTHY_MESSAGE.to_string())
     }
@@ -1854,6 +1883,24 @@ mod tests {
         assert!(!schema.contains("DATABASE_URL"));
         assert!(!schema.contains("AIACS_MASTER_KEY"));
         assert!(!schema.contains(SAMPLE_DATABASE_URL));
+    }
+
+    #[test]
+    fn schema_initialization_does_not_reset_user_records() {
+        let schema = schema_sql().to_uppercase();
+
+        for forbidden in [
+            "DELETE FROM",
+            "TRUNCATE",
+            "DROP TABLE",
+            "DROP SCHEMA",
+            "CASCADE",
+        ] {
+            assert!(
+                !schema.contains(forbidden),
+                "schema initializer must not contain {forbidden}"
+            );
+        }
     }
 
     #[test]
