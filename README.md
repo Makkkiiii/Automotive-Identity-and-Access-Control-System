@@ -427,10 +427,12 @@ AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metada
 - Cloud Phase 8.6 persists GUI-created customer, vehicle, and key fob metadata to Neon with unique generated IDs, cached cloud connection reuse, and cached schema initialization.
 - Cloud Phase 8.7 maintains an active provisioning context so created or selected customer, vehicle, and key fob records flow into the Provisioning page and safe certificate/session/audit metadata syncs when Cloud Auto Sync is enabled.
 - Cloud Phase 8.8 wires Provisioning page buttons to automatic safe Neon sync when Cloud Auto Sync is enabled: connection metadata, certificate metadata, provisioning session metadata, audit logs, and diagnostics use the active provisioning context.
-- Manual cloud buttons remain available for verification and recovery; if Cloud Auto Sync is disabled, local provisioning still works and cloud sync is reported as skipped.
+- The dedicated Cloud Storage GUI page is removed from normal navigation; the top header now shows a short cloud state such as `Cloud: Connecting...`, `Cloud: Connected`, `Cloud: Not Configured`, `Cloud: Disconnected`, or `Cloud: Disabled`.
+- Small retry/disable controls remain in Logs / Report for recovery; if Cloud Auto Sync is disabled, local provisioning still works and cloud sync is reported as skipped.
 - Cloud sync failures are reported separately from local provisioning success, and cloud operations reuse the cached runtime, PostgreSQL client/pool, and schema-initialization state.
 - Cloud Phase 8.9 attempts to enable Cloud Auto Sync automatically on startup when cloud configuration is present and healthy; if startup cloud initialization fails, the app remains fully usable locally and manual cloud controls remain available for retry or disabling.
 - Provisioning buttons can sync automatically after startup auto-enable without requiring the user to click Enable Cloud Auto Sync first; the first hosted database check may be slower during Neon warm-up.
+- `Cloud: Connected` appears only after connection, health check, schema initialization, and auto-sync enablement succeed; database credentials and master keys are never displayed.
 - Certificate and provisioning session metadata can reference the active selected context; full hardware-grade cryptographic key lifecycle binding remains out of scope for this prototype phase.
 - The first cloud request can be slower while the hosted database connection warms up; later operations reuse the active PostgreSQL pool.
 - Demo records remain available as fallback/sample records when cloud storage is not configured.

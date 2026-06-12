@@ -1000,7 +1000,7 @@ impl AppController {
     }
 
     pub fn enable_cloud_auto_sync(&mut self) -> Result<String, AppControllerError> {
-        self.check_cloud_connection()?;
+        self.ensure_schema_initialized()?;
         self.cloud_auto_sync_enabled = true;
         self.save_log_entry("[DB]", "Auto-sync enabled")?;
         Ok("Cloud auto-sync enabled".to_string())
