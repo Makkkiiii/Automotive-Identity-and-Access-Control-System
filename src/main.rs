@@ -187,6 +187,7 @@ enum CloudOperation {
     LoadKeyFobs,
     CreateKeyFob,
     SelectKeyFob,
+    StartupAutoEnable,
     CheckConnection,
     EnableAutoSync,
     DisableAutoSync,
@@ -322,43 +323,50 @@ impl Application for AIACSApp {
             let _ = controller.save_log_entry("[INFO]", message);
         }
 
-        (
-            Self {
-                controller,
-                status: SystemStatus::default(),
-                workflow_state: WorkflowState::default(),
-                management_state: ManagementState::default(),
-                selected_tab: MainTab::Dashboard,
-                selected_artifact: ArtifactSection::ChallengeMessage,
-                cloud_status: "Disconnected".to_string(),
-                cloud_auto_sync_status: "Disabled".to_string(),
-                cloud_sync_metadata_status: "Pending".to_string(),
-                cloud_sync_certificate_status: "Pending".to_string(),
-                cloud_sync_encrypted_key_status: "Pending".to_string(),
-                cloud_sync_session_status: "Pending".to_string(),
-                cloud_sync_audit_status: "Pending".to_string(),
-                cloud_sync_diagnostic_status: "Pending".to_string(),
-                last_metadata_sync_status: "Not synced".to_string(),
-                last_metadata_sync_time: "N/A".to_string(),
-                last_certificate_sync_status: "Not synced".to_string(),
-                last_certificate_sync_time: "N/A".to_string(),
-                last_provisioning_session_sync_status: "Ready".to_string(),
-                last_provisioning_session_sync_time: "N/A".to_string(),
-                last_audit_log_sync_status: "Ready".to_string(),
-                last_audit_log_sync_time: "N/A".to_string(),
-                last_diagnostic_result_sync_status: "Ready".to_string(),
-                last_diagnostic_result_sync_time: "N/A".to_string(),
-                last_encrypted_key_sync_status: "Not uploaded".to_string(),
-                last_encrypted_key_sync_time: "N/A".to_string(),
-                selected_detail: "Provisioning console ready. Initialize vehicle trust to begin."
-                    .to_string(),
-                event_log: initial_messages
-                    .iter()
-                    .map(|message| timestamped("[INFO]", message))
-                    .collect(),
+        let app = Self {
+            controller,
+            status: SystemStatus::default(),
+            workflow_state: WorkflowState::default(),
+            management_state: ManagementState::default(),
+            selected_tab: MainTab::Dashboard,
+            selected_artifact: ArtifactSection::ChallengeMessage,
+            cloud_status: "Disconnected".to_string(),
+            cloud_auto_sync_status: "Checking...".to_string(),
+            cloud_sync_metadata_status: "Pending".to_string(),
+            cloud_sync_certificate_status: "Pending".to_string(),
+            cloud_sync_encrypted_key_status: "Pending".to_string(),
+            cloud_sync_session_status: "Pending".to_string(),
+            cloud_sync_audit_status: "Pending".to_string(),
+            cloud_sync_diagnostic_status: "Pending".to_string(),
+            last_metadata_sync_status: "Not synced".to_string(),
+            last_metadata_sync_time: "N/A".to_string(),
+            last_certificate_sync_status: "Not synced".to_string(),
+            last_certificate_sync_time: "N/A".to_string(),
+            last_provisioning_session_sync_status: "Ready".to_string(),
+            last_provisioning_session_sync_time: "N/A".to_string(),
+            last_audit_log_sync_status: "Ready".to_string(),
+            last_audit_log_sync_time: "N/A".to_string(),
+            last_diagnostic_result_sync_status: "Ready".to_string(),
+            last_diagnostic_result_sync_time: "N/A".to_string(),
+            last_encrypted_key_sync_status: "Not uploaded".to_string(),
+            last_encrypted_key_sync_time: "N/A".to_string(),
+            selected_detail: "Provisioning console ready. Initialize vehicle trust to begin."
+                .to_string(),
+            event_log: initial_messages
+                .iter()
+                .map(|message| timestamped("[INFO]", message))
+                .collect(),
+        };
+
+        let startup_controller = app.controller.clone();
+        let startup_command = Command::perform(
+            async move {
+                perform_cloud_operation(startup_controller, CloudOperation::StartupAutoEnable)
             },
-            Command::none(),
-        )
+            |result| Message::CloudOperationFinished(Box::new(result)),
+        );
+
+        (app, startup_command)
     }
 
     fn title(&self) -> String {
@@ -813,9 +821,35 @@ impl AIACSApp {
         }
     }
 
+    fn apply_startup_cloud_status(&mut self, message: String) {
+        self.selected_detail = message.clone();
+        self.management_state.cloud_sync_status = message.clone();
+        if message.contains("enabled automatically") {
+            self.cloud_status = "Connected".to_string();
+            self.cloud_auto_sync_status = "Enabled automatically".to_string();
+            self.cloud_sync_metadata_status = "Pending".to_string();
+        } else if message.contains("not configured") {
+            self.cloud_status = "Disconnected".to_string();
+            self.cloud_auto_sync_status = "Disabled - cloud database not configured".to_string();
+            self.cloud_sync_metadata_status = "Skipped - disabled".to_string();
+        } else if message.contains("health check failed") {
+            self.cloud_status = "Disconnected".to_string();
+            self.cloud_auto_sync_status = "Disabled - health check failed".to_string();
+            self.cloud_sync_metadata_status = "Skipped - disabled".to_string();
+        } else {
+            self.cloud_status = "Disconnected".to_string();
+            self.cloud_auto_sync_status = "Disabled - startup cloud check failed".to_string();
+            self.cloud_sync_metadata_status = "Skipped - disabled".to_string();
+        }
+        self.push_log("[DB]", message);
+    }
+
     fn apply_cloud_success(&mut self, operation: CloudOperation, message: String) {
         self.management_state.cloud_sync_status = "Cloud sync completed".to_string();
         match operation {
+            CloudOperation::StartupAutoEnable => {
+                self.apply_startup_cloud_status(message);
+            }
             CloudOperation::LoadCustomers => {
                 self.management_state.customer_load_status = "Customers loaded".to_string();
                 self.management_state.customer_note = message.clone();
@@ -1031,6 +1065,14 @@ impl AIACSApp {
     fn apply_cloud_error(&mut self, operation: CloudOperation, error: String) {
         self.management_state.cloud_sync_status = format!("Cloud sync failed: {}", error);
         match operation {
+            CloudOperation::StartupAutoEnable => {
+                self.cloud_status = "Disconnected".to_string();
+                self.cloud_auto_sync_status = "Disabled - startup cloud check failed".to_string();
+                self.management_state.cloud_sync_status =
+                    "Cloud Auto Sync disabled - startup cloud check failed".to_string();
+                self.selected_detail = self.management_state.cloud_sync_status.clone();
+                self.push_log("[DB]", self.selected_detail.clone());
+            }
             CloudOperation::LoadCustomers => {
                 self.management_state.customer_load_status = "Customer load failed".to_string();
                 self.management_state.customer_note = format!("Customer load failed: {}", error);
@@ -3678,6 +3720,9 @@ fn perform_cloud_operation(
     operation: CloudOperation,
 ) -> CloudOperationResult {
     let result = match operation {
+        CloudOperation::StartupAutoEnable => {
+            Ok(controller.startup_auto_enable_cloud_sync().to_string())
+        }
         CloudOperation::LoadCustomers => controller.load_customer_records(),
         CloudOperation::CreateCustomer
         | CloudOperation::CreateVehicle
@@ -4020,6 +4065,41 @@ mod tests {
                 source.contains(expected),
                 "missing manual cloud button: {expected}"
             );
+        }
+    }
+
+    #[test]
+    fn startup_cloud_auto_enable_runs_once_from_app_startup() {
+        let source = include_str!("main.rs");
+        assert!(source.contains("CloudOperation::StartupAutoEnable"));
+        assert!(source.contains("cloud_auto_sync_status: \"Checking...\""));
+        assert!(source.contains("startup_auto_enable_cloud_sync"));
+        assert_eq!(
+            source
+                .matches("CloudOperation::StartupAutoEnable =>")
+                .count(),
+            3
+        );
+        assert!(!source.contains("cloud_storage::"));
+    }
+
+    #[test]
+    fn startup_cloud_status_strings_are_safe() {
+        let statuses = [
+            "Enabled automatically",
+            "Disabled - cloud database not configured",
+            "Disabled - health check failed",
+            "Disabled - startup cloud check failed",
+        ];
+        let combined = statuses.join("\n");
+        for expected in statuses {
+            assert!(
+                combined.contains(expected),
+                "missing startup status: {expected}"
+            );
+        }
+        for forbidden in ["DATABASE_URL", "AIACS_MASTER_KEY", "postgresql://"] {
+            assert!(!combined.contains(forbidden));
         }
     }
 

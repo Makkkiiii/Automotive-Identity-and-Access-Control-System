@@ -80,6 +80,24 @@ pub struct ProvisioningCloudSyncResult {
     pub active_session_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartupCloudSyncResult {
+    pub attempted: bool,
+    pub enabled: bool,
+    pub status_message: String,
+    pub safe_error: Option<String>,
+}
+
+impl fmt::Display for StartupCloudSyncResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.status_message)?;
+        if let Some(error) = &self.safe_error {
+            write!(f, ": {}", error)?;
+        }
+        Ok(())
+    }
+}
+
 impl fmt::Display for ProvisioningCloudSyncResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -992,6 +1010,16 @@ impl AppController {
         self.cloud_auto_sync_enabled = false;
         self.save_log_entry("[DB]", "Auto-sync disabled")?;
         Ok("Cloud auto-sync disabled".to_string())
+    }
+
+    pub fn startup_auto_enable_cloud_sync(&mut self) -> StartupCloudSyncResult {
+        match self.ensure_schema_initialized() {
+            Ok(_) => self.startup_cloud_sync_enabled_result(),
+            Err(error) => {
+                self.clear_failed_cloud_client();
+                self.startup_cloud_sync_disabled_result(error)
+            }
+        }
     }
 
     pub fn auto_sync_after_metadata_ready(&mut self) -> Result<String, AppControllerError> {
@@ -2186,6 +2214,43 @@ impl AppController {
         }
     }
 
+    fn startup_cloud_sync_enabled_result(&mut self) -> StartupCloudSyncResult {
+        self.cloud_auto_sync_enabled = true;
+        self.schema_initialized = true;
+        let message = "Cloud Auto Sync enabled automatically".to_string();
+        let _ = self.save_log_entry("[DB]", message.clone());
+        let _ = self.save_log_entry("[DB]", "Cloud schema initialized");
+        let _ = self.save_log_entry("[SECURITY]", "Cloud startup secrets: [REDACTED]");
+        StartupCloudSyncResult {
+            attempted: true,
+            enabled: true,
+            status_message: message,
+            safe_error: None,
+        }
+    }
+
+    fn startup_cloud_sync_disabled_result(
+        &mut self,
+        error: AppControllerError,
+    ) -> StartupCloudSyncResult {
+        self.cloud_auto_sync_enabled = false;
+        let safe_error = error.to_string();
+        let status_message = if is_cloud_not_configured(&safe_error) {
+            "Cloud Auto Sync disabled - cloud database not configured".to_string()
+        } else if safe_error.contains("health check") {
+            "Cloud Auto Sync disabled - health check failed".to_string()
+        } else {
+            "Cloud Auto Sync disabled - startup cloud check failed".to_string()
+        };
+        let _ = self.save_log_entry("[DB]", status_message.clone());
+        StartupCloudSyncResult {
+            attempted: true,
+            enabled: false,
+            status_message,
+            safe_error: Some(safe_error),
+        }
+    }
+
     fn provisioning_sync_result(
         &mut self,
         action_name: &'static str,
@@ -3181,6 +3246,68 @@ mod tests {
     }
 
     #[test]
+    fn test_startup_auto_enable_missing_database_url_is_safe() {
+        let mut controller = AppController::new();
+        let result = controller.startup_cloud_sync_disabled_result(AppControllerError::Backend(
+            "Cloud database is not configured. Check .env.local.".to_string(),
+        ));
+
+        assert!(result.attempted);
+        assert!(!result.enabled);
+        assert!(!controller.is_cloud_auto_sync_enabled());
+        assert_eq!(
+            result.status_message,
+            "Cloud Auto Sync disabled - cloud database not configured"
+        );
+        let display = result.to_string();
+        for forbidden in [
+            "DATABASE_URL",
+            "AIACS_MASTER_KEY",
+            "postgresql://",
+            "private_key",
+            "session_key",
+            "shared_secret",
+        ] {
+            assert!(!display.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn test_startup_auto_enable_health_failure_does_not_cache_success() {
+        let mut controller = AppController::new();
+        controller.schema_initialized = true;
+        let result = controller.startup_cloud_sync_disabled_result(AppControllerError::Backend(
+            "Cloud database health check failed. Check network/Neon availability.".to_string(),
+        ));
+        controller.clear_failed_cloud_client();
+
+        assert!(result.attempted);
+        assert!(!result.enabled);
+        assert_eq!(
+            result.status_message,
+            "Cloud Auto Sync disabled - health check failed"
+        );
+        assert!(!controller.is_cloud_auto_sync_enabled());
+        assert!(controller.cloud_client.is_none());
+        assert!(!controller.schema_initialized);
+    }
+
+    #[test]
+    fn test_startup_auto_enable_success_updates_controller_state() {
+        let mut controller = AppController::new();
+        let result = controller.startup_cloud_sync_enabled_result();
+
+        assert!(result.attempted);
+        assert!(result.enabled);
+        assert!(controller.is_cloud_auto_sync_enabled());
+        assert!(controller.schema_initialized);
+        assert_eq!(
+            result.status_message,
+            "Cloud Auto Sync enabled automatically"
+        );
+    }
+
+    #[test]
     fn test_disable_cloud_auto_sync_returns_safe_message() {
         let mut controller = AppController::new();
         controller.cloud_auto_sync_enabled = true;
@@ -3571,6 +3698,24 @@ mod tests {
         assert_eq!(result.provisioning_status, "Vehicle connected");
         assert!(!result.cloud_sync_status.contains("DATABASE_URL"));
         assert!(!result.cloud_sync_status.contains("AIACS_MASTER_KEY"));
+    }
+
+    #[test]
+    fn test_provisioning_sync_sees_startup_auto_enabled_state() {
+        let mut controller = AppController::new();
+        controller.startup_cloud_sync_enabled_result();
+
+        let result = controller.provisioning_sync_result(
+            "Issue Access Certificate",
+            "Certificate issued",
+            "certificates",
+            |_| Ok("Certificate metadata synced".to_string()),
+        );
+
+        assert!(result.local_success);
+        assert!(result.cloud_sync_attempted);
+        assert_eq!(result.cloud_sync_status, "Synced");
+        assert_eq!(result.cloud_table_updated, "certificates");
     }
 
     #[test]
