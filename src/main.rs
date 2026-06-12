@@ -12,14 +12,12 @@ const OWNER_NAME: &str = "Dennis Maharjan";
 const CUSTOMER_EMAIL: &str = "dennis.m@example.com";
 const CUSTOMER_PHONE: &str = "+977-9800000000";
 const VEHICLE_DISPLAY_NAME: &str = "Nissan Magnite 2021";
-const TECH_VEHICLE_ID: &str = "VEH-0001";
 const VEHICLE_MAKE: &str = "Nissan";
 const VEHICLE_MODEL: &str = "Magnite";
 const VEHICLE_YEAR: &str = "2021";
 const VEHICLE_VIN: &str = "VIN-DEMO-001";
 const VEHICLE_REGISTRATION: &str = "BA-00-PA-0001";
 const KEY_FOB_LABEL: &str = "Primary Key Fob";
-const TECH_KEY_FOB_ID: &str = "FOB-0001";
 const ICON_DIR: &str = "assets/icons";
 
 const WINDOW_BG: Color = Color::from_rgb(0.105, 0.09, 0.11);
@@ -1959,6 +1957,7 @@ impl AIACSApp {
 
     fn view_provisioning_context_panel(&self) -> Element<'_, Message> {
         let context = self.controller.get_active_provisioning_context();
+        let crypto_identity = self.controller.get_active_key_fob_crypto_identity();
         container(
             column![
                 text("Active Provisioning Context")
@@ -1983,7 +1982,16 @@ impl AIACSApp {
                 self.selected_setup_card("certificate", "Certificate", context.certificate_id),
                 self.selected_setup_card("lock", "Session", context.session_id),
                 self.selected_setup_card("terminal", "Source", context.context_source),
-                text("Metadata context uses selected records. Cryptographic key material remains managed by the prototype engine.")
+                text("Crypto Identity")
+                    .size(16)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(ACCENT_PINK)),
+                self.selected_setup_card("key", "Fob ID", crypto_identity.fob_id),
+                self.selected_setup_card("certificate", "Certificate ID", crypto_identity.certificate_id),
+                self.selected_setup_card("certificate", "Certificate Status", crypto_identity.certificate_status),
+                self.selected_setup_card("auth", "Public Fingerprint", crypto_identity.public_key_fingerprint),
+                self.selected_setup_card("shield", "Binding", crypto_identity.binding_status),
+                text("Selected records now bind to the active cryptographic fob identity; private key material remains redacted.")
                     .size(10)
                     .font(Font::MONOSPACE)
                     .style(theme::Text::Color(SECONDARY_TEXT)),
@@ -2497,12 +2505,13 @@ impl AIACSApp {
     }
 
     fn selected_artifact_rows(&self) -> (&'static str, Vec<(&'static str, String)>) {
+        let context = self.controller.get_active_provisioning_context();
         match self.selected_artifact {
             ArtifactSection::ChallengeMessage => (
                 "Challenge Message",
                 vec![
                     ("Status", self.challenge_status().to_string()),
-                    ("Vehicle ID", TECH_VEHICLE_ID.to_string()),
+                    ("Vehicle ID", context.vehicle_id.clone()),
                     ("Protocol", "AIACS_AUTH_V1".to_string()),
                     ("Nonce", "[REDACTED]".to_string()),
                     (
@@ -2515,7 +2524,7 @@ impl AIACSApp {
                 "Authentication Proof",
                 vec![
                     ("Status", self.authentication_proof_status().to_string()),
-                    ("Subject ID", TECH_KEY_FOB_ID.to_string()),
+                    ("Subject ID", context.fob_id.clone()),
                     ("Auth Method", "Ed25519 + PKI".to_string()),
                     (
                         "Canonical Payload",
@@ -2528,9 +2537,12 @@ impl AIACSApp {
                 "Certificate Details",
                 vec![
                     ("Status", self.certificate_artifact_status().to_string()),
-                    ("Subject ID", TECH_KEY_FOB_ID.to_string()),
+                    ("Subject ID", context.fob_id.clone()),
                     ("Issuer", "AIACS-Demo-CA".to_string()),
-                    ("Certificate Path", "certs/fob_FOB-0001.json".to_string()),
+                    (
+                        "Certificate Path",
+                        format!("certs/fob_{}.json", context.fob_id),
+                    ),
                     (
                         "Public Key",
                         "Fingerprint only; see credential storage".to_string(),

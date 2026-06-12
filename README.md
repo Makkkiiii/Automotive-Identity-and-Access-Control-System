@@ -435,11 +435,12 @@ AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metada
 - `Cloud: Connected` appears only after connection, health check, schema initialization, and auto-sync enablement succeed; database credentials and master keys are never displayed.
 - Cloud Phase 8.9.2 keeps startup cloud work in the background, caches local `.env.local` discovery during normal operations, tunes the desktop PostgreSQL pool for a small GUI app, and records a cloud schema version so current schemas skip the full migration list on later app sessions.
 - Provisioning sync remains targeted: vehicle connection syncs active metadata, certificate issuance syncs certificate metadata, secure session activation syncs provisioning session metadata, finalization syncs audit logs, and diagnostics sync diagnostic results only.
-- Certificate and provisioning session metadata can reference the active selected context; full hardware-grade cryptographic key lifecycle binding remains out of scope for this prototype phase.
+- Certificate and provisioning session metadata now reference the same selected key fob identity used by the cryptographic authentication flow.
 - The first cloud request can be slower while the hosted database connection warms up; later operations reuse the active PostgreSQL pool.
 - Demo records remain available as fallback/sample records when cloud storage is not configured.
-- Full dynamic cryptographic identity binding for custom selected records remains a later phase; the stable demo crypto flow is preserved.
+- Selected/custom key fobs can use their own Ed25519 keypair and CA-issued certificate; the demo `FOB-0001` flow remains available as fallback when no custom fob is selected.
 - Customer, vehicle, and key fob tables store safe metadata only, never private keys or session secret material.
+- Authentication verifies trusted certificate validation, subject binding, Ed25519 signature binding, freshness, and replay protection; production hardware secure element / TPM storage remains out of scope.
 
 ---
 
@@ -630,7 +631,7 @@ Run the release binary on Linux/macOS:
 9. Export the provisioning report from Logs / Report.
 10. Launch diagnostics separately when testing adversarial validation.
 
-Selected cloud metadata records are visible in the GUI, but full cryptographic identity binding for custom selected records is deferred until Phase 9. Until then, the cryptographic provisioning demo uses the stable demo identity.
+Selected cloud metadata records are now bound to the cryptographic provisioning flow: a selected/custom key fob uses its own Ed25519 keypair, receives a CA-issued certificate for that fob ID, signs the vehicle challenge as that fob, and syncs only safe certificate/session/audit metadata. Plaintext private keys and session secrets are not uploaded.
 
 ---
 
