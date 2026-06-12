@@ -9,6 +9,7 @@ use sqlx::{postgres::PgPoolOptions, PgPool};
 use std::env;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 const ENV_FILE: &str = ".env.local";
@@ -16,6 +17,7 @@ const DATABASE_URL_ENV: &str = "DATABASE_URL";
 const MASTER_KEY_ENV: &str = "AIACS_MASTER_KEY";
 const HEALTHY_MESSAGE: &str = "Cloud database connection healthy";
 const SCHEMA_INITIALIZED_MESSAGE: &str = "Cloud database schema initialized";
+const CURRENT_SCHEMA_VERSION: &str = "8.9.2";
 const CUSTOMER_SYNCED_MESSAGE: &str = "Customer metadata synced";
 const VEHICLE_SYNCED_MESSAGE: &str = "Vehicle metadata synced";
 const KEY_FOB_SYNCED_MESSAGE: &str = "Key fob metadata synced";
@@ -75,6 +77,35 @@ pub const ENCRYPTED_KEY_ALGORITHM: &str = "AES-256-GCM";
 pub const ENCRYPTED_KEY_STORAGE_STATUS: &str = "Client-side encrypted cloud blob";
 pub const CA_KEY_PURPOSE: &str = "certificate_authority_signing";
 pub const KEY_FOB_KEY_PURPOSE: &str = "key_fob_authentication_signing";
+
+static ENV_FILES_LOADED: AtomicBool = AtomicBool::new(false);
+
+const SCHEMA_VERSION_TABLE_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS aiacs_schema_migrations (
+    schema_key TEXT PRIMARY KEY,
+    schema_version TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+"#;
+
+const SELECT_SCHEMA_VERSION_SQL: &str = r#"
+SELECT schema_version
+FROM aiacs_schema_migrations
+WHERE schema_key = 'aiacs_cloud_schema';
+"#;
+
+const UPSERT_SCHEMA_VERSION_SQL: &str = r#"
+INSERT INTO aiacs_schema_migrations (
+    schema_key,
+    schema_version,
+    updated_at
+)
+VALUES ('aiacs_cloud_schema', $1, NOW())
+ON CONFLICT (schema_key)
+DO UPDATE SET
+    schema_version = EXCLUDED.schema_version,
+    updated_at = NOW();
+"#;
 
 const SCHEMA_STATEMENTS: &[&str] = &[
     r#"
@@ -1014,6 +1045,10 @@ impl CloudStorageConfig {
         Self::from_database_url(env::var(DATABASE_URL_ENV).ok())
     }
 
+    pub fn refresh_env_cache() {
+        load_local_env_files_refresh();
+    }
+
     fn from_database_url(database_url: Option<String>) -> Result<Self, CloudStorageError> {
         let database_url = database_url
             .filter(|value| !value.trim().is_empty())
@@ -1024,6 +1059,13 @@ impl CloudStorageConfig {
 }
 
 fn load_local_env_files() {
+    if ENV_FILES_LOADED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    load_local_env_files_refresh();
+}
+
+fn load_local_env_files_refresh() {
     let _ = dotenvy::from_filename(ENV_FILE);
     if let Ok(current_dir) = env::current_dir() {
         load_env_from_ancestors(&current_dir);
@@ -1085,7 +1127,10 @@ impl CloudStorageClient {
     pub async fn connect_from_env() -> Result<Self, CloudStorageError> {
         let config = CloudStorageConfig::from_env()?;
         let pool = PgPoolOptions::new()
-            .max_connections(5)
+            .max_connections(3)
+            .min_connections(0)
+            .acquire_timeout(Duration::from_secs(5))
+            .idle_timeout(Duration::from_secs(60))
             .connect(&config.database_url)
             .await
             .map_err(|_| CloudStorageError::ConnectionFailed)?;
@@ -1106,12 +1151,30 @@ impl CloudStorageClient {
     }
 
     pub async fn initialize_schema(&self) -> Result<String, CloudStorageError> {
+        sqlx::query(SCHEMA_VERSION_TABLE_SQL)
+            .execute(&self.pool)
+            .await
+            .map_err(|_| CloudStorageError::SchemaInitializationFailed)?;
+
+        let current_version: Option<String> = sqlx::query_scalar(SELECT_SCHEMA_VERSION_SQL)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|_| CloudStorageError::SchemaInitializationFailed)?;
+        if current_version.as_deref() == Some(CURRENT_SCHEMA_VERSION) {
+            return Ok(schema_initialized_message().to_string());
+        }
+
         for statement in SCHEMA_STATEMENTS {
             sqlx::query(statement)
                 .execute(&self.pool)
                 .await
                 .map_err(|_| CloudStorageError::SchemaInitializationFailed)?;
         }
+        sqlx::query(UPSERT_SCHEMA_VERSION_SQL)
+            .bind(CURRENT_SCHEMA_VERSION)
+            .execute(&self.pool)
+            .await
+            .map_err(|_| CloudStorageError::SchemaInitializationFailed)?;
 
         Ok(schema_initialized_message().to_string())
     }
@@ -1612,7 +1675,13 @@ fn key_fob_metadata_from_row(row: KeyFobRow) -> KeyFobMetadata {
 
 #[cfg(test)]
 fn schema_sql() -> String {
-    SCHEMA_STATEMENTS.join("\n")
+    [
+        SCHEMA_VERSION_TABLE_SQL,
+        SELECT_SCHEMA_VERSION_SQL,
+        UPSERT_SCHEMA_VERSION_SQL,
+        &SCHEMA_STATEMENTS.join("\n"),
+    ]
+    .join("\n")
 }
 
 #[cfg(test)]
@@ -1901,6 +1970,48 @@ mod tests {
                 "schema initializer must not contain {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn schema_sql_includes_version_short_circuit_metadata() {
+        let schema = schema_sql();
+
+        assert!(schema.contains("CREATE TABLE IF NOT EXISTS aiacs_schema_migrations"));
+        assert!(schema.contains("SELECT schema_version"));
+        assert!(schema.contains("schema_key = 'aiacs_cloud_schema'"));
+        assert!(schema.contains("ON CONFLICT (schema_key)"));
+        let source = include_str!("mod.rs");
+        assert!(source.contains("CURRENT_SCHEMA_VERSION"));
+        assert!(source.contains(".bind(CURRENT_SCHEMA_VERSION)"));
+        for forbidden in [
+            "private_key",
+            "session_key",
+            "shared_secret",
+            "DATABASE_URL",
+            "AIACS_MASTER_KEY",
+        ] {
+            assert!(!schema.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn cloud_pool_settings_are_small_and_desktop_friendly() {
+        let source = include_str!("mod.rs");
+
+        assert!(source.contains(".max_connections(3)"));
+        assert!(source.contains(".min_connections(0)"));
+        assert!(source.contains(".acquire_timeout(Duration::from_secs(5))"));
+        assert!(source.contains(".idle_timeout(Duration::from_secs(60))"));
+    }
+
+    #[test]
+    fn env_file_discovery_is_cached_and_retry_refresh_is_available() {
+        let source = include_str!("mod.rs");
+
+        assert!(source.contains("static ENV_FILES_LOADED: AtomicBool"));
+        assert!(source.contains("ENV_FILES_LOADED.swap(true, Ordering::AcqRel)"));
+        assert!(source.contains("pub fn refresh_env_cache()"));
+        assert!(source.contains("load_local_env_files_refresh()"));
     }
 
     #[test]

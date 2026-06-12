@@ -433,6 +433,8 @@ AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metada
 - Cloud Phase 8.9 attempts to enable Cloud Auto Sync automatically on startup when cloud configuration is present and healthy; if startup cloud initialization fails, the app remains fully usable locally and manual cloud controls remain available for retry or disabling.
 - Provisioning buttons can sync automatically after startup auto-enable without requiring the user to click Enable Cloud Auto Sync first; the first hosted database check may be slower during Neon warm-up.
 - `Cloud: Connected` appears only after connection, health check, schema initialization, and auto-sync enablement succeed; database credentials and master keys are never displayed.
+- Cloud Phase 8.9.2 keeps startup cloud work in the background, caches local `.env.local` discovery during normal operations, tunes the desktop PostgreSQL pool for a small GUI app, and records a cloud schema version so current schemas skip the full migration list on later app sessions.
+- Provisioning sync remains targeted: vehicle connection syncs active metadata, certificate issuance syncs certificate metadata, secure session activation syncs provisioning session metadata, finalization syncs audit logs, and diagnostics sync diagnostic results only.
 - Certificate and provisioning session metadata can reference the active selected context; full hardware-grade cryptographic key lifecycle binding remains out of scope for this prototype phase.
 - The first cloud request can be slower while the hosted database connection warms up; later operations reuse the active PostgreSQL pool.
 - Demo records remain available as fallback/sample records when cloud storage is not configured.

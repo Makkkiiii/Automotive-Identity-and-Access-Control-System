@@ -5,13 +5,14 @@ use crate::ca::{CAError, Certificate, CertificateAuthority};
 use crate::cloud_storage::{
     demo_customer_metadata, demo_key_fob_metadata, demo_vehicle_metadata,
     encrypt_private_key_for_cloud, parse_master_key_from_env, AuditLogRecord, CertificateMetadata,
-    CloudStorageClient, CloudStorageError, CustomerMetadata, EncryptedKeyRecord, KeyFobMetadata,
-    ProvisioningSessionMetadata, VehicleMetadata, AUTHENTICATED_STATUS, CA_ENCRYPTED_KEY_ID,
-    CA_KEY_PURPOSE, CERTIFICATE_SIGNATURE_ALGORITHM, DEFAULT_CERTIFICATE_STATUS,
-    DEFAULT_PROVISIONING_STATUS, DEMO_CERTIFICATE_ID, DEMO_CUSTOMER_ID, DEMO_FOB_ID,
-    DEMO_SESSION_ID, DEMO_VEHICLE_ID, DIAGNOSTIC_RESULT_IDS, ENCRYPTED_KEY_STORAGE_STATUS,
-    GRANT_ACCESS_DECISION, ISSUED_CERTIFICATE_STATUS, KEY_FOB_ENCRYPTED_KEY_ID,
-    KEY_FOB_KEY_PURPOSE, SECURE_SESSION_ESTABLISHED_STATUS, SESSION_ALGORITHM,
+    CloudStorageClient, CloudStorageConfig, CloudStorageError, CustomerMetadata,
+    EncryptedKeyRecord, KeyFobMetadata, ProvisioningSessionMetadata, VehicleMetadata,
+    AUTHENTICATED_STATUS, CA_ENCRYPTED_KEY_ID, CA_KEY_PURPOSE, CERTIFICATE_SIGNATURE_ALGORITHM,
+    DEFAULT_CERTIFICATE_STATUS, DEFAULT_PROVISIONING_STATUS, DEMO_CERTIFICATE_ID, DEMO_CUSTOMER_ID,
+    DEMO_FOB_ID, DEMO_SESSION_ID, DEMO_VEHICLE_ID, DIAGNOSTIC_RESULT_IDS,
+    ENCRYPTED_KEY_STORAGE_STATUS, GRANT_ACCESS_DECISION, ISSUED_CERTIFICATE_STATUS,
+    KEY_FOB_ENCRYPTED_KEY_ID, KEY_FOB_KEY_PURPOSE, SECURE_SESSION_ESTABLISHED_STATUS,
+    SESSION_ALGORITHM,
 };
 use crate::keyfob::{DigitalKeyFob, KeyFobError};
 use crate::session::{SessionState, SessionValidationEngine};
@@ -1000,6 +1001,10 @@ impl AppController {
     }
 
     pub fn enable_cloud_auto_sync(&mut self) -> Result<String, AppControllerError> {
+        CloudStorageConfig::refresh_env_cache();
+        if !self.cloud_auto_sync_enabled {
+            self.clear_failed_cloud_client();
+        }
         self.ensure_schema_initialized()?;
         self.cloud_auto_sync_enabled = true;
         self.save_log_entry("[DB]", "Auto-sync enabled")?;
@@ -3809,6 +3814,63 @@ mod tests {
 
         let direct_connect = concat!("CloudStorageClient::", "connect_from_env()");
         assert_eq!(source.matches(direct_connect).count(), 1);
+    }
+
+    #[test]
+    fn test_manual_retry_refreshes_cloud_config_and_clears_failed_state() {
+        let source = include_str!("mod.rs");
+        let function_start = source
+            .find("pub fn enable_cloud_auto_sync")
+            .expect("manual enable should exist");
+        let function_source = &source[function_start..];
+
+        assert!(function_source.contains("CloudStorageConfig::refresh_env_cache()"));
+        assert!(function_source.contains("self.clear_failed_cloud_client()"));
+        assert!(function_source.contains("self.ensure_schema_initialized()?"));
+    }
+
+    #[test]
+    fn test_schema_initialization_is_guarded_by_controller_cache() {
+        let source = include_str!("mod.rs");
+        let function_start = source
+            .find("fn ensure_schema_initialized")
+            .expect("schema guard should exist");
+        let function_source = &source[function_start..];
+
+        assert!(function_source.contains("if !self.schema_initialized"));
+        assert!(function_source.contains("client.initialize_schema()"));
+        assert!(function_source.contains("self.schema_initialized = true"));
+    }
+
+    #[test]
+    fn test_provisioning_sync_paths_remain_targeted() {
+        let source = include_str!("mod.rs");
+
+        for expected in [
+            "controller.sync_active_cloud_metadata()",
+            "controller.sync_certificate_metadata()",
+            "controller.sync_provisioning_session_record()",
+            "controller.sync_audit_log_records()",
+            "controller.sync_diagnostic_result_records()",
+        ] {
+            assert!(
+                source.contains(expected),
+                "missing targeted sync: {expected}"
+            );
+        }
+
+        let issue_start = source
+            .find("pub fn issue_access_certificate_with_cloud_sync")
+            .expect("issue certificate sync method should exist");
+        let issue_source = &source[issue_start
+            ..source[issue_start..]
+                .find("pub fn generate_challenge_with_cloud_sync")
+                .map(|offset| issue_start + offset)
+                .expect("next method should exist")];
+        assert!(issue_source.contains("controller.sync_certificate_metadata()"));
+        assert!(!issue_source.contains("sync_active_cloud_metadata"));
+        assert!(!issue_source.contains("sync_provisioning_session_record"));
+        assert!(!issue_source.contains("sync_audit_log_records"));
     }
 
     #[test]
