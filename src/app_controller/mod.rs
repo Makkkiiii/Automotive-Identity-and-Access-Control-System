@@ -1,24 +1,29 @@
 use crate::access::{AccessDecision, AccessDecisionEngine};
 use crate::attacks::{AdversarialValidationEngine, AttackResult, AttackType};
-use crate::auth::{AuthResult, AuthenticationEngine};
+use crate::auth::{AuthChallenge, AuthResult, AuthenticationEngine};
 use crate::ca::{CAError, Certificate, CertificateAuthority};
 use crate::cloud_storage::{
-    demo_customer_metadata, demo_key_fob_metadata, demo_vehicle_metadata,
-    encrypt_private_key_for_cloud, parse_master_key_from_env, AuditLogRecord, CertificateMetadata,
-    CloudStorageClient, CloudStorageConfig, CloudStorageError, CustomerMetadata,
-    EncryptedKeyRecord, KeyFobMetadata, ProvisioningSessionMetadata, VehicleMetadata,
-    AUTHENTICATED_STATUS, CA_ENCRYPTED_KEY_ID, CA_KEY_PURPOSE, CERTIFICATE_SIGNATURE_ALGORITHM,
-    DEFAULT_CERTIFICATE_STATUS, DEFAULT_PROVISIONING_STATUS, DEMO_CERTIFICATE_ID, DEMO_CUSTOMER_ID,
-    DEMO_FOB_ID, DEMO_SESSION_ID, DEMO_VEHICLE_ID, DIAGNOSTIC_RESULT_IDS,
-    ENCRYPTED_KEY_STORAGE_STATUS, FINALIZED_PROVISIONING_STATUS, GRANT_ACCESS_DECISION,
-    IN_APP_REPORT_ONLY_PATH, ISSUED_CERTIFICATE_STATUS, KEY_FOB_ENCRYPTED_KEY_ID,
-    KEY_FOB_KEY_PURPOSE, SECURE_SESSION_ESTABLISHED_STATUS, SESSION_ALGORITHM,
+    decrypt_private_key_from_cloud, demo_customer_metadata, demo_key_fob_metadata,
+    demo_vehicle_metadata, encrypt_private_key_for_cloud, parse_master_key_from_env,
+    AuditLogRecord, CertificateMetadata, CloudStorageClient, CloudStorageConfig, CloudStorageError,
+    CustomerMetadata, EncryptedKeyRecord, KeyFobMetadata, ProvisioningSessionMetadata,
+    VehicleMetadata, AUTHENTICATED_STATUS, CA_ENCRYPTED_KEY_ID, CA_KEY_PURPOSE,
+    CERTIFICATE_ISSUED_PROVISIONING_STATUS, CERTIFICATE_SIGNATURE_ALGORITHM,
+    CHALLENGE_GENERATED_STATUS, DEFAULT_CERTIFICATE_STATUS, DEFAULT_PROVISIONING_STATUS,
+    DEMO_CERTIFICATE_ID, DEMO_CUSTOMER_ID, DEMO_FOB_ID, DEMO_SESSION_ID, DEMO_VEHICLE_ID,
+    DIAGNOSTIC_RESULT_IDS, ENCRYPTED_KEY_STORAGE_STATUS, FAILED_PROVISIONING_STATUS,
+    FINALIZED_PROVISIONING_STATUS, GRANT_ACCESS_DECISION, IN_APP_REPORT_ONLY_PATH,
+    ISSUED_CERTIFICATE_STATUS, KEY_FOB_ENCRYPTED_KEY_ID, KEY_FOB_KEY_PURPOSE,
+    REGISTERED_PROVISIONING_STATUS, SECURE_SESSION_ESTABLISHED_STATUS, SESSION_ALGORITHM,
+    SESSION_ESTABLISHED_PROVISIONING_STATUS, TRUST_INITIALIZED_STATUS, VEHICLE_CONNECTED_STATUS,
+    VEHICLE_CREATED_STATUS,
 };
+use crate::crypto::CryptoEngine;
 use crate::keyfob::{AuthenticationProof, DigitalKeyFob, KeyFobError};
 use crate::session::{SessionState, SessionValidationEngine};
 use crate::vehicle::{VehicleControlModule, VehicleError};
 use base64::{engine::general_purpose, Engine as _};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, FixedOffset, Utc};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fs::{self, OpenOptions};
@@ -79,15 +84,32 @@ pub struct ActiveCertificateDetails {
     pub available: bool,
     pub certificate_id: Option<String>,
     pub fob_id: Option<String>,
+    pub vehicle_id: Option<String>,
     pub subject_id: Option<String>,
     pub issuer: Option<String>,
     pub signature_algorithm: Option<String>,
+    pub certificate_signature_fingerprint: Option<String>,
     pub public_key_fingerprint: Option<String>,
+    pub certificate_json_available: bool,
     pub certificate_status: Option<String>,
     pub issued_at: Option<String>,
     pub expires_at: Option<String>,
     pub source: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncryptedKeyRecoveryEvidence {
+    pub key_id: String,
+    pub owner_type: String,
+    pub owner_id: String,
+    pub public_key_fingerprint: String,
+    pub recovered_public_key_fingerprint: String,
+    pub encryption_algorithm: String,
+    pub key_purpose: String,
+    pub storage_status: String,
+    pub recovery_status: String,
+    pub fingerprint_match: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,10 +226,16 @@ pub fn format_status_label(status: &str) -> String {
         "expired" => "Expired".to_string(),
         "revoked" => "Revoked".to_string(),
         "pending" => "Pending".to_string(),
+        "in_progress" => "In Progress".to_string(),
+        "registered" => "Registered".to_string(),
+        "certificate_issued" => "Certificate Issued".to_string(),
         "authenticated" => "Authenticated".to_string(),
+        "session_established" => "Session Established".to_string(),
         "secure_session_established" => "Secure Session Established".to_string(),
         "grant_access" => "Grant Access".to_string(),
         "finalized" => "Finalized".to_string(),
+        "failed" => "Failed".to_string(),
+        "rejected" => "Rejected".to_string(),
         "in_app_report_only" => "In App Report Only".to_string(),
         other => other
             .split('_')
@@ -226,6 +254,21 @@ pub fn format_status_label(status: &str) -> String {
     }
 }
 
+pub fn format_nepal_time(timestamp: DateTime<Utc>) -> String {
+    let nepal_offset = FixedOffset::east_opt(5 * 3600 + 45 * 60)
+        .expect("Nepal offset should be a valid fixed offset");
+    timestamp
+        .with_timezone(&nepal_offset)
+        .format("%Y-%m-%d %H:%M:%S NPT")
+        .to_string()
+}
+
+fn format_nepal_time_from_rfc3339(value: &str) -> String {
+    DateTime::parse_from_rfc3339(value)
+        .map(|timestamp| format_nepal_time(timestamp.with_timezone(&Utc)))
+        .unwrap_or_else(|_| value.to_string())
+}
+
 #[derive(Clone)]
 pub struct AppController {
     ca: Option<CertificateAuthority>,
@@ -240,6 +283,10 @@ pub struct AppController {
     vehicle_connected: bool,
     keyfob_detected: bool,
     provisioning_report_exported: bool,
+    active_challenge: Option<AuthChallenge>,
+    active_auth_proof: Option<AuthenticationProof>,
+    verification_in_progress: bool,
+    last_key_fob_recovery_evidence: Option<EncryptedKeyRecoveryEvidence>,
     cloud_auto_sync_enabled: bool,
     active_customer: CustomerMetadata,
     active_vehicle: VehicleMetadata,
@@ -281,6 +328,13 @@ impl fmt::Debug for AppController {
             .field(
                 "provisioning_report_exported",
                 &self.provisioning_report_exported,
+            )
+            .field("active_challenge", &self.active_challenge.is_some())
+            .field("active_auth_proof", &self.active_auth_proof.is_some())
+            .field("verification_in_progress", &self.verification_in_progress)
+            .field(
+                "last_key_fob_recovery_evidence",
+                &self.last_key_fob_recovery_evidence,
             )
             .field("cloud_auto_sync_enabled", &self.cloud_auto_sync_enabled)
             .field("active_customer", &self.active_customer)
@@ -330,6 +384,10 @@ impl AppController {
             vehicle_connected: false,
             keyfob_detected: false,
             provisioning_report_exported: false,
+            active_challenge: None,
+            active_auth_proof: None,
+            verification_in_progress: false,
+            last_key_fob_recovery_evidence: None,
             cloud_auto_sync_enabled: false,
             active_customer: active_customer.clone(),
             active_vehicle: active_vehicle.clone(),
@@ -355,6 +413,7 @@ impl AppController {
     pub fn connect_vehicle(&mut self) -> Result<String, AppControllerError> {
         self.sync_vehicle_module_to_active_context()?;
         self.vehicle_connected = true;
+        self.set_active_vehicle_status(VEHICLE_CONNECTED_STATUS);
         let vehicle_id = self.active_vehicle.vehicle_id.clone();
         let message = format!("Vehicle connected: {}; protocol AIACS_AUTH_V1", vehicle_id);
         self.append_protocol_trace("[VEHICLE]", "Vehicle connection established")?;
@@ -367,6 +426,7 @@ impl AppController {
     pub fn detect_key_fob(&mut self) -> Result<String, AppControllerError> {
         self.ensure_active_key_fob_crypto_identity()?;
         self.keyfob_detected = true;
+        self.set_active_key_fob_status(None, Some(REGISTERED_PROVISIONING_STATUS));
         let fob_id = self.active_key_fob.fob_id.clone();
         let message = format!("Digital key fob detected: {}", fob_id);
         self.append_protocol_trace("[KEYFOB]", format!("Detected fob ID: {}", fob_id))?;
@@ -382,6 +442,11 @@ impl AppController {
             .map_err(|e| AppControllerError::Backend(e.to_string()))?;
         let nonce_fingerprint = fingerprint(&challenge.nonce);
         let message = "Authentication challenge generated; raw nonce is [REDACTED]".to_string();
+        self.active_challenge = Some(challenge);
+        self.active_auth_proof = None;
+        self.last_auth_result = None;
+        self.last_access_decision = None;
+        self.set_active_vehicle_status(CHALLENGE_GENERATED_STATUS);
 
         self.append_protocol_trace("[AUTH]", "Vehicle generated nonce challenge")?;
         self.append_protocol_trace("[AUTH]", format!("Vehicle ID: {}", vehicle_id))?;
@@ -393,12 +458,16 @@ impl AppController {
     pub fn sign_canonical_auth_payload(&mut self) -> Result<String, AppControllerError> {
         self.ensure_ready_for_authentication()?;
         let vehicle_id = self.active_vehicle.vehicle_id.clone();
-        let challenge = AuthenticationEngine::generate_challenge(&mut self.vehicle, &vehicle_id)
-            .map_err(|e| AppControllerError::Backend(e.to_string()))?;
+        let challenge = self.active_challenge.clone().ok_or_else(|| {
+            AppControllerError::Backend(
+                "missing_challenge: Generate Challenge before signing payload".to_string(),
+            )
+        })?;
         let proof = {
             let keyfob = self.keyfob.as_ref().expect("Key fob ready");
             keyfob.create_auth_proof(&vehicle_id, &challenge.nonce)?
         };
+        self.validate_auth_proof_binding(&proof)?;
         let canonical_payload = canonical_auth_payload(
             &proof.vehicle_id,
             &proof.subject_id,
@@ -407,6 +476,7 @@ impl AppController {
         );
         let message =
             "Canonical authentication payload signed; private key remains [REDACTED]".to_string();
+        self.active_auth_proof = Some(proof.clone());
 
         self.append_protocol_trace("[AUTH]", "Key fob constructed canonical payload")?;
         self.append_protocol_trace("[AUTH]", format!("Payload fob ID: {}", proof.subject_id))?;
@@ -453,6 +523,7 @@ impl AppController {
         self.append_protocol_trace("[CA]", "Root private key: [REDACTED]")?;
         self.append_key_storage_trace(None, Some(public_key_fingerprint.as_str()))?;
         self.ca = Some(ca);
+        self.set_active_vehicle_status(TRUST_INITIALIZED_STATUS);
         self.log(message.clone());
         Ok(message)
     }
@@ -471,8 +542,15 @@ impl AppController {
         let cert = Self::certificate_from_keyfob(&keyfob)?;
         self.validate_key_fob_certificate_binding(&keyfob, &cert)?;
         self.update_active_key_fob_fingerprint(&keyfob);
-        self.active_key_fob.certificate_status = Some("Issued".to_string());
-        upsert_local_key_fob(&mut self.key_fob_records, self.active_key_fob.clone());
+        self.set_active_key_fob_status(
+            Some(ISSUED_CERTIFICATE_STATUS),
+            Some(CERTIFICATE_ISSUED_PROVISIONING_STATUS),
+        );
+        self.set_active_vehicle_status(CERTIFICATE_ISSUED_PROVISIONING_STATUS);
+        self.active_challenge = None;
+        self.active_auth_proof = None;
+        self.last_auth_result = None;
+        self.last_access_decision = None;
         let message = format!(
             "Certificate issued: subject {} by issuer {}",
             cert.subject_id, cert.issuer
@@ -509,6 +587,7 @@ impl AppController {
 
     pub fn register_digital_key_fob(&mut self) -> Result<String, AppControllerError> {
         let identity_message = self.ensure_active_key_fob_crypto_identity()?;
+        self.set_active_key_fob_status(None, Some(REGISTERED_PROVISIONING_STATUS));
         let keyfob = self
             .keyfob
             .as_ref()
@@ -542,17 +621,25 @@ impl AppController {
         self.ensure_ready_for_authentication()?;
 
         let vehicle_id = self.active_vehicle.vehicle_id.clone();
-        let challenge = AuthenticationEngine::generate_challenge(&mut self.vehicle, &vehicle_id)
-            .map_err(|e| AppControllerError::Backend(e.to_string()))?;
-        self.append_protocol_trace("[AUTH]", "Vehicle generated nonce challenge")?;
-        self.append_protocol_trace(
-            "[AUTH]",
-            format!("Nonce hash: {}", fingerprint(&challenge.nonce)),
-        )?;
+        let proof = if let Some(proof) = self.active_auth_proof.clone() {
+            proof
+        } else {
+            let challenge =
+                AuthenticationEngine::generate_challenge(&mut self.vehicle, &vehicle_id)
+                    .map_err(|e| AppControllerError::Backend(e.to_string()))?;
+            self.active_challenge = Some(challenge.clone());
+            self.append_protocol_trace("[AUTH]", "Vehicle generated nonce challenge")?;
+            self.append_protocol_trace(
+                "[AUTH]",
+                format!("Nonce hash: {}", fingerprint(&challenge.nonce)),
+            )?;
 
-        let proof = {
-            let keyfob = self.keyfob.as_ref().expect("Key fob ready");
-            keyfob.create_auth_proof(&vehicle_id, &challenge.nonce)?
+            let proof = {
+                let keyfob = self.keyfob.as_ref().expect("Key fob ready");
+                keyfob.create_auth_proof(&vehicle_id, &challenge.nonce)?
+            };
+            self.active_auth_proof = Some(proof.clone());
+            proof
         };
         self.validate_auth_proof_binding(&proof)?;
         let canonical_payload = canonical_auth_payload(
@@ -594,6 +681,13 @@ impl AppController {
         self.session = Some(session);
         self.last_auth_result = Some(auth_result);
         self.last_access_decision = Some(access_decision);
+        if auth_result == AuthResult::Success {
+            self.set_active_key_fob_status(None, Some(AUTHENTICATED_STATUS));
+            self.set_active_vehicle_status(AUTHENTICATED_STATUS);
+        } else {
+            self.set_active_key_fob_status(None, Some("rejected"));
+            self.set_active_vehicle_status(FAILED_PROVISIONING_STATUS);
+        }
 
         self.append_protocol_trace("[AUTH]", "CA certificate validation: Passed")?;
         self.append_protocol_trace("[AUTH]", "Subject identity binding: Passed")?;
@@ -641,6 +735,8 @@ impl AppController {
 
         let key_lengths = material.key_lengths();
         self.session = Some(session);
+        self.set_active_key_fob_status(None, Some(SESSION_ESTABLISHED_PROVISIONING_STATUS));
+        self.set_active_vehicle_status(SESSION_ESTABLISHED_PROVISIONING_STATUS);
 
         let message = format!(
             "Secure session established: {} for subject {}; key material [REDACTED]; material lengths {:?}",
@@ -812,6 +908,13 @@ impl AppController {
                 .unwrap_or_else(|| "No certificate issued".to_string())
         ));
         artifacts.push(format!(
+            "vehicle_id: {}",
+            certificate
+                .vehicle_id
+                .clone()
+                .unwrap_or_else(|| visible.vehicle_id.clone())
+        ));
+        artifacts.push(format!(
             "issuer: {}",
             certificate
                 .issuer
@@ -831,6 +934,21 @@ impl AppController {
                 .public_key_fingerprint
                 .clone()
                 .unwrap_or(crypto_identity.public_key_fingerprint)
+        ));
+        artifacts.push(format!(
+            "certificate_signature_fingerprint: {}",
+            certificate
+                .certificate_signature_fingerprint
+                .clone()
+                .unwrap_or_else(|| "N/A".to_string())
+        ));
+        artifacts.push(format!(
+            "certificate_json: {}",
+            if certificate.certificate_json_available {
+                "Available"
+            } else {
+                "N/A"
+            }
         ));
         artifacts.push(format!("certificate_status: {}", certificate.message));
 
@@ -874,23 +992,53 @@ impl AppController {
 
         let identity = self.get_active_key_fob_crypto_identity();
         let certificate = self.get_active_certificate_details();
-        let encrypted_blob_status = if self.keyfob.is_some() {
-            "Available for encrypted local/cloud storage"
+        let backup_configured = parse_master_key_from_env().is_ok();
+        let encrypted_blob_status = if !backup_configured {
+            "Encrypted key backup is not configured."
+        } else if self.keyfob.is_some() {
+            "Available as client-side encrypted cloud blob"
         } else {
-            "Unavailable"
+            "Encrypted key backup: Not stored"
         };
+        let recovery_status = self
+            .last_key_fob_recovery_evidence
+            .as_ref()
+            .map(|evidence| evidence.recovery_status.as_str())
+            .unwrap_or("Not tested");
+        let fingerprint_match = self
+            .last_key_fob_recovery_evidence
+            .as_ref()
+            .map(|evidence| evidence.fingerprint_match.to_string())
+            .unwrap_or_else(|| "Not tested".to_string());
+        let recovered_fingerprint = self
+            .last_key_fob_recovery_evidence
+            .as_ref()
+            .map(|evidence| evidence.recovered_public_key_fingerprint.clone())
+            .unwrap_or_else(|| "Not tested".to_string());
 
         vec![
             format!("Fob ID: {}", identity.fob_id),
             format!("Certificate ID: {}", identity.certificate_id),
+            format!(
+                "Encrypted Key ID: {}",
+                self.derive_key_fob_encrypted_key_id()
+            ),
             "Key Owner Type: key_fob".to_string(),
             format!("Key Owner ID: {}", identity.fob_id),
-            "Encryption Algorithm: AES-256-GCM envelope encryption".to_string(),
+            "Encryption Algorithm: AES-256-GCM".to_string(),
+            format!("Key Purpose: {}", KEY_FOB_KEY_PURPOSE),
+            format!("Storage Status: {}", ENCRYPTED_KEY_STORAGE_STATUS),
             format!("Key Status: {}", identity.binding_status),
             format!(
                 "Public Key Fingerprint: {}",
                 identity.public_key_fingerprint
             ),
+            format!(
+                "Recovered Public Key Fingerprint: {}",
+                recovered_fingerprint
+            ),
+            format!("Recovery Status: {}", recovery_status),
+            format!("Fingerprint Match: {}", fingerprint_match),
             format!(
                 "Key Fob Private Key Path: {}",
                 self.key_fob_private_key_path()
@@ -987,7 +1135,10 @@ impl AppController {
         let mut report = String::new();
         report.push_str("AIACS Provisioning Audit Report\n");
         report.push_str("================================\n");
-        report.push_str(&format!("Generated At: {}\n", Utc::now().to_rfc3339()));
+        report.push_str(&format!(
+            "Generated At: {} (Asia/Kathmandu)\n",
+            format_nepal_time(Utc::now())
+        ));
         report.push('\n');
 
         report.push_str("Provisioning Summary\n");
@@ -1055,8 +1206,14 @@ impl AppController {
                 "Certificate Path: {}\n",
                 self.key_fob_certificate_path()
             ));
-            report.push_str(&format!("Issued At: {}\n", cert.issued_at));
-            report.push_str(&format!("Expires At: {}\n", cert.expires_at));
+            report.push_str(&format!(
+                "Issued At: {} (Asia/Kathmandu)\n",
+                format_nepal_time_from_rfc3339(&cert.issued_at)
+            ));
+            report.push_str(&format!(
+                "Expires At: {} (Asia/Kathmandu)\n",
+                format_nepal_time_from_rfc3339(&cert.expires_at)
+            ));
             report.push_str(&format!(
                 "Public Key Fingerprint: {}\n",
                 fingerprint(&cert.public_key)
@@ -1228,34 +1385,38 @@ impl AppController {
     }
 
     pub fn auto_sync_after_key_fob_registered(&mut self) -> Result<String, AppControllerError> {
-        self.run_auto_sync("key fob metadata synced", |controller| {
-            controller.sync_key_fob_metadata()
-        })
+        self.run_auto_sync(
+            "key fob metadata and encrypted key backup synced",
+            |controller| controller.sync_key_fob_metadata_and_backup(),
+        )
     }
 
     pub fn auto_sync_after_trust_initialized(&mut self) -> Result<String, AppControllerError> {
-        self.run_auto_sync("encrypted key blob synced", |controller| {
-            controller.sync_ca_encrypted_key_blob()
-        })
+        self.run_auto_sync(
+            "vehicle status and encrypted key blob synced",
+            |controller| controller.sync_vehicle_and_ca_encrypted_key_blob(),
+        )
     }
 
     pub fn auto_sync_after_certificate_issued(&mut self) -> Result<String, AppControllerError> {
-        self.run_auto_sync("certificate metadata synced", |controller| {
-            controller.sync_certificate_metadata()
-        })
+        self.run_auto_sync(
+            "certificate metadata and key fob status synced",
+            |controller| controller.sync_certificate_and_key_fob_status(),
+        )
     }
 
     pub fn auto_sync_after_secure_session_established(
         &mut self,
     ) -> Result<String, AppControllerError> {
-        self.run_auto_sync("provisioning session synced", |controller| {
-            controller.sync_provisioning_session_record()
-        })
+        self.run_auto_sync(
+            "provisioning session and key fob status synced",
+            |controller| controller.sync_session_and_key_fob_status(),
+        )
     }
 
     pub fn auto_sync_after_provisioning_finalized(&mut self) -> Result<String, AppControllerError> {
-        self.run_auto_sync("audit logs synced", |controller| {
-            controller.sync_audit_log_records()
+        self.run_auto_sync("finalized provisioning records synced", |controller| {
+            controller.sync_finalized_provisioning_records()
         })
     }
 
@@ -1299,8 +1460,8 @@ impl AppController {
         Ok(self.provisioning_sync_result(
             "Register Digital Key Fob",
             "Key fob registered",
-            "key_fobs",
-            |controller| controller.sync_key_fob_metadata(),
+            "key_fobs, encrypted_keys",
+            |controller| controller.sync_key_fob_metadata_and_backup(),
         ))
     }
 
@@ -1312,8 +1473,8 @@ impl AppController {
         Ok(self.provisioning_sync_result(
             "Initialize Vehicle Trust",
             "Vehicle trust initialized",
-            "encrypted_keys",
-            |controller| controller.sync_ca_encrypted_key_blob(),
+            "vehicles, encrypted_keys",
+            |controller| controller.sync_vehicle_and_ca_encrypted_key_blob(),
         ))
     }
 
@@ -1325,8 +1486,8 @@ impl AppController {
         Ok(self.provisioning_sync_result(
             "Issue Access Certificate",
             "Certificate issued",
-            "certificates",
-            |controller| controller.sync_certificate_metadata(),
+            "certificates, key_fobs",
+            |controller| controller.sync_certificate_and_key_fob_status(),
         ))
     }
 
@@ -1335,10 +1496,11 @@ impl AppController {
     ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
         self.ensure_visible_provisioning_context_selected()?;
         self.generate_authentication_challenge()?;
-        Ok(self.no_cloud_sync_result(
+        Ok(self.provisioning_sync_result(
             "Generate Challenge",
             "Challenge generated",
-            "No sync required",
+            "vehicles",
+            |controller| controller.sync_vehicle_metadata(),
         ))
     }
 
@@ -1362,17 +1524,18 @@ impl AppController {
     pub fn verify_authentication_with_cloud_sync(
         &mut self,
     ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
-        self.ensure_visible_key_fob_selected()?;
-        if self.current_certificate().is_none() {
-            return Err(AppControllerError::Backend(
-                "Issue an access certificate before verifying authentication.".to_string(),
-            ));
+        self.ensure_verify_authentication_ready()?;
+        self.verification_in_progress = true;
+        if let Err(error) = self.run_legitimate_authentication_demo() {
+            self.verification_in_progress = false;
+            return Err(error);
         }
-        self.run_legitimate_authentication_demo()?;
-        Ok(self.no_cloud_sync_result(
+        self.verification_in_progress = false;
+        Ok(self.provisioning_sync_result(
             "Verify Key Authentication",
             "Authentication verified",
-            "Pending secure session activation",
+            "vehicles, key_fobs",
+            |controller| controller.sync_vehicle_and_key_fob_status(),
         ))
     }
 
@@ -1384,8 +1547,8 @@ impl AppController {
         Ok(self.provisioning_sync_result(
             "Activate Secure Session",
             "Secure session activated",
-            "provisioning_sessions",
-            |controller| controller.sync_provisioning_session_record(),
+            "provisioning_sessions, vehicles, key_fobs",
+            |controller| controller.sync_session_and_key_fob_status(),
         ))
     }
 
@@ -1394,6 +1557,11 @@ impl AppController {
     ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
         self.ensure_visible_provisioning_context_selected()?;
         self.export_provisioning_report()?;
+        self.set_active_key_fob_status(
+            Some(ISSUED_CERTIFICATE_STATUS),
+            Some(FINALIZED_PROVISIONING_STATUS),
+        );
+        self.set_active_vehicle_status(FINALIZED_PROVISIONING_STATUS);
         let action_name = "Finalize & Export Report";
         let provisioning_status = "Provisioning finalized and report exported";
 
@@ -1409,7 +1577,7 @@ impl AppController {
             ));
         }
 
-        match self.sync_audit_log_records() {
+        match self.sync_finalized_provisioning_records() {
             Ok(_) => {
                 let _ = self
                     .save_log_entry("[DB]", "Cloud sync completed for Finalize & Export Report");
@@ -1418,8 +1586,8 @@ impl AppController {
                     action_name,
                     provisioning_status,
                     true,
-                    "Audit logs synced".to_string(),
-                    "audit_logs",
+                    "Provisioning session, vehicle status, key fob status, encrypted key backup, and audit logs synced".to_string(),
+                    "provisioning_sessions, vehicles, key_fobs, encrypted_keys, audit_logs",
                     None,
                 ))
             }
@@ -1427,14 +1595,16 @@ impl AppController {
                 let safe_error = error.to_string();
                 let _ = self.save_log_entry(
                     "[DB]",
-                    format!("Audit log sync failed after local finalization: {safe_error}"),
+                    format!(
+                        "Finalized provisioning sync failed after local finalization: {safe_error}"
+                    ),
                 );
                 Ok(self.build_provisioning_cloud_sync_result(
                     action_name,
                     provisioning_status,
                     true,
-                    format!("Audit log sync failed: {safe_error}"),
-                    "audit_logs",
+                    format!("Finalized provisioning sync failed: {safe_error}"),
+                    "provisioning_sessions, vehicles, key_fobs, encrypted_keys, audit_logs",
                     Some(safe_error),
                 ))
             }
@@ -1581,7 +1751,7 @@ impl AppController {
             year,
             vin,
             registration_number,
-            provisioning_status: Some(DEFAULT_PROVISIONING_STATUS.to_string()),
+            provisioning_status: Some(VEHICLE_CREATED_STATUS.to_string()),
         };
         let message = self.persist_vehicle_record(vehicle.clone())?;
         self.select_vehicle_context(vehicle.clone(), "CreatedThisSession");
@@ -1829,6 +1999,79 @@ impl AppController {
         Ok(message)
     }
 
+    pub fn sync_key_fob_metadata_and_backup(&mut self) -> Result<String, AppControllerError> {
+        let metadata = self.key_fob_metadata();
+        let key_fob_backup = self.optional_key_fob_encrypted_key_record();
+        let client = self.ensure_schema_initialized()?;
+        let message = self
+            .run_cloud(async {
+                client.upsert_key_fob(&metadata).await?;
+                if let Some(record) = &key_fob_backup {
+                    client.upsert_encrypted_key(record).await?;
+                }
+                Ok::<String, CloudStorageError>(
+                    "Key fob metadata and encrypted key backup synced".to_string(),
+                )
+            })
+            .map_err(Self::map_cloud_error)?;
+
+        self.save_log_entry(
+            "[DB]",
+            format!("Key fob metadata synced: {}", metadata.fob_label),
+        )?;
+        if key_fob_backup.is_some() {
+            self.save_log_entry("[DB]", "Selected key fob encrypted backup synced")?;
+        } else {
+            self.save_log_entry("[DB]", "Encrypted key backup is not configured.")?;
+        }
+        Ok(message)
+    }
+
+    pub fn sync_active_key_fob_status(&mut self) -> Result<String, AppControllerError> {
+        let metadata = self.key_fob_metadata();
+        let client = self.ensure_schema_initialized()?;
+        let message = self
+            .run_cloud(async {
+                client.upsert_key_fob(&metadata).await?;
+                client
+                    .update_key_fob_status(
+                        &metadata.fob_id,
+                        metadata.certificate_status.as_deref(),
+                        metadata.provisioning_status.as_deref(),
+                    )
+                    .await
+            })
+            .map_err(Self::map_cloud_error)?;
+
+        self.save_log_entry(
+            "[DB]",
+            format!("Key fob status synced: {}", metadata.fob_id),
+        )?;
+        Ok(message)
+    }
+
+    pub fn sync_vehicle_and_key_fob_status(&mut self) -> Result<String, AppControllerError> {
+        let vehicle = self.vehicle_metadata();
+        let key_fob = self.key_fob_metadata();
+        let client = self.ensure_schema_initialized()?;
+        let message = self
+            .run_cloud(async {
+                client.upsert_vehicle(&vehicle).await?;
+                client.upsert_key_fob(&key_fob).await?;
+                Ok::<String, CloudStorageError>("Vehicle and key fob status synced".to_string())
+            })
+            .map_err(Self::map_cloud_error)?;
+
+        self.save_log_entry(
+            "[DB]",
+            format!(
+                "Vehicle and key fob status synced: {}, {}",
+                vehicle.vehicle_id, key_fob.fob_id
+            ),
+        )?;
+        Ok(message)
+    }
+
     pub fn sync_active_cloud_metadata(&mut self) -> Result<String, AppControllerError> {
         let customer = self.customer_metadata();
         let vehicle = self.vehicle_metadata();
@@ -1871,6 +2114,42 @@ impl AppController {
         Ok(message)
     }
 
+    pub fn sync_certificate_and_key_fob_status(&mut self) -> Result<String, AppControllerError> {
+        let certificate = self.certificate_metadata()?;
+        let vehicle = self.vehicle_metadata();
+        let key_fob = self.key_fob_metadata();
+        let key_fob_backup = self.optional_key_fob_encrypted_key_record();
+        let client = self.ensure_schema_initialized()?;
+        let message = self
+            .run_cloud(async {
+                client.upsert_certificate_metadata(&certificate).await?;
+                client.upsert_vehicle(&vehicle).await?;
+                client.upsert_key_fob(&key_fob).await?;
+                if let Some(record) = &key_fob_backup {
+                    client.upsert_encrypted_key(record).await?;
+                }
+                Ok::<String, CloudStorageError>(
+                    "Certificate metadata, vehicle status, key fob status, and encrypted key backup synced".to_string(),
+                )
+            })
+            .map_err(Self::map_cloud_error)?;
+
+        self.save_log_entry(
+            "[DB]",
+            format!(
+                "Certificate and key fob status synced: {}, {}",
+                certificate.certificate_id, key_fob.fob_id
+            ),
+        )?;
+        self.save_log_entry("[DB]", "Certificate private material: [REDACTED]")?;
+        if key_fob_backup.is_some() {
+            self.save_log_entry("[DB]", "Selected key fob encrypted backup synced")?;
+        } else {
+            self.save_log_entry("[DB]", "Encrypted key backup is not configured.")?;
+        }
+        Ok(message)
+    }
+
     pub fn sync_provisioning_session_record(&mut self) -> Result<String, AppControllerError> {
         let metadata = self.provisioning_session_metadata()?;
         let client = self.ensure_schema_initialized()?;
@@ -1885,6 +2164,35 @@ impl AppController {
         self.save_log_entry(
             "[DB]",
             format!("Session algorithm: {}", metadata.session_algorithm),
+        )?;
+        self.save_log_entry("[SECURITY]", "Raw session key: [REDACTED]")?;
+        self.save_log_entry("[SECURITY]", "Shared secret: [REDACTED]")?;
+        self.save_log_entry("[SECURITY]", "HKDF output: [REDACTED]")?;
+        Ok(message)
+    }
+
+    pub fn sync_session_and_key_fob_status(&mut self) -> Result<String, AppControllerError> {
+        let session = self.provisioning_session_metadata()?;
+        let vehicle = self.vehicle_metadata();
+        let key_fob = self.key_fob_metadata();
+        let client = self.ensure_schema_initialized()?;
+        let message = self
+            .run_cloud(async {
+                client.upsert_provisioning_session(&session).await?;
+                client.upsert_vehicle(&vehicle).await?;
+                client.upsert_key_fob(&key_fob).await?;
+                Ok::<String, CloudStorageError>(
+                    "Provisioning session, vehicle status, and key fob status synced".to_string(),
+                )
+            })
+            .map_err(Self::map_cloud_error)?;
+
+        self.save_log_entry(
+            "[DB]",
+            format!(
+                "Provisioning session and key fob status synced: {}",
+                session.session_id
+            ),
         )?;
         self.save_log_entry("[SECURITY]", "Raw session key: [REDACTED]")?;
         self.save_log_entry("[SECURITY]", "Shared secret: [REDACTED]")?;
@@ -1921,6 +2229,47 @@ impl AppController {
             format!("Audit context key fob: {}", self.active_key_fob.fob_id),
         )?;
         self.save_log_entry("[SECURITY]", "Sensitive audit material: [REDACTED]")?;
+        Ok(message)
+    }
+
+    pub fn sync_finalized_provisioning_records(&mut self) -> Result<String, AppControllerError> {
+        let session = self.provisioning_session_metadata()?;
+        let vehicle = self.vehicle_metadata();
+        let key_fob = self.key_fob_metadata();
+        let records = self.active_audit_log_records();
+        let key_fob_backup = self.optional_key_fob_encrypted_key_record();
+        let client = self.ensure_schema_initialized()?;
+        let message = self
+            .run_cloud(async {
+                client.upsert_provisioning_session(&session).await?;
+                client.upsert_vehicle(&vehicle).await?;
+                client.upsert_key_fob(&key_fob).await?;
+                if let Some(record) = &key_fob_backup {
+                    client.upsert_encrypted_key(record).await?;
+                }
+                for record in &records {
+                    client.upsert_audit_log(record).await?;
+                }
+                Ok::<String, CloudStorageError>(
+                    "Finalized provisioning session, vehicle status, key fob status, encrypted key backup, and audit logs synced"
+                        .to_string(),
+                )
+            })
+            .map_err(Self::map_cloud_error)?;
+
+        self.save_log_entry(
+            "[DB]",
+            format!(
+                "Finalized provisioning records synced: session {}, vehicle {}, key fob {}",
+                session.session_id, vehicle.vehicle_id, key_fob.fob_id
+            ),
+        )?;
+        if key_fob_backup.is_some() {
+            self.save_log_entry("[DB]", "Selected key fob encrypted backup confirmed")?;
+        } else {
+            self.save_log_entry("[DB]", "Encrypted key backup is not configured.")?;
+        }
+        self.save_log_entry("[SECURITY]", "Finalized cloud secret material: [REDACTED]")?;
         Ok(message)
     }
 
@@ -1964,6 +2313,37 @@ impl AppController {
         Ok(message)
     }
 
+    pub fn sync_vehicle_and_ca_encrypted_key_blob(&mut self) -> Result<String, AppControllerError> {
+        let vehicle = self.vehicle_metadata();
+        let ca_record = parse_master_key_from_env()
+            .ok()
+            .and_then(|master_key| self.ca_encrypted_key_record(&master_key).ok());
+        let client = self.ensure_schema_initialized()?;
+        let message = self
+            .run_cloud(async {
+                client.upsert_vehicle(&vehicle).await?;
+                if let Some(record) = &ca_record {
+                    client.upsert_encrypted_key(record).await?;
+                }
+                Ok::<String, CloudStorageError>(
+                    "Vehicle trust status and encrypted key backup state synced".to_string(),
+                )
+            })
+            .map_err(Self::map_cloud_error)?;
+
+        self.save_log_entry(
+            "[DB]",
+            format!("Vehicle trust status synced: {}", vehicle.vehicle_id),
+        )?;
+        if ca_record.is_some() {
+            self.save_log_entry("[DB]", "CA encrypted key blob uploaded")?;
+        } else {
+            self.save_log_entry("[DB]", "Encrypted key backup is not configured.")?;
+        }
+        self.save_log_entry("[DB]", "Raw private key material: [REDACTED]")?;
+        Ok(message)
+    }
+
     pub fn sync_key_fob_encrypted_key_blob(&mut self) -> Result<String, AppControllerError> {
         self.key_fob_private_key_material()?;
         let master_key = parse_master_key_from_env().map_err(Self::map_cloud_error)?;
@@ -1986,6 +2366,31 @@ impl AppController {
             "Protection: Client-side AES-256-GCM encryption before upload",
         )?;
         Ok(message)
+    }
+
+    pub fn recover_key_fob_encrypted_key_backup(
+        &mut self,
+    ) -> Result<EncryptedKeyRecoveryEvidence, AppControllerError> {
+        let master_key = parse_master_key_from_env().map_err(Self::map_encrypted_recovery_error)?;
+        let key_id = self.derive_key_fob_encrypted_key_id();
+        let client = self.ensure_schema_initialized()?;
+        let record = self
+            .run_cloud(async { client.get_encrypted_key(&key_id).await })
+            .map_err(Self::map_cloud_error)?
+            .ok_or_else(|| {
+                AppControllerError::Backend("Encrypted key backup: Not stored".to_string())
+            })?;
+        let evidence = self.recovery_evidence_from_record(&record, &master_key)?;
+        self.last_key_fob_recovery_evidence = Some(evidence.clone());
+        self.save_log_entry(
+            "[DB]",
+            format!(
+                "Encrypted key recovery verified for {}: fingerprint_match={}",
+                evidence.owner_id, evidence.fingerprint_match
+            ),
+        )?;
+        self.save_log_entry("[SECURITY]", "Recovered private key material: [REDACTED]")?;
+        Ok(evidence)
     }
 
     pub fn sync_encrypted_key_blobs(&mut self) -> Result<String, AppControllerError> {
@@ -2190,10 +2595,13 @@ impl AppController {
         {
             "Issued".to_string()
         } else {
-            self.active_key_fob
-                .certificate_status
-                .clone()
-                .unwrap_or_else(|| DEFAULT_CERTIFICATE_STATUS.to_string())
+            format_status_label(
+                &self
+                    .active_key_fob
+                    .certificate_status
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_CERTIFICATE_STATUS.to_string()),
+            )
         };
         let identity_source = if self.context_source_label() == "DemoDefault" {
             "DemoDefault"
@@ -2227,10 +2635,13 @@ impl AppController {
                 available: false,
                 certificate_id: None,
                 fob_id: None,
+                vehicle_id: None,
                 subject_id: None,
                 issuer: None,
                 signature_algorithm: None,
+                certificate_signature_fingerprint: None,
                 public_key_fingerprint: None,
+                certificate_json_available: false,
                 certificate_status: Some(format_status_label(DEFAULT_CERTIFICATE_STATUS)),
                 issued_at: None,
                 expires_at: None,
@@ -2248,13 +2659,16 @@ impl AppController {
                 available: true,
                 certificate_id: Some(certificate_id),
                 fob_id: Some(selected_key_fob.fob_id.clone()),
+                vehicle_id: Some(self.active_vehicle.vehicle_id.clone()),
                 subject_id: Some(certificate.subject_id.clone()),
                 issuer: Some(certificate.issuer.clone()),
                 signature_algorithm: Some(CERTIFICATE_SIGNATURE_ALGORITHM.to_string()),
+                certificate_signature_fingerprint: Some(fingerprint(&certificate.signature)),
                 public_key_fingerprint: Some(fingerprint(&certificate.public_key)),
+                certificate_json_available: true,
                 certificate_status: Some(format_status_label(ISSUED_CERTIFICATE_STATUS)),
-                issued_at: Some(certificate.issued_at),
-                expires_at: Some(certificate.expires_at),
+                issued_at: Some(format_nepal_time_from_rfc3339(&certificate.issued_at)),
+                expires_at: Some(format_nepal_time_from_rfc3339(&certificate.expires_at)),
                 source: "ActiveContext".to_string(),
                 message: "Certificate issued".to_string(),
             };
@@ -2269,13 +2683,22 @@ impl AppController {
                 available: true,
                 certificate_id: Some(metadata.certificate_id.clone()),
                 fob_id: Some(metadata.fob_id.clone()),
+                vehicle_id: Some(if metadata.vehicle_id.is_empty() {
+                    self.active_vehicle.vehicle_id.clone()
+                } else {
+                    metadata.vehicle_id.clone()
+                }),
                 subject_id: Some(metadata.subject_id.clone()),
                 issuer: Some(metadata.issuer.clone()),
                 signature_algorithm: Some(metadata.signature_algorithm.clone()),
+                certificate_signature_fingerprint: metadata
+                    .certificate_signature_fingerprint
+                    .clone(),
                 public_key_fingerprint: metadata.public_key_fingerprint.clone(),
+                certificate_json_available: metadata.certificate_json.is_some(),
                 certificate_status: Some(format_status_label(&metadata.certificate_status)),
-                issued_at: metadata.issued_at.map(|value| value.to_rfc3339()),
-                expires_at: metadata.expires_at.map(|value| value.to_rfc3339()),
+                issued_at: metadata.issued_at.map(format_nepal_time),
+                expires_at: metadata.expires_at.map(format_nepal_time),
                 source: "CloudMetadata".to_string(),
                 message: "Certificate metadata loaded from cloud".to_string(),
             };
@@ -2285,12 +2708,15 @@ impl AppController {
             available: false,
             certificate_id: Some(certificate_id),
             fob_id: Some(selected_key_fob.fob_id.clone()),
+            vehicle_id: Some(self.active_vehicle.vehicle_id.clone()),
             subject_id: None,
             issuer: None,
             signature_algorithm: Some(CERTIFICATE_SIGNATURE_ALGORITHM.to_string()),
+            certificate_signature_fingerprint: None,
             public_key_fingerprint: self
                 .key_fob_public_key_fingerprint()
                 .or_else(|| selected_key_fob.public_key_fingerprint.clone()),
+            certificate_json_available: false,
             certificate_status: selected_key_fob
                 .certificate_status
                 .clone()
@@ -2447,6 +2873,65 @@ impl AppController {
         Ok(())
     }
 
+    pub fn can_verify_authentication(&self) -> bool {
+        self.verify_authentication_readiness().is_ok()
+    }
+
+    pub fn verify_authentication_readiness(&self) -> Result<(), AppControllerError> {
+        self.ensure_verify_authentication_ready()
+    }
+
+    fn ensure_verify_authentication_ready(&self) -> Result<(), AppControllerError> {
+        if self.selected_customer.is_none() {
+            return Err(AppControllerError::Backend(
+                "missing_customer: Select a customer before verifying authentication".to_string(),
+            ));
+        }
+        if self.selected_vehicle.is_none() {
+            return Err(AppControllerError::Backend(
+                "missing_vehicle: Select a vehicle before verifying authentication".to_string(),
+            ));
+        }
+        if self.selected_key_fob.is_none() {
+            return Err(AppControllerError::Backend(
+                "missing_key_fob: Select a key fob before verifying authentication".to_string(),
+            ));
+        }
+        let keyfob = self.keyfob.as_ref().ok_or_else(|| {
+            AppControllerError::Backend(
+                "missing_fob_identity: Register or select a key fob crypto identity before verifying authentication".to_string(),
+            )
+        })?;
+        if keyfob.private_key.is_none() || keyfob.public_key.is_none() {
+            return Err(AppControllerError::Backend(
+                "missing_fob_identity: Selected key fob crypto identity is incomplete".to_string(),
+            ));
+        }
+        if self.current_certificate().is_none() || !self.current_certificate_belongs_to_active_fob()
+        {
+            return Err(AppControllerError::Backend(
+                "missing_certificate: Issue or load an access certificate before verifying authentication".to_string(),
+            ));
+        }
+        if self.active_challenge.is_none() {
+            return Err(AppControllerError::Backend(
+                "missing_challenge: Generate Challenge before verifying authentication".to_string(),
+            ));
+        }
+        if self.active_auth_proof.is_none() {
+            return Err(AppControllerError::Backend(
+                "missing_signed_payload: Sign Canonical Payload before verifying authentication"
+                    .to_string(),
+            ));
+        }
+        if self.verification_in_progress {
+            return Err(AppControllerError::Backend(
+                "verification_in_progress: Verification is already running".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     fn sync_vehicle_module_to_active_context(&mut self) -> Result<(), AppControllerError> {
         if self.vehicle.vehicle_id == self.active_vehicle.vehicle_id {
             return Ok(());
@@ -2456,6 +2941,8 @@ impl AppController {
         vehicle.initialize()?;
         self.vehicle = vehicle;
         self.vehicle_connected = false;
+        self.active_challenge = None;
+        self.active_auth_proof = None;
         Ok(())
     }
 
@@ -2597,16 +3084,57 @@ impl AppController {
 
     fn vehicle_metadata(&self) -> VehicleMetadata {
         let mut vehicle = self.active_vehicle.clone();
-        vehicle.provisioning_status = Some(self.provisioning_status_label().to_string());
+        vehicle.provisioning_status = Some(
+            vehicle
+                .provisioning_status
+                .clone()
+                .unwrap_or_else(|| DEFAULT_PROVISIONING_STATUS.to_string()),
+        );
         vehicle
     }
 
     fn key_fob_metadata(&self) -> KeyFobMetadata {
         let mut key_fob = self.active_key_fob.clone();
         key_fob.public_key_fingerprint = self.key_fob_public_key_fingerprint();
-        key_fob.certificate_status = Some(self.certificate_status_label().to_string());
-        key_fob.provisioning_status = Some(self.provisioning_status_label().to_string());
+        key_fob.certificate_status = Some(
+            key_fob
+                .certificate_status
+                .clone()
+                .unwrap_or_else(|| DEFAULT_CERTIFICATE_STATUS.to_string()),
+        );
+        key_fob.provisioning_status = Some(
+            key_fob
+                .provisioning_status
+                .clone()
+                .unwrap_or_else(|| DEFAULT_PROVISIONING_STATUS.to_string()),
+        );
         key_fob
+    }
+
+    fn set_active_key_fob_status(
+        &mut self,
+        certificate_status: Option<&str>,
+        provisioning_status: Option<&str>,
+    ) {
+        if let Some(certificate_status) = certificate_status {
+            self.active_key_fob.certificate_status = Some(certificate_status.to_string());
+        }
+        if let Some(provisioning_status) = provisioning_status {
+            self.active_key_fob.provisioning_status = Some(provisioning_status.to_string());
+        }
+        if let Some(selected_key_fob) = self.selected_key_fob.as_mut() {
+            selected_key_fob.certificate_status = self.active_key_fob.certificate_status.clone();
+            selected_key_fob.provisioning_status = self.active_key_fob.provisioning_status.clone();
+        }
+        upsert_local_key_fob(&mut self.key_fob_records, self.active_key_fob.clone());
+    }
+
+    fn set_active_vehicle_status(&mut self, provisioning_status: &str) {
+        self.active_vehicle.provisioning_status = Some(provisioning_status.to_string());
+        if let Some(selected_vehicle) = self.selected_vehicle.as_mut() {
+            selected_vehicle.provisioning_status = Some(provisioning_status.to_string());
+        }
+        upsert_local_vehicle(&mut self.vehicle_records, self.active_vehicle.clone());
     }
 
     fn update_active_key_fob_fingerprint(&mut self, keyfob: &DigitalKeyFob) {
@@ -2621,14 +3149,16 @@ impl AppController {
     }
 
     fn apply_loaded_certificate_metadata(&mut self, metadata: CertificateMetadata) {
-        self.active_key_fob.certificate_status =
-            Some(format_status_label(&metadata.certificate_status));
+        self.active_key_fob.certificate_status = Some(metadata.certificate_status.clone());
+        self.active_key_fob.provisioning_status =
+            Some(CERTIFICATE_ISSUED_PROVISIONING_STATUS.to_string());
         if let Some(fingerprint) = metadata.public_key_fingerprint.clone() {
             self.active_key_fob.public_key_fingerprint = Some(fingerprint);
         }
         if let Some(selected_key_fob) = self.selected_key_fob.as_mut() {
-            selected_key_fob.certificate_status =
-                Some(format_status_label(&metadata.certificate_status));
+            selected_key_fob.certificate_status = Some(metadata.certificate_status.clone());
+            selected_key_fob.provisioning_status =
+                Some(CERTIFICATE_ISSUED_PROVISIONING_STATUS.to_string());
             if let Some(fingerprint) = metadata.public_key_fingerprint.clone() {
                 selected_key_fob.public_key_fingerprint = Some(fingerprint);
             }
@@ -2704,6 +3234,9 @@ impl AppController {
         self.active_key_fob = key_fob.clone();
         self.selected_key_fob = Some(key_fob);
         self.active_certificate_metadata = None;
+        self.active_challenge = None;
+        self.active_auth_proof = None;
+        self.last_key_fob_recovery_evidence = None;
         self.selection_source = source.to_string();
         self.align_active_vehicle_to_key_fob();
         if self
@@ -2735,6 +3268,10 @@ impl AppController {
         self.active_certificate_metadata = None;
         self.keyfob = None;
         self.keyfob_detected = false;
+        self.active_challenge = None;
+        self.active_auth_proof = None;
+        self.verification_in_progress = false;
+        self.last_key_fob_recovery_evidence = None;
         self.session = None;
         self.last_auth_result = None;
         self.last_access_decision = None;
@@ -2819,17 +3356,37 @@ impl AppController {
         self.validate_key_fob_certificate_binding(keyfob, &certificate)?;
         let issued_at = parse_certificate_timestamp(&certificate.issued_at)?;
         let expires_at = parse_certificate_timestamp(&certificate.expires_at)?;
+        let certificate_id = self.derive_certificate_id_for_active_context();
+        let public_key_fingerprint = fingerprint(&certificate.public_key);
+        let certificate_signature_fingerprint = fingerprint(&certificate.signature);
+        let certificate_status = ISSUED_CERTIFICATE_STATUS.to_string();
+        let certificate_json = serde_json::json!({
+            "certificate_id": certificate_id.clone(),
+            "fob_id": self.active_key_fob.fob_id.clone(),
+            "vehicle_id": self.active_vehicle.vehicle_id.clone(),
+            "subject_id": certificate.subject_id.clone(),
+            "issuer": certificate.issuer.clone(),
+            "signature_algorithm": CERTIFICATE_SIGNATURE_ALGORITHM,
+            "public_key_fingerprint": public_key_fingerprint.clone(),
+            "certificate_signature_fingerprint": certificate_signature_fingerprint.clone(),
+            "certificate_status": certificate_status.clone(),
+            "issued_at": certificate.issued_at.clone(),
+            "expires_at": certificate.expires_at.clone()
+        });
 
         Ok(CertificateMetadata {
-            certificate_id: self.derive_certificate_id_for_active_context(),
+            certificate_id,
             fob_id: self.active_key_fob.fob_id.clone(),
+            vehicle_id: self.active_vehicle.vehicle_id.clone(),
             subject_id: certificate.subject_id.clone(),
             issuer: certificate.issuer,
             issued_at: Some(issued_at),
             expires_at: Some(expires_at),
-            public_key_fingerprint: Some(fingerprint(&certificate.public_key)),
+            public_key_fingerprint: Some(public_key_fingerprint),
             signature_algorithm: CERTIFICATE_SIGNATURE_ALGORITHM.to_string(),
-            certificate_status: ISSUED_CERTIFICATE_STATUS.to_string(),
+            certificate_signature_fingerprint: Some(certificate_signature_fingerprint),
+            certificate_json: Some(certificate_json),
+            certificate_status,
         })
     }
 
@@ -2886,31 +3443,63 @@ impl AppController {
     fn active_audit_log_records(&self) -> Vec<AuditLogRecord> {
         let now = Utc::now();
         let context = self.get_active_provisioning_context();
-        vec![
-            AuditLogRecord {
+        let base_record =
+            |event_tag: &str, event_type: &str, event_message: String| AuditLogRecord {
                 log_id: generated_record_id("AUDIT"),
+                event_tag: event_tag.to_string(),
                 session_id: context.session_id.clone(),
-                event_type: "provisioning_context".to_string(),
-                event_message: format!(
+                certificate_id: context.certificate_id.clone(),
+                event_type: event_type.to_string(),
+                event_message,
+                severity: "info".to_string(),
+                actor: "AIACS-GUI".to_string(),
+                customer_id: context.customer_id.clone(),
+                vehicle_id: context.vehicle_id.clone(),
+                fob_id: context.fob_id.clone(),
+                created_at: now,
+            };
+
+        vec![
+            base_record(
+                "customer_selected",
+                "provisioning_context",
+                format!(
                     "Provisioning context selected: customer {}, vehicle {}, key fob {}",
                     context.customer_id, context.vehicle_id, context.fob_id
                 ),
-                severity: "info".to_string(),
-                actor: "AIACS-GUI".to_string(),
-                created_at: now,
-            },
-            AuditLogRecord {
-                log_id: generated_record_id("AUDIT"),
-                session_id: context.session_id,
-                event_type: "provisioning_status".to_string(),
-                event_message: format!(
+            ),
+            base_record(
+                "certificate_issued",
+                "certificate_issued",
+                format!(
+                    "Certificate {} issued for key fob {} and vehicle {}",
+                    context.certificate_id, context.fob_id, context.vehicle_id
+                ),
+            ),
+            base_record(
+                "authentication_verified",
+                "authentication_verified",
+                format!(
+                    "Authentication verified for key fob {} using certificate {}; private material [REDACTED]",
+                    context.fob_id, context.certificate_id
+                ),
+            ),
+            base_record(
+                "secure_session_established",
+                "secure_session_established",
+                format!(
+                    "Secure session {} established for vehicle {} and key fob {}; session material [REDACTED]",
+                    context.session_id, context.vehicle_id, context.fob_id
+                ),
+            ),
+            base_record(
+                "provisioning_finalized",
+                "provisioning_finalized",
+                format!(
                     "Provisioning finalized for certificate {} with sensitive material [REDACTED]",
                     context.certificate_id
                 ),
-                severity: "info".to_string(),
-                actor: "AIACS-GUI".to_string(),
-                created_at: now,
-            },
+            ),
         ]
     }
 
@@ -2993,6 +3582,53 @@ impl AppController {
         })
     }
 
+    fn optional_key_fob_encrypted_key_record(&self) -> Option<EncryptedKeyRecord> {
+        let Ok(master_key) = parse_master_key_from_env() else {
+            return None;
+        };
+        self.key_fob_encrypted_key_record(&master_key).ok()
+    }
+
+    fn recovery_evidence_from_record(
+        &self,
+        record: &EncryptedKeyRecord,
+        master_key: &[u8; 32],
+    ) -> Result<EncryptedKeyRecoveryEvidence, AppControllerError> {
+        let decrypted_private_key =
+            decrypt_private_key_from_cloud(&record.encrypted_key, master_key)
+                .map_err(Self::map_encrypted_recovery_error)?;
+        let recovered_public_key = CryptoEngine::derive_ed25519_public_key(&decrypted_private_key)
+            .map_err(|_| {
+                AppControllerError::Backend(
+                    "Encrypted key recovery failed. The local master key may be missing or incorrect."
+                        .to_string(),
+                )
+            })?;
+        let recovered_public_key_fingerprint = fingerprint(&recovered_public_key);
+        let original_public_key_fingerprint = record
+            .public_key_fingerprint
+            .clone()
+            .unwrap_or_else(|| "Unavailable".to_string());
+        let fingerprint_match = original_public_key_fingerprint == recovered_public_key_fingerprint;
+
+        Ok(EncryptedKeyRecoveryEvidence {
+            key_id: record.key_id.clone(),
+            owner_type: record.owner_type.clone(),
+            owner_id: record.owner_id.clone(),
+            public_key_fingerprint: original_public_key_fingerprint,
+            recovered_public_key_fingerprint,
+            encryption_algorithm: record.encrypted_key.encryption_algorithm.clone(),
+            key_purpose: record.key_purpose.clone(),
+            storage_status: record.storage_status.clone(),
+            recovery_status: if fingerprint_match {
+                "Success".to_string()
+            } else {
+                "Fingerprint mismatch".to_string()
+            },
+            fingerprint_match,
+        })
+    }
+
     fn derive_key_fob_encrypted_key_id(&self) -> String {
         if self.active_key_fob.fob_id == DEMO_FOB_ID {
             KEY_FOB_ENCRYPTED_KEY_ID.to_string()
@@ -3022,22 +3658,6 @@ impl AppController {
             KEYFOB_CERTIFICATE_PATH.to_string()
         } else {
             format!("certs/fob_{}.json", self.active_key_fob.fob_id)
-        }
-    }
-
-    fn certificate_status_label(&self) -> &'static str {
-        if self.current_certificate_belongs_to_active_fob() {
-            "Issued"
-        } else {
-            DEFAULT_CERTIFICATE_STATUS
-        }
-    }
-
-    fn provisioning_status_label(&self) -> &'static str {
-        if self.session.is_some() && self.last_access_decision.is_some() {
-            "Complete"
-        } else {
-            "In Progress"
         }
     }
 
@@ -3095,6 +3715,21 @@ impl AppController {
                 "Cloud database connection failed. Retry after database warm-up.".to_string(),
             ),
             other => AppControllerError::Backend(other.to_string()),
+        }
+    }
+
+    fn map_encrypted_recovery_error(error: CloudStorageError) -> AppControllerError {
+        match error {
+            CloudStorageError::MissingMasterKey
+            | CloudStorageError::InvalidMasterKeyBase64
+            | CloudStorageError::InvalidMasterKeySize => {
+                AppControllerError::Backend("Encrypted key backup is not configured.".to_string())
+            }
+            CloudStorageError::PrivateKeyDecryptionFailed => AppControllerError::Backend(
+                "Encrypted key recovery failed. The local master key may be missing or incorrect."
+                    .to_string(),
+            ),
+            other => Self::map_cloud_error(other),
         }
     }
 
@@ -4187,6 +4822,94 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_authentication_first_click_after_signed_payload_succeeds() {
+        let mut controller = AppController::new();
+        bind_custom_context(&mut controller, "FIRSTCLICK");
+
+        controller
+            .issue_keyfob_certificate()
+            .expect("certificate should issue");
+        controller
+            .generate_authentication_challenge()
+            .expect("challenge should generate");
+        controller
+            .sign_canonical_auth_payload()
+            .expect("payload should sign");
+
+        assert!(controller.can_verify_authentication());
+        let result = controller
+            .verify_authentication_with_cloud_sync()
+            .expect("first verification attempt should succeed locally");
+
+        assert_eq!(controller.last_auth_result, Some(AuthResult::Success));
+        assert_eq!(
+            controller
+                .active_auth_proof
+                .as_ref()
+                .map(|proof| proof.subject_id.as_str()),
+            Some("FOB-CRYPTO-FIRSTCLICK")
+        );
+        assert_eq!(result.provisioning_status, "Authentication verified");
+        assert!(
+            matches!(
+                result.cloud_sync_status.as_str(),
+                "Skipped - disabled" | "Synced"
+            ) || result.cloud_sync_status.starts_with("Failed - ")
+        );
+    }
+
+    #[test]
+    fn test_verify_authentication_readiness_reports_safe_missing_prerequisites() {
+        let mut controller = AppController::new();
+        bind_custom_context(&mut controller, "PREREQ");
+
+        let missing_fob_identity = controller
+            .verify_authentication_readiness()
+            .expect_err("fob identity should be required")
+            .to_string();
+        assert!(missing_fob_identity.contains("missing_fob_identity"));
+
+        controller
+            .ensure_active_key_fob_crypto_identity()
+            .expect("identity should generate");
+        let missing_certificate = controller
+            .verify_authentication_readiness()
+            .expect_err("certificate should be required")
+            .to_string();
+        assert!(missing_certificate.contains("missing_certificate"));
+
+        controller
+            .issue_keyfob_certificate()
+            .expect("certificate should issue");
+        let missing_challenge = controller
+            .verify_authentication_readiness()
+            .expect_err("challenge should be required")
+            .to_string();
+        assert!(missing_challenge.contains("missing_challenge"));
+
+        controller
+            .generate_authentication_challenge()
+            .expect("challenge should generate");
+        let missing_signed_payload = controller
+            .verify_authentication_readiness()
+            .expect_err("signed payload should be required")
+            .to_string();
+        assert!(missing_signed_payload.contains("missing_signed_payload"));
+
+        for message in [
+            missing_fob_identity,
+            missing_certificate,
+            missing_challenge,
+            missing_signed_payload,
+        ] {
+            assert!(!message.contains("AIACS_MASTER_KEY"));
+            assert!(!message.contains("private_key"));
+            assert!(!message.contains("session_key"));
+            assert!(!message.contains("shared_secret"));
+        }
+    }
+
+    #[test]
     fn test_verification_rejects_certificate_subject_mismatch_for_selected_fob() {
         let mut controller = AppController::new();
         controller
@@ -4934,6 +5657,15 @@ mod tests {
     #[test]
     fn test_status_formatter_title_cases_storage_values() {
         assert_eq!(format_status_label("issued"), "Issued");
+        assert_eq!(format_status_label("in_progress"), "In Progress");
+        assert_eq!(
+            format_status_label("certificate_issued"),
+            "Certificate Issued"
+        );
+        assert_eq!(
+            format_status_label("session_established"),
+            "Session Established"
+        );
         assert_eq!(
             format_status_label("secure_session_established"),
             "Secure Session Established"
@@ -4947,18 +5679,40 @@ mod tests {
     }
 
     #[test]
+    fn test_nepal_time_formatter_uses_fixed_npt_offset() {
+        let timestamp = DateTime::parse_from_rfc3339("2026-06-12T15:00:00Z")
+            .expect("timestamp should parse")
+            .with_timezone(&Utc);
+
+        assert_eq!(format_nepal_time(timestamp), "2026-06-12 20:45:00 NPT");
+    }
+
+    #[test]
     fn test_cloud_loaded_certificate_metadata_restores_details_after_restart() {
         let mut controller = AppController::new();
         bind_custom_context(&mut controller, "RESTORE");
         let metadata = CertificateMetadata {
             certificate_id: "CERT-FOB-CRYPTO-RESTORE".to_string(),
             fob_id: "FOB-CRYPTO-RESTORE".to_string(),
+            vehicle_id: "VEH-CRYPTO-RESTORE".to_string(),
             subject_id: "FOB-CRYPTO-RESTORE".to_string(),
             issuer: "Denish".to_string(),
             issued_at: Some(Utc::now()),
             expires_at: Some(Utc::now() + chrono::Duration::days(365)),
             public_key_fingerprint: Some("SHA256:RESTORED".to_string()),
             signature_algorithm: CERTIFICATE_SIGNATURE_ALGORITHM.to_string(),
+            certificate_signature_fingerprint: Some("SHA256:RESTOREDSIG".to_string()),
+            certificate_json: Some(serde_json::json!({
+                "certificate_id": "CERT-FOB-CRYPTO-RESTORE",
+                "fob_id": "FOB-CRYPTO-RESTORE",
+                "vehicle_id": "VEH-CRYPTO-RESTORE",
+                "subject_id": "FOB-CRYPTO-RESTORE",
+                "issuer": "Denish",
+                "signature_algorithm": CERTIFICATE_SIGNATURE_ALGORITHM,
+                "public_key_fingerprint": "SHA256:RESTORED",
+                "certificate_signature_fingerprint": "SHA256:RESTOREDSIG",
+                "certificate_status": ISSUED_CERTIFICATE_STATUS
+            })),
             certificate_status: ISSUED_CERTIFICATE_STATUS.to_string(),
         };
 
@@ -4975,7 +5729,13 @@ mod tests {
             details.certificate_id.as_deref(),
             Some("CERT-FOB-CRYPTO-RESTORE")
         );
+        assert_eq!(details.vehicle_id.as_deref(), Some("VEH-CRYPTO-RESTORE"));
         assert_eq!(details.subject_id.as_deref(), Some("FOB-CRYPTO-RESTORE"));
+        assert_eq!(
+            details.certificate_signature_fingerprint.as_deref(),
+            Some("SHA256:RESTOREDSIG")
+        );
+        assert!(details.certificate_json_available);
     }
 
     #[test]
@@ -5201,7 +5961,7 @@ mod tests {
             "Select a key fob before issuing certificate/signing/authentication."
         );
         assert_eq!(sign_error, certificate_error);
-        assert_eq!(verify_error, certificate_error);
+        assert!(verify_error.contains("missing_customer"));
         for message in [certificate_error, sign_error, verify_error] {
             assert!(!message.contains("DATABASE_URL"));
             assert!(!message.contains("AIACS_MASTER_KEY"));
@@ -5287,6 +6047,12 @@ mod tests {
         assert_eq!(certificate.cloud_sync_status, "Skipped - disabled");
 
         controller
+            .generate_challenge_with_cloud_sync()
+            .expect("challenge should generate locally");
+        controller
+            .sign_canonical_payload_with_cloud_sync()
+            .expect("payload should sign locally");
+        controller
             .verify_authentication_with_cloud_sync()
             .expect("authentication should verify locally");
 
@@ -5309,6 +6075,140 @@ mod tests {
     }
 
     #[test]
+    fn test_key_fob_status_progression_uses_machine_values() {
+        let mut controller = AppController::new();
+        bind_custom_context(&mut controller, "STATUSFLOW");
+
+        let initial = controller.key_fob_metadata();
+        assert_eq!(
+            initial.certificate_status.as_deref(),
+            Some(DEFAULT_CERTIFICATE_STATUS)
+        );
+        assert_eq!(
+            initial.provisioning_status.as_deref(),
+            Some(DEFAULT_PROVISIONING_STATUS)
+        );
+
+        controller.detect_key_fob().expect("fob should detect");
+        let registered = controller.key_fob_metadata();
+        assert_eq!(
+            registered.provisioning_status.as_deref(),
+            Some(REGISTERED_PROVISIONING_STATUS)
+        );
+
+        controller
+            .issue_keyfob_certificate()
+            .expect("certificate should issue");
+        let issued = controller.key_fob_metadata();
+        assert_eq!(
+            issued.certificate_status.as_deref(),
+            Some(ISSUED_CERTIFICATE_STATUS)
+        );
+        assert_eq!(
+            issued.provisioning_status.as_deref(),
+            Some(CERTIFICATE_ISSUED_PROVISIONING_STATUS)
+        );
+
+        controller
+            .run_legitimate_authentication_demo()
+            .expect("authentication should verify");
+        let authenticated = controller.key_fob_metadata();
+        assert_eq!(
+            authenticated.provisioning_status.as_deref(),
+            Some(AUTHENTICATED_STATUS)
+        );
+
+        controller
+            .establish_secure_session_demo()
+            .expect("session should establish");
+        let session_established = controller.key_fob_metadata();
+        assert_eq!(
+            session_established.provisioning_status.as_deref(),
+            Some(SESSION_ESTABLISHED_PROVISIONING_STATUS)
+        );
+
+        controller
+            .export_provisioning_report()
+            .expect("report should export");
+        controller.set_active_key_fob_status(
+            Some(ISSUED_CERTIFICATE_STATUS),
+            Some(FINALIZED_PROVISIONING_STATUS),
+        );
+        let finalized = controller.key_fob_metadata();
+        assert_eq!(
+            finalized.certificate_status.as_deref(),
+            Some(ISSUED_CERTIFICATE_STATUS)
+        );
+        assert_eq!(
+            finalized.provisioning_status.as_deref(),
+            Some(FINALIZED_PROVISIONING_STATUS)
+        );
+    }
+
+    #[test]
+    fn test_vehicle_status_progression_uses_machine_values() {
+        let mut controller = AppController::new();
+        bind_custom_context(&mut controller, "VEHSTATUS");
+
+        controller
+            .connect_vehicle()
+            .expect("vehicle should connect");
+        assert_eq!(
+            controller.vehicle_metadata().provisioning_status.as_deref(),
+            Some(VEHICLE_CONNECTED_STATUS)
+        );
+
+        controller.initialize_ca().expect("trust should initialize");
+        assert_eq!(
+            controller.vehicle_metadata().provisioning_status.as_deref(),
+            Some(TRUST_INITIALIZED_STATUS)
+        );
+
+        controller
+            .issue_keyfob_certificate()
+            .expect("certificate should issue");
+        assert_eq!(
+            controller.vehicle_metadata().provisioning_status.as_deref(),
+            Some(CERTIFICATE_ISSUED_PROVISIONING_STATUS)
+        );
+
+        controller
+            .generate_authentication_challenge()
+            .expect("challenge should generate");
+        assert_eq!(
+            controller.vehicle_metadata().provisioning_status.as_deref(),
+            Some(CHALLENGE_GENERATED_STATUS)
+        );
+
+        controller
+            .sign_canonical_auth_payload()
+            .expect("payload should sign");
+        controller
+            .verify_authentication_with_cloud_sync()
+            .expect("authentication should verify");
+        assert_eq!(
+            controller.vehicle_metadata().provisioning_status.as_deref(),
+            Some(AUTHENTICATED_STATUS)
+        );
+
+        controller
+            .establish_secure_session_demo()
+            .expect("session should establish");
+        assert_eq!(
+            controller.vehicle_metadata().provisioning_status.as_deref(),
+            Some(SESSION_ESTABLISHED_PROVISIONING_STATUS)
+        );
+
+        controller
+            .finalize_provisioning_with_cloud_sync()
+            .expect("finalization should complete locally");
+        assert_eq!(
+            controller.vehicle_metadata().provisioning_status.as_deref(),
+            Some(FINALIZED_PROVISIONING_STATUS)
+        );
+    }
+
+    #[test]
     fn test_provisioning_no_sync_required_statuses() {
         let mut controller = AppController::new();
         bind_custom_context(&mut controller, "NOSYNC");
@@ -5319,7 +6219,7 @@ mod tests {
         let challenge = controller
             .generate_challenge_with_cloud_sync()
             .expect("challenge should generate");
-        assert_eq!(challenge.cloud_sync_status, "No sync required");
+        assert_eq!(challenge.cloud_sync_status, "Skipped - disabled");
         assert!(!challenge.cloud_sync_attempted);
 
         let signed = controller
@@ -5331,11 +6231,9 @@ mod tests {
         let verified = controller
             .verify_authentication_with_cloud_sync()
             .expect("authentication should verify");
-        assert_eq!(
-            verified.cloud_sync_status,
-            "Pending secure session activation"
-        );
+        assert_eq!(verified.cloud_sync_status, "Skipped - disabled");
         assert!(!verified.cloud_sync_attempted);
+        assert_eq!(verified.cloud_table_updated, "None");
     }
 
     #[test]
@@ -5398,15 +6296,15 @@ mod tests {
     }
 
     #[test]
-    fn test_finalize_export_action_uses_audit_log_sync_path() {
+    fn test_finalize_export_action_uses_finalized_provisioning_sync_path() {
         let source = fs::read_to_string("src/app_controller/mod.rs")
             .expect("app controller source should be readable");
         let finalize_index = source
             .find("pub fn finalize_provisioning_with_cloud_sync")
             .expect("finalize method should exist");
         let sync_index = source[finalize_index..]
-            .find("self.sync_audit_log_records()")
-            .expect("finalize method should call audit log sync");
+            .find("self.sync_finalized_provisioning_records()")
+            .expect("finalize method should call finalized provisioning sync");
 
         assert!(sync_index > 0);
         assert!(source[finalize_index..].contains("Finalize & Export Report"));
@@ -5420,9 +6318,9 @@ mod tests {
             "Finalize & Export Report",
             "Provisioning finalized and report exported",
             true,
-            "Audit log sync failed: Cloud database connection failed. Retry after database warm-up."
+            "Finalized provisioning sync failed: Cloud database connection failed. Retry after database warm-up."
                 .to_string(),
-            "audit_logs",
+            "provisioning_sessions, key_fobs, audit_logs",
             Some("Cloud database connection failed. Retry after database warm-up.".to_string()),
         );
         let display = result.to_string();
@@ -5435,10 +6333,13 @@ mod tests {
         assert!(result.cloud_sync_attempted);
         assert!(result
             .cloud_sync_status
-            .starts_with("Audit log sync failed:"));
-        assert_eq!(result.cloud_table_updated, "audit_logs");
+            .starts_with("Finalized provisioning sync failed:"));
+        assert_eq!(
+            result.cloud_table_updated,
+            "provisioning_sessions, key_fobs, audit_logs"
+        );
         assert!(display.contains("Finalize & Export Report"));
-        assert!(display.contains("Cloud Sync: Audit log sync failed:"));
+        assert!(display.contains("Cloud Sync: Finalized provisioning sync failed:"));
         assert!(!display.contains("DATABASE_URL"));
         assert!(!display.contains("AIACS_MASTER_KEY"));
     }
@@ -5619,8 +6520,9 @@ mod tests {
 
         for expected in [
             "controller.sync_active_cloud_metadata()",
-            "controller.sync_certificate_metadata()",
-            "controller.sync_provisioning_session_record()",
+            "controller.sync_certificate_and_key_fob_status()",
+            "controller.sync_session_and_key_fob_status()",
+            "controller.sync_finalized_provisioning_records()",
             "controller.sync_audit_log_records()",
             "controller.sync_diagnostic_result_records()",
         ] {
@@ -5638,7 +6540,7 @@ mod tests {
                 .find("pub fn generate_challenge_with_cloud_sync")
                 .map(|offset| issue_start + offset)
                 .expect("next method should exist")];
-        assert!(issue_source.contains("controller.sync_certificate_metadata()"));
+        assert!(issue_source.contains("controller.sync_certificate_and_key_fob_status()"));
         assert!(!issue_source.contains("sync_active_cloud_metadata"));
         assert!(!issue_source.contains("sync_provisioning_session_record"));
         assert!(!issue_source.contains("sync_audit_log_records"));
@@ -5717,9 +6619,42 @@ mod tests {
             crate::cloud_storage::DEMO_CERTIFICATE_ID
         );
         assert_eq!(metadata.fob_id, DEMO_FOB_ID);
+        assert_eq!(metadata.vehicle_id, crate::cloud_storage::DEMO_VEHICLE_ID);
         assert_eq!(metadata.subject_id, DEMO_FOB_ID);
         assert_eq!(metadata.issuer, DEFAULT_CA_NAME);
         assert_eq!(metadata.signature_algorithm, "Ed25519");
+        assert!(metadata.certificate_signature_fingerprint.is_some());
+        let certificate_json = metadata
+            .certificate_json
+            .as_ref()
+            .expect("safe certificate metadata JSON should be present");
+        assert_eq!(
+            certificate_json["certificate_id"].as_str(),
+            Some(metadata.certificate_id.as_str())
+        );
+        assert_eq!(
+            certificate_json["fob_id"].as_str(),
+            Some(metadata.fob_id.as_str())
+        );
+        assert_eq!(
+            certificate_json["vehicle_id"].as_str(),
+            Some(metadata.vehicle_id.as_str())
+        );
+        assert_eq!(
+            certificate_json["subject_id"].as_str(),
+            Some(metadata.subject_id.as_str())
+        );
+        assert_eq!(certificate_json["issuer"].as_str(), Some(DEFAULT_CA_NAME));
+        assert_eq!(
+            certificate_json["certificate_signature_fingerprint"].as_str(),
+            Some(
+                metadata
+                    .certificate_signature_fingerprint
+                    .as_ref()
+                    .expect("signature fingerprint should be present")
+                    .as_str()
+            )
+        );
         assert_eq!(metadata.certificate_status, "issued");
         assert!(metadata.public_key_fingerprint.is_some());
         assert!(metadata.issued_at.is_some());
@@ -5831,6 +6766,54 @@ mod tests {
     }
 
     #[test]
+    fn test_active_audit_log_records_include_context_and_tags() {
+        let mut controller = AppController::new();
+        bind_custom_context(&mut controller, "AUDITCTX");
+        controller
+            .issue_keyfob_certificate()
+            .expect("certificate should issue for audit context");
+        controller
+            .run_legitimate_authentication_demo()
+            .expect("authentication should verify for audit context");
+        controller
+            .establish_secure_session_demo()
+            .expect("session should establish for audit context");
+
+        let records = controller.active_audit_log_records();
+        let tags = records
+            .iter()
+            .map(|record| record.event_tag.as_str())
+            .collect::<Vec<_>>();
+        for expected in [
+            "customer_selected",
+            "certificate_issued",
+            "authentication_verified",
+            "secure_session_established",
+            "provisioning_finalized",
+        ] {
+            assert!(tags.contains(&expected), "missing audit tag {expected}");
+        }
+
+        for record in records {
+            assert_eq!(record.customer_id, "CUST-CRYPTO-AUDITCTX");
+            assert_eq!(record.vehicle_id, "VEH-CRYPTO-AUDITCTX");
+            assert_eq!(record.fob_id, "FOB-CRYPTO-AUDITCTX");
+            assert_eq!(record.session_id, controller.active_session_id);
+            assert_eq!(record.certificate_id, "CERT-FOB-CRYPTO-AUDITCTX");
+            for forbidden in [
+                "DATABASE_URL",
+                "AIACS_MASTER_KEY",
+                "private_key",
+                "session_key",
+                "shared_secret",
+                "raw_nonce",
+            ] {
+                assert!(!record.event_message.contains(forbidden));
+            }
+        }
+    }
+
+    #[test]
     fn test_finalize_stages_finalized_session_metadata_and_safe_report_path() {
         let mut controller = AppController::new();
         controller
@@ -5938,6 +6921,91 @@ mod tests {
         assert!(!debug.contains(&fob_private_key_debug));
         assert!(!debug.contains("AIACS_MASTER_KEY"));
         assert!(!debug.contains("DATABASE_URL"));
+    }
+
+    #[test]
+    fn test_selected_key_fob_encrypted_backup_uses_active_fob_identity() {
+        let mut controller = AppController::new();
+        let master_key = [17u8; 32];
+        bind_custom_context(&mut controller, "BACKUP");
+        controller
+            .issue_keyfob_certificate()
+            .expect("certificate should issue");
+
+        let record = controller
+            .key_fob_encrypted_key_record(&master_key)
+            .expect("selected fob encrypted key record should build");
+
+        assert_eq!(record.key_id, "KEY-FOB-CRYPTO-BACKUP");
+        assert_eq!(record.owner_type, "key_fob");
+        assert_eq!(record.owner_id, "FOB-CRYPTO-BACKUP");
+        assert_eq!(record.key_purpose, KEY_FOB_KEY_PURPOSE);
+        assert_eq!(record.encrypted_key.encryption_algorithm, "AES-256-GCM");
+        assert!(record
+            .public_key_fingerprint
+            .as_deref()
+            .unwrap()
+            .starts_with("SHA256:"));
+    }
+
+    #[test]
+    fn test_local_encrypted_key_recovery_evidence_matches_fingerprint() {
+        let mut controller = AppController::new();
+        let master_key = [23u8; 32];
+        bind_custom_context(&mut controller, "RECOVERY");
+        controller
+            .issue_keyfob_certificate()
+            .expect("certificate should issue");
+        let record = controller
+            .key_fob_encrypted_key_record(&master_key)
+            .expect("encrypted key record should build");
+
+        let evidence = controller
+            .recovery_evidence_from_record(&record, &master_key)
+            .expect("recovery evidence should build");
+
+        assert_eq!(evidence.key_id, "KEY-FOB-CRYPTO-RECOVERY");
+        assert_eq!(evidence.owner_type, "key_fob");
+        assert_eq!(evidence.owner_id, "FOB-CRYPTO-RECOVERY");
+        assert_eq!(evidence.recovery_status, "Success");
+        assert!(evidence.fingerprint_match);
+        assert_eq!(
+            evidence.public_key_fingerprint,
+            evidence.recovered_public_key_fingerprint
+        );
+        let debug = format!("{evidence:?}");
+        assert!(!debug.contains("private_key"));
+        assert!(!debug.contains("AIACS_MASTER_KEY"));
+        assert!(!debug.contains("encrypted_key_blob"));
+        assert!(!debug.contains("encryption_nonce"));
+    }
+
+    #[test]
+    fn test_local_encrypted_key_recovery_rejects_wrong_master_key_safely() {
+        let mut controller = AppController::new();
+        let master_key = [31u8; 32];
+        let wrong_key = [32u8; 32];
+        bind_custom_context(&mut controller, "WRONGKEY");
+        controller
+            .issue_keyfob_certificate()
+            .expect("certificate should issue");
+        let record = controller
+            .key_fob_encrypted_key_record(&master_key)
+            .expect("encrypted key record should build");
+
+        let message = controller
+            .recovery_evidence_from_record(&record, &wrong_key)
+            .expect_err("wrong master key should fail safely")
+            .to_string();
+
+        assert_eq!(
+            message,
+            "Encrypted key recovery failed. The local master key may be missing or incorrect."
+        );
+        assert!(!message.contains("AIACS_MASTER_KEY"));
+        assert!(!message.contains("private_key"));
+        assert!(!message.contains("encrypted_key_blob"));
+        assert!(!message.contains("encryption_nonce"));
     }
 
     #[test]

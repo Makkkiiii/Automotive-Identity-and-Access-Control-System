@@ -5,6 +5,7 @@ use aes_gcm::{
 use base64::{engine::general_purpose, Engine as _};
 use chrono::{DateTime, Utc};
 use rand::{rngs::OsRng, RngCore};
+use serde_json::Value;
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use std::env;
 use std::fmt;
@@ -17,7 +18,7 @@ const DATABASE_URL_ENV: &str = "DATABASE_URL";
 const MASTER_KEY_ENV: &str = "AIACS_MASTER_KEY";
 const HEALTHY_MESSAGE: &str = "Cloud database connection healthy";
 const SCHEMA_INITIALIZED_MESSAGE: &str = "Cloud database schema initialized";
-const CURRENT_SCHEMA_VERSION: &str = "9.5";
+const CURRENT_SCHEMA_VERSION: &str = "9.6.3";
 const CUSTOMER_SYNCED_MESSAGE: &str = "Customer metadata synced";
 const VEHICLE_SYNCED_MESSAGE: &str = "Vehicle metadata synced";
 const KEY_FOB_SYNCED_MESSAGE: &str = "Key fob metadata synced";
@@ -41,14 +42,22 @@ pub const DEMO_VEHICLE_MODEL: &str = "Magnite";
 pub const DEMO_VEHICLE_YEAR: i32 = 2021;
 pub const DEMO_FOB_ID: &str = "FOB-0001";
 pub const DEMO_FOB_LABEL: &str = "Primary Key Fob";
-pub const DEFAULT_PROVISIONING_STATUS: &str = "In Progress";
-pub const DEFAULT_CERTIFICATE_STATUS: &str = "Pending";
+pub const DEFAULT_PROVISIONING_STATUS: &str = "in_progress";
+pub const DEFAULT_CERTIFICATE_STATUS: &str = "pending";
 pub const DEMO_SESSION_ID: &str = "SESSION-0001";
 pub const DEMO_CERTIFICATE_ID: &str = "CERT-FOB-0001";
 pub const CERTIFICATE_SIGNATURE_ALGORITHM: &str = "Ed25519";
 pub const ISSUED_CERTIFICATE_STATUS: &str = "issued";
+pub const VEHICLE_CREATED_STATUS: &str = "created";
+pub const VEHICLE_CONNECTED_STATUS: &str = "connected";
+pub const TRUST_INITIALIZED_STATUS: &str = "trust_initialized";
+pub const CHALLENGE_GENERATED_STATUS: &str = "challenge_generated";
+pub const FAILED_PROVISIONING_STATUS: &str = "failed";
+pub const REGISTERED_PROVISIONING_STATUS: &str = "registered";
+pub const CERTIFICATE_ISSUED_PROVISIONING_STATUS: &str = "certificate_issued";
 pub const AUTHENTICATED_STATUS: &str = "authenticated";
 pub const SECURE_SESSION_ESTABLISHED_STATUS: &str = "secure_session_established";
+pub const SESSION_ESTABLISHED_PROVISIONING_STATUS: &str = "session_established";
 pub const GRANT_ACCESS_DECISION: &str = "grant_access";
 pub const SESSION_ALGORITHM: &str = "X25519 + HKDF-SHA256 + AES-256-GCM";
 pub const FINALIZED_PROVISIONING_STATUS: &str = "finalized";
@@ -264,6 +273,18 @@ ALTER TABLE certificates
 ADD COLUMN IF NOT EXISTS public_key_fingerprint TEXT;
 "#,
     r#"
+ALTER TABLE certificates
+ADD COLUMN IF NOT EXISTS vehicle_id TEXT;
+"#,
+    r#"
+ALTER TABLE certificates
+ADD COLUMN IF NOT EXISTS certificate_signature_fingerprint TEXT;
+"#,
+    r#"
+ALTER TABLE certificates
+ADD COLUMN IF NOT EXISTS certificate_json JSONB;
+"#,
+    r#"
 CREATE TABLE IF NOT EXISTS encrypted_keys (
     key_id TEXT PRIMARY KEY,
     owner_type TEXT NOT NULL,
@@ -348,6 +369,11 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     event_message TEXT NOT NULL,
     severity TEXT,
     actor TEXT,
+    customer_id TEXT,
+    vehicle_id TEXT,
+    fob_id TEXT,
+    certificate_id TEXT,
+    message TEXT,
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL
 );
@@ -387,6 +413,30 @@ ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
     r#"
 ALTER TABLE audit_logs
 ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+"#,
+    r#"
+ALTER TABLE audit_logs
+ADD COLUMN IF NOT EXISTS event_tag TEXT;
+"#,
+    r#"
+ALTER TABLE audit_logs
+ADD COLUMN IF NOT EXISTS customer_id TEXT;
+"#,
+    r#"
+ALTER TABLE audit_logs
+ADD COLUMN IF NOT EXISTS vehicle_id TEXT;
+"#,
+    r#"
+ALTER TABLE audit_logs
+ADD COLUMN IF NOT EXISTS fob_id TEXT;
+"#,
+    r#"
+ALTER TABLE audit_logs
+ADD COLUMN IF NOT EXISTS certificate_id TEXT;
+"#,
+    r#"
+ALTER TABLE audit_logs
+ADD COLUMN IF NOT EXISTS message TEXT;
 "#,
     r#"
 CREATE TABLE IF NOT EXISTS diagnostic_results (
@@ -561,40 +611,55 @@ FROM key_fobs
 WHERE fob_id = $1;
 "#;
 
+const UPDATE_KEY_FOB_STATUS_SQL: &str = r#"
+UPDATE key_fobs
+SET
+    certificate_status = COALESCE($2, certificate_status),
+    provisioning_status = COALESCE($3, provisioning_status),
+    updated_at = NOW()
+WHERE fob_id = $1;
+"#;
+
 const UPSERT_CERTIFICATE_METADATA_SQL: &str = r#"
 INSERT INTO certificates (
     certificate_id,
     fob_id,
+    vehicle_id,
     subject_id,
     issuer,
     issued_at,
     expires_at,
     public_key_fingerprint,
     signature_algorithm,
+    certificate_signature_fingerprint,
+    certificate_json,
     certificate_status,
     created_at,
     updated_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
 ON CONFLICT (certificate_id) DO UPDATE SET
     fob_id = EXCLUDED.fob_id,
+    vehicle_id = EXCLUDED.vehicle_id,
     subject_id = EXCLUDED.subject_id,
     issuer = EXCLUDED.issuer,
     issued_at = EXCLUDED.issued_at,
     expires_at = EXCLUDED.expires_at,
     public_key_fingerprint = EXCLUDED.public_key_fingerprint,
     signature_algorithm = EXCLUDED.signature_algorithm,
+    certificate_signature_fingerprint = EXCLUDED.certificate_signature_fingerprint,
+    certificate_json = EXCLUDED.certificate_json,
     certificate_status = EXCLUDED.certificate_status,
     updated_at = NOW();
 "#;
 
 const GET_CERTIFICATE_BY_ID_SQL: &str = r#"
-SELECT certificate_id, fob_id, subject_id, issuer, issued_at, expires_at, public_key_fingerprint, signature_algorithm, certificate_status
+SELECT certificate_id, fob_id, vehicle_id, subject_id, issuer, issued_at, expires_at, public_key_fingerprint, signature_algorithm, certificate_signature_fingerprint, certificate_json, certificate_status
 FROM certificates
 WHERE certificate_id = $1;
 "#;
 
 const GET_CERTIFICATE_BY_FOB_ID_SQL: &str = r#"
-SELECT certificate_id, fob_id, subject_id, issuer, issued_at, expires_at, public_key_fingerprint, signature_algorithm, certificate_status
+SELECT certificate_id, fob_id, vehicle_id, subject_id, issuer, issued_at, expires_at, public_key_fingerprint, signature_algorithm, certificate_signature_fingerprint, certificate_json, certificate_status
 FROM certificates
 WHERE fob_id = $1 OR subject_id = $1
 ORDER BY updated_at DESC, created_at DESC, certificate_id
@@ -620,7 +685,7 @@ INSERT INTO provisioning_sessions (
     completed_at,
     created_at,
     updated_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(), NOW())
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), NOW())
 ON CONFLICT (session_id) DO UPDATE SET
     customer_id = EXCLUDED.customer_id,
     vehicle_id = EXCLUDED.vehicle_id,
@@ -636,28 +701,40 @@ ON CONFLICT (session_id) DO UPDATE SET
     report_path = EXCLUDED.report_path,
     started_at = EXCLUDED.started_at,
     completed_at = EXCLUDED.completed_at,
-    updated_at = NOW();
+    updated_at = EXCLUDED.updated_at;
 "#;
 
 const UPSERT_AUDIT_LOG_SQL: &str = r#"
 INSERT INTO audit_logs (
     log_id,
+    event_tag,
     session_id,
     event_type,
     event_message,
     severity,
     actor,
+    customer_id,
+    vehicle_id,
+    fob_id,
+    certificate_id,
+    message,
     created_at,
     updated_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $5, $12, NOW())
 ON CONFLICT (log_id) DO UPDATE SET
+    event_tag = EXCLUDED.event_tag,
     session_id = EXCLUDED.session_id,
     event_type = EXCLUDED.event_type,
     event_message = EXCLUDED.event_message,
     severity = EXCLUDED.severity,
     actor = EXCLUDED.actor,
+    customer_id = EXCLUDED.customer_id,
+    vehicle_id = EXCLUDED.vehicle_id,
+    fob_id = EXCLUDED.fob_id,
+    certificate_id = EXCLUDED.certificate_id,
+    message = EXCLUDED.message,
     created_at = EXCLUDED.created_at,
-    updated_at = NOW();
+    updated_at = EXCLUDED.updated_at;
 "#;
 
 const UPSERT_DIAGNOSTIC_RESULT_SQL: &str = r#"
@@ -706,6 +783,12 @@ ON CONFLICT (key_id) DO UPDATE SET
     storage_status = EXCLUDED.storage_status;
 "#;
 
+const GET_ENCRYPTED_KEY_SQL: &str = r#"
+SELECT key_id, owner_type, owner_id, public_key_fingerprint, encrypted_key_blob, encryption_nonce, encryption_algorithm, key_purpose, storage_status
+FROM encrypted_keys
+WHERE key_id = $1;
+"#;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CustomerMetadata {
     pub customer_id: String,
@@ -742,24 +825,30 @@ pub struct KeyFobMetadata {
 pub struct CertificateMetadata {
     pub certificate_id: String,
     pub fob_id: String,
+    pub vehicle_id: String,
     pub subject_id: String,
     pub issuer: String,
     pub issued_at: Option<DateTime<Utc>>,
     pub expires_at: Option<DateTime<Utc>>,
     pub public_key_fingerprint: Option<String>,
     pub signature_algorithm: String,
+    pub certificate_signature_fingerprint: Option<String>,
+    pub certificate_json: Option<Value>,
     pub certificate_status: String,
 }
 
 type CertificateMetadataRow = (
     String,
     String,
+    Option<String>,
     String,
     String,
     Option<DateTime<Utc>>,
     Option<DateTime<Utc>>,
     Option<String>,
     Option<String>,
+    Option<String>,
+    Option<Value>,
     Option<String>,
 );
 
@@ -785,11 +874,16 @@ pub struct ProvisioningSessionMetadata {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditLogRecord {
     pub log_id: String,
+    pub event_tag: String,
     pub session_id: String,
+    pub certificate_id: String,
     pub event_type: String,
     pub event_message: String,
     pub severity: String,
     pub actor: String,
+    pub customer_id: String,
+    pub vehicle_id: String,
+    pub fob_id: String,
     pub created_at: DateTime<Utc>,
 }
 
@@ -896,15 +990,33 @@ pub fn demo_certificate_metadata(
     issued_at: Option<DateTime<Utc>>,
     expires_at: Option<DateTime<Utc>>,
 ) -> CertificateMetadata {
+    let certificate_signature_fingerprint = Some("SHA256:DEMO-CERTIFICATE-SIGNATURE".to_string());
+    let certificate_json = Some(serde_json::json!({
+        "certificate_id": DEMO_CERTIFICATE_ID,
+        "fob_id": DEMO_FOB_ID,
+        "vehicle_id": DEMO_VEHICLE_ID,
+        "subject_id": DEMO_FOB_ID,
+        "issuer": "Denish",
+        "signature_algorithm": CERTIFICATE_SIGNATURE_ALGORITHM,
+        "public_key_fingerprint": public_key_fingerprint.clone(),
+        "certificate_signature_fingerprint": certificate_signature_fingerprint.clone(),
+        "certificate_status": ISSUED_CERTIFICATE_STATUS,
+        "issued_at": issued_at.as_ref().map(DateTime::<Utc>::to_rfc3339),
+        "expires_at": expires_at.as_ref().map(DateTime::<Utc>::to_rfc3339)
+    }));
+
     CertificateMetadata {
         certificate_id: DEMO_CERTIFICATE_ID.to_string(),
         fob_id: DEMO_FOB_ID.to_string(),
+        vehicle_id: DEMO_VEHICLE_ID.to_string(),
         subject_id: DEMO_FOB_ID.to_string(),
         issuer: "Denish".to_string(),
         issued_at,
         expires_at,
         public_key_fingerprint,
         signature_algorithm: CERTIFICATE_SIGNATURE_ALGORITHM.to_string(),
+        certificate_signature_fingerprint,
+        certificate_json,
         certificate_status: ISSUED_CERTIFICATE_STATUS.to_string(),
     }
 }
@@ -936,16 +1048,19 @@ fn certificate_metadata_from_row(row: CertificateMetadataRow) -> CertificateMeta
     CertificateMetadata {
         certificate_id: row.0,
         fob_id: row.1,
-        subject_id: row.2,
-        issuer: row.3,
-        issued_at: row.4,
-        expires_at: row.5,
-        public_key_fingerprint: row.6,
+        vehicle_id: row.2.unwrap_or_default(),
+        subject_id: row.3,
+        issuer: row.4,
+        issued_at: row.5,
+        expires_at: row.6,
+        public_key_fingerprint: row.7,
         signature_algorithm: row
-            .7
-            .unwrap_or_else(|| CERTIFICATE_SIGNATURE_ALGORITHM.to_string()),
-        certificate_status: row
             .8
+            .unwrap_or_else(|| CERTIFICATE_SIGNATURE_ALGORITHM.to_string()),
+        certificate_signature_fingerprint: row.9,
+        certificate_json: row.10,
+        certificate_status: row
+            .11
             .unwrap_or_else(|| DEFAULT_CERTIFICATE_STATUS.to_string()),
     }
 }
@@ -955,19 +1070,22 @@ pub fn demo_audit_log_records(created_at: DateTime<Utc>) -> Vec<AuditLogRecord> 
         (
             AUDIT_LOG_IDS[0],
             "provisioning_started",
+            "provisioning_started",
             "Vehicle access provisioning workflow started",
             "info",
             "technician",
         ),
         (
             AUDIT_LOG_IDS[1],
-            "customer_vehicle_selected",
+            "customer_selected",
+            "customer_selected",
             "Customer CUST-0001, vehicle VEH-0001, and key fob FOB-0001 selected",
             "info",
             "technician",
         ),
         (
             AUDIT_LOG_IDS[2],
+            "certificate_issued",
             "certificate_issued",
             "Certificate metadata issued for CERT-FOB-0001",
             "info",
@@ -976,6 +1094,7 @@ pub fn demo_audit_log_records(created_at: DateTime<Utc>) -> Vec<AuditLogRecord> 
         (
             AUDIT_LOG_IDS[3],
             "authentication_verified",
+            "authentication_verified",
             "Authentication verified using certificate validation, subject binding, Ed25519 signature verification, freshness check, and replay protection",
             "info",
             "system",
@@ -983,12 +1102,14 @@ pub fn demo_audit_log_records(created_at: DateTime<Utc>) -> Vec<AuditLogRecord> 
         (
             AUDIT_LOG_IDS[4],
             "secure_session_established",
+            "secure_session_established",
             "Secure session established using X25519 + HKDF-SHA256 + AES-256-GCM; raw session material is [REDACTED]",
             "info",
             "system",
         ),
         (
             AUDIT_LOG_IDS[5],
+            "cloud_sync_success",
             "encrypted_key_blob_synced",
             "Encrypted key blob metadata synced; plaintext key material is [REDACTED]",
             "info",
@@ -997,6 +1118,7 @@ pub fn demo_audit_log_records(created_at: DateTime<Utc>) -> Vec<AuditLogRecord> 
         (
             AUDIT_LOG_IDS[6],
             "provisioning_finalized",
+            "provisioning_finalized",
             "Provisioning workflow finalized with access decision grant_access",
             "info",
             "technician",
@@ -1004,13 +1126,18 @@ pub fn demo_audit_log_records(created_at: DateTime<Utc>) -> Vec<AuditLogRecord> 
     ]
     .into_iter()
     .map(
-        |(log_id, event_type, event_message, severity, actor)| AuditLogRecord {
+        |(log_id, event_tag, event_type, event_message, severity, actor)| AuditLogRecord {
             log_id: log_id.to_string(),
+            event_tag: event_tag.to_string(),
             session_id: DEMO_SESSION_ID.to_string(),
+            certificate_id: DEMO_CERTIFICATE_ID.to_string(),
             event_type: event_type.to_string(),
             event_message: event_message.to_string(),
             severity: severity.to_string(),
             actor: actor.to_string(),
+            customer_id: DEMO_CUSTOMER_ID.to_string(),
+            vehicle_id: DEMO_VEHICLE_ID.to_string(),
+            fob_id: DEMO_FOB_ID.to_string(),
             created_at,
         },
     )
@@ -1111,6 +1238,20 @@ pub fn encrypt_private_key_for_cloud(
         encryption_nonce: nonce.to_vec(),
         encryption_algorithm: ENCRYPTED_KEY_ALGORITHM.to_string(),
     })
+}
+
+pub fn decrypt_private_key_from_cloud(
+    encrypted_key: &EncryptedKeyBlob,
+    master_key: &[u8; 32],
+) -> Result<Vec<u8>, CloudStorageError> {
+    let cipher = Aes256Gcm::new_from_slice(master_key)
+        .map_err(|_| CloudStorageError::PrivateKeyDecryptionFailed)?;
+    cipher
+        .decrypt(
+            Nonce::from_slice(&encrypted_key.encryption_nonce),
+            encrypted_key.encrypted_key_blob.as_slice(),
+        )
+        .map_err(|_| CloudStorageError::PrivateKeyDecryptionFailed)
 }
 
 pub struct CloudStorageConfig {
@@ -1418,6 +1559,23 @@ impl CloudStorageClient {
             .map_err(|_| CloudStorageError::MetadataSyncFailed)
     }
 
+    pub async fn update_key_fob_status(
+        &self,
+        fob_id: &str,
+        certificate_status: Option<&str>,
+        provisioning_status: Option<&str>,
+    ) -> Result<String, CloudStorageError> {
+        sqlx::query(UPDATE_KEY_FOB_STATUS_SQL)
+            .bind(fob_id)
+            .bind(certificate_status)
+            .bind(provisioning_status)
+            .execute(&self.pool)
+            .await
+            .map_err(|_| CloudStorageError::MetadataSyncFailed)?;
+
+        Ok(KEY_FOB_SYNCED_MESSAGE.to_string())
+    }
+
     pub async fn sync_demo_metadata(&self) -> Result<String, CloudStorageError> {
         self.upsert_customer(&demo_customer_metadata()).await?;
         self.upsert_vehicle(&demo_vehicle_metadata(DEFAULT_PROVISIONING_STATUS))
@@ -1439,12 +1597,15 @@ impl CloudStorageClient {
         sqlx::query(UPSERT_CERTIFICATE_METADATA_SQL)
             .bind(&metadata.certificate_id)
             .bind(&metadata.fob_id)
+            .bind(&metadata.vehicle_id)
             .bind(&metadata.subject_id)
             .bind(&metadata.issuer)
             .bind(metadata.issued_at)
             .bind(metadata.expires_at)
             .bind(metadata.public_key_fingerprint.as_deref())
             .bind(&metadata.signature_algorithm)
+            .bind(metadata.certificate_signature_fingerprint.as_deref())
+            .bind(metadata.certificate_json.clone())
             .bind(&metadata.certificate_status)
             .execute(&self.pool)
             .await
@@ -1531,11 +1692,16 @@ impl CloudStorageClient {
     ) -> Result<String, CloudStorageError> {
         sqlx::query(UPSERT_AUDIT_LOG_SQL)
             .bind(&record.log_id)
+            .bind(&record.event_tag)
             .bind(&record.session_id)
             .bind(&record.event_type)
             .bind(&record.event_message)
             .bind(&record.severity)
             .bind(&record.actor)
+            .bind(&record.customer_id)
+            .bind(&record.vehicle_id)
+            .bind(&record.fob_id)
+            .bind(&record.certificate_id)
             .bind(record.created_at)
             .execute(&self.pool)
             .await
@@ -1602,6 +1768,56 @@ impl CloudStorageClient {
             .map_err(|_| CloudStorageError::EncryptedKeySyncFailed)?;
 
         Ok(encrypted_key_sync_message(&record.key_id).to_string())
+    }
+
+    pub async fn get_encrypted_key(
+        &self,
+        key_id: &str,
+    ) -> Result<Option<EncryptedKeyRecord>, CloudStorageError> {
+        let row = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                Option<String>,
+                Vec<u8>,
+                Vec<u8>,
+                String,
+                String,
+                String,
+            ),
+        >(GET_ENCRYPTED_KEY_SQL)
+        .bind(key_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| CloudStorageError::EncryptedKeySyncFailed)?;
+
+        Ok(row.map(
+            |(
+                key_id,
+                owner_type,
+                owner_id,
+                public_key_fingerprint,
+                encrypted_key_blob,
+                encryption_nonce,
+                encryption_algorithm,
+                key_purpose,
+                storage_status,
+            )| EncryptedKeyRecord {
+                key_id,
+                owner_type,
+                owner_id,
+                public_key_fingerprint,
+                key_purpose,
+                storage_status,
+                encrypted_key: EncryptedKeyBlob {
+                    encrypted_key_blob,
+                    encryption_nonce,
+                    encryption_algorithm,
+                },
+            },
+        ))
     }
 
     pub async fn sync_demo_encrypted_key_blobs(
@@ -1671,6 +1887,7 @@ pub enum CloudStorageError {
     AuditLogSyncFailed,
     DiagnosticResultSyncFailed,
     PrivateKeyEncryptionFailed,
+    PrivateKeyDecryptionFailed,
     EncryptedKeySyncFailed,
 }
 
@@ -1710,6 +1927,9 @@ impl fmt::Display for CloudStorageError {
             CloudStorageError::PrivateKeyEncryptionFailed => {
                 f.write_str("Private key encryption failed")
             }
+            CloudStorageError::PrivateKeyDecryptionFailed => f.write_str(
+                "Encrypted key recovery failed. The local master key may be missing or incorrect.",
+            ),
             CloudStorageError::EncryptedKeySyncFailed => {
                 f.write_str("Encrypted key blob sync failed")
             }
@@ -1792,7 +2012,13 @@ fn schema_sql() -> String {
 
 #[cfg(test)]
 fn metadata_sync_sql() -> String {
-    [UPSERT_CUSTOMER_SQL, UPSERT_VEHICLE_SQL, UPSERT_KEY_FOB_SQL].join("\n")
+    [
+        UPSERT_CUSTOMER_SQL,
+        UPSERT_VEHICLE_SQL,
+        UPSERT_KEY_FOB_SQL,
+        UPDATE_KEY_FOB_STATUS_SQL,
+    ]
+    .join("\n")
 }
 
 #[cfg(test)]
@@ -1818,6 +2044,11 @@ fn diagnostic_result_sync_sql() -> &'static str {
 #[cfg(test)]
 fn encrypted_key_sync_sql() -> &'static str {
     UPSERT_ENCRYPTED_KEY_SQL
+}
+
+#[cfg(test)]
+fn encrypted_key_lookup_sql() -> &'static str {
+    GET_ENCRYPTED_KEY_SQL
 }
 
 #[cfg(test)]
@@ -1909,6 +2140,9 @@ mod tests {
         assert!(schema.contains("ADD COLUMN IF NOT EXISTS signature_algorithm TEXT"));
         assert!(schema.contains("ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()"));
         assert!(schema.contains("ADD COLUMN IF NOT EXISTS public_key_fingerprint TEXT"));
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS vehicle_id TEXT"));
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS certificate_signature_fingerprint TEXT"));
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS certificate_json JSONB"));
     }
 
     #[test]
@@ -1966,6 +2200,12 @@ mod tests {
             "ADD COLUMN IF NOT EXISTS actor TEXT",
             "ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
             "ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
+            "ADD COLUMN IF NOT EXISTS event_tag TEXT",
+            "ADD COLUMN IF NOT EXISTS customer_id TEXT",
+            "ADD COLUMN IF NOT EXISTS vehicle_id TEXT",
+            "ADD COLUMN IF NOT EXISTS fob_id TEXT",
+            "ADD COLUMN IF NOT EXISTS certificate_id TEXT",
+            "ADD COLUMN IF NOT EXISTS message TEXT",
         ] {
             assert!(
                 schema.contains(migration),
@@ -2141,6 +2381,11 @@ mod tests {
         assert!(sql.contains("ON CONFLICT (customer_id) DO UPDATE"));
         assert!(sql.contains("ON CONFLICT (vehicle_id) DO UPDATE"));
         assert!(sql.contains("ON CONFLICT (fob_id) DO UPDATE"));
+        assert!(sql.contains("UPDATE key_fobs"));
+        assert!(sql.contains("WHERE fob_id = $1"));
+        assert!(sql.contains("certificate_status = COALESCE($2, certificate_status)"));
+        assert!(sql.contains("provisioning_status = COALESCE($3, provisioning_status)"));
+        assert!(sql.contains("updated_at = NOW()"));
     }
 
     #[test]
@@ -2225,13 +2470,34 @@ mod tests {
 
         assert_eq!(metadata.certificate_id, DEMO_CERTIFICATE_ID);
         assert_eq!(metadata.fob_id, DEMO_FOB_ID);
+        assert_eq!(metadata.vehicle_id, DEMO_VEHICLE_ID);
         assert_eq!(metadata.subject_id, DEMO_FOB_ID);
         assert_eq!(metadata.issuer, "Denish");
         assert_eq!(
             metadata.signature_algorithm,
             CERTIFICATE_SIGNATURE_ALGORITHM
         );
+        assert!(metadata.certificate_signature_fingerprint.is_some());
+        assert!(metadata.certificate_json.is_some());
         assert_eq!(metadata.certificate_status, ISSUED_CERTIFICATE_STATUS);
+        let certificate_json = metadata
+            .certificate_json
+            .as_ref()
+            .expect("safe certificate JSON metadata should exist")
+            .to_string();
+        for expected in [
+            "certificate_id",
+            "fob_id",
+            "vehicle_id",
+            "subject_id",
+            "issuer",
+            "signature_algorithm",
+            "public_key_fingerprint",
+            "certificate_signature_fingerprint",
+            "certificate_status",
+        ] {
+            assert!(certificate_json.contains(expected));
+        }
 
         for disallowed in [
             "private_key",
@@ -2245,6 +2511,7 @@ mod tests {
             "session_key",
         ] {
             assert!(!debug.contains(disallowed));
+            assert!(!certificate_json.contains(disallowed));
         }
     }
 
@@ -2256,12 +2523,15 @@ mod tests {
         assert!(sql.contains("ON CONFLICT (certificate_id) DO UPDATE"));
         assert!(sql.contains("certificate_id"));
         assert!(sql.contains("fob_id"));
+        assert!(sql.contains("vehicle_id"));
         assert!(sql.contains("subject_id"));
         assert!(sql.contains("issuer"));
         assert!(sql.contains("issued_at"));
         assert!(sql.contains("expires_at"));
         assert!(sql.contains("public_key_fingerprint"));
         assert!(sql.contains("signature_algorithm"));
+        assert!(sql.contains("certificate_signature_fingerprint"));
+        assert!(sql.contains("certificate_json"));
         assert!(sql.contains("certificate_status"));
         assert!(sql.contains("created_at"));
         assert!(sql.contains("updated_at"));
@@ -2275,8 +2545,11 @@ mod tests {
             "FROM certificates",
             "WHERE certificate_id = $1",
             "WHERE fob_id = $1 OR subject_id = $1",
+            "vehicle_id",
             "public_key_fingerprint",
             "signature_algorithm",
+            "certificate_signature_fingerprint",
+            "certificate_json",
             "certificate_status",
         ] {
             assert!(sql.contains(expected), "missing lookup SQL: {expected}");
@@ -2306,7 +2579,6 @@ mod tests {
             "master_key",
             "session_key",
             "shared_secret",
-            "certificate_json",
             "encrypted_key_blob",
             "encryption_nonce",
         ] {
@@ -2379,7 +2651,21 @@ mod tests {
         assert!(sql.contains("report_path"));
         assert!(sql.contains("started_at"));
         assert!(sql.contains("completed_at"));
-        assert!(sql.contains("updated_at = NOW()"));
+        assert!(sql.contains("VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), NOW())"));
+        for update in [
+            "auth_status = EXCLUDED.auth_status",
+            "auth_result = EXCLUDED.auth_result",
+            "session_status = EXCLUDED.session_status",
+            "access_decision = EXCLUDED.access_decision",
+            "session_algorithm = EXCLUDED.session_algorithm",
+            "session_method = EXCLUDED.session_method",
+            "provisioning_status = EXCLUDED.provisioning_status",
+            "report_path = EXCLUDED.report_path",
+            "completed_at = EXCLUDED.completed_at",
+            "updated_at = EXCLUDED.updated_at",
+        ] {
+            assert!(sql.contains(update), "missing upsert update: {update}");
+        }
     }
 
     #[test]
@@ -2426,7 +2712,21 @@ mod tests {
         assert_eq!(records.len(), AUDIT_LOG_IDS.len());
         for (record, expected_id) in records.iter().zip(AUDIT_LOG_IDS) {
             assert_eq!(record.log_id, expected_id);
+            assert!([
+                "provisioning_started",
+                "customer_selected",
+                "certificate_issued",
+                "authentication_verified",
+                "secure_session_established",
+                "cloud_sync_success",
+                "provisioning_finalized"
+            ]
+            .contains(&record.event_tag.as_str()));
             assert_eq!(record.session_id, DEMO_SESSION_ID);
+            assert_eq!(record.certificate_id, DEMO_CERTIFICATE_ID);
+            assert_eq!(record.customer_id, DEMO_CUSTOMER_ID);
+            assert_eq!(record.vehicle_id, DEMO_VEHICLE_ID);
+            assert_eq!(record.fob_id, DEMO_FOB_ID);
             assert_eq!(record.severity, "info");
             assert!(matches!(record.actor.as_str(), "technician" | "system"));
             assert!(!record.event_message.is_empty());
@@ -2466,13 +2766,20 @@ mod tests {
         assert!(sql.contains("INSERT INTO audit_logs"));
         assert!(sql.contains("ON CONFLICT (log_id) DO UPDATE"));
         assert!(sql.contains("log_id"));
+        assert!(sql.contains("event_tag"));
         assert!(sql.contains("session_id"));
         assert!(sql.contains("event_type"));
         assert!(sql.contains("event_message"));
         assert!(sql.contains("severity"));
         assert!(sql.contains("actor"));
+        assert!(sql.contains("customer_id"));
+        assert!(sql.contains("vehicle_id"));
+        assert!(sql.contains("fob_id"));
+        assert!(sql.contains("certificate_id"));
+        assert!(sql.contains("message"));
         assert!(sql.contains("created_at"));
-        assert!(sql.contains("updated_at = NOW()"));
+        assert!(sql.contains("message = EXCLUDED.message"));
+        assert!(sql.contains("updated_at = EXCLUDED.updated_at"));
     }
 
     #[test]
@@ -2741,6 +3048,17 @@ mod tests {
     }
 
     #[test]
+    fn encrypted_private_key_blob_public_decrypt_helper_matches_plaintext() {
+        let plaintext = b"selected key fob private key material";
+        let encrypted = encrypt_private_key_for_cloud(plaintext, &test_master_key())
+            .expect("encryption should succeed");
+        let decrypted = decrypt_private_key_from_cloud(&encrypted, &test_master_key())
+            .expect("decryption should succeed");
+
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
     fn encrypted_private_key_blob_rejects_wrong_key() {
         let plaintext = b"private key material for test";
         let encrypted = encrypt_private_key_for_cloud(plaintext, &test_master_key())
@@ -2748,6 +3066,7 @@ mod tests {
         let wrong_key = [9u8; 32];
 
         assert!(decrypt_test_blob(&encrypted, &wrong_key).is_err());
+        assert!(decrypt_private_key_from_cloud(&encrypted, &wrong_key).is_err());
     }
 
     #[test]
@@ -2791,6 +3110,20 @@ mod tests {
         assert!(sql.contains("encrypted_key_blob"));
         assert!(sql.contains("encryption_nonce"));
         assert!(sql.contains("encryption_algorithm"));
+        assert!(sql.contains("owner_type = EXCLUDED.owner_type"));
+        assert!(sql.contains("owner_id = EXCLUDED.owner_id"));
+        assert!(sql.contains("key_purpose = EXCLUDED.key_purpose"));
+    }
+
+    #[test]
+    fn encrypted_key_lookup_sql_uses_key_id_and_safe_table() {
+        let sql = encrypted_key_lookup_sql();
+
+        assert!(sql.contains("FROM encrypted_keys"));
+        assert!(sql.contains("WHERE key_id = $1"));
+        assert!(sql.contains("owner_type"));
+        assert!(sql.contains("owner_id"));
+        assert!(sql.contains("public_key_fingerprint"));
     }
 
     #[test]

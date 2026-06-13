@@ -1,5 +1,5 @@
-use aiacs::app_controller::AppController;
-use chrono::Local;
+use aiacs::app_controller::{format_status_label, AppController};
+use chrono::{FixedOffset, Utc};
 use iced::alignment;
 use iced::theme;
 use iced::widget::{button, column, container, row, scrollable, text, text_input, Svg};
@@ -637,16 +637,11 @@ impl Application for AIACSApp {
                 return self.run_cloud_operation(CloudOperation::ProvisioningSignCanonicalPayload);
             }
             Message::VerifyAuthentication => {
-                self.workflow_state.trust_initialized = true;
-                self.workflow_state.keyfob_registered = true;
-                self.workflow_state.certificate_issued = true;
-                self.workflow_state.authentication_verified = true;
-                self.status.trust_status = "Initialized".to_string();
-                self.status.key_fob_status = "Registered".to_string();
-                self.status.certificate_status = "Issued".to_string();
-                self.status.authentication_status = "Verified".to_string();
-                self.status.access_decision = "Access Granted".to_string();
-                self.status.top_badge = "Key Verified".to_string();
+                if let Err(error) = self.controller.verify_authentication_readiness() {
+                    self.selected_detail = error.to_string();
+                    self.push_log("[WARN]", self.selected_detail.clone());
+                    return Command::none();
+                }
                 self.cloud_sync_session_status = "Pending secure session activation".to_string();
                 self.begin_cloud_operation("Verifying key authentication...");
                 return self.run_cloud_operation(CloudOperation::ProvisioningVerifyAuthentication);
@@ -969,7 +964,7 @@ impl AIACSApp {
                 self.status.authentication_status = "Verified".to_string();
                 self.status.access_decision = "Access Granted".to_string();
                 self.status.top_badge = "Key Verified".to_string();
-                self.record_provisioning_cloud_result("Session", "[AUTH]", message);
+                self.record_provisioning_cloud_result("Metadata", "[AUTH]", message);
             }
             CloudOperation::ProvisioningActivateSession => {
                 self.workflow_state.session_active = true;
@@ -979,7 +974,9 @@ impl AIACSApp {
             }
             CloudOperation::ProvisioningFinalize => {
                 self.workflow_state.report_exported = true;
-                self.record_provisioning_cloud_result("Audit Logs", "[INFO]", message);
+                self.record_provisioning_cloud_result("Session", "[INFO]", message.clone());
+                let cloud_status = cloud_status_from_provisioning_result(&message);
+                self.cloud_sync_audit_status = cloud_status;
             }
             CloudOperation::ProvisioningDiagnostics => {
                 self.record_provisioning_cloud_result("Diagnostic Results", "[INFO]", message);
@@ -1110,7 +1107,7 @@ impl AIACSApp {
             CloudOperation::ProvisioningFinalize => {
                 self.workflow_state.report_exported = false;
                 self.record_provisioning_cloud_error(
-                    "Audit Logs",
+                    "Session",
                     "Finalize and export report",
                     error,
                 );
@@ -1724,6 +1721,7 @@ impl AIACSApp {
         let certificate_status = key_fob
             .as_ref()
             .and_then(|record| record.certificate_status.clone())
+            .map(|status| format_status_label(&status))
             .unwrap_or_else(|| "Not Issued".to_string());
         let public_key_fingerprint = key_fob
             .as_ref()
@@ -1756,6 +1754,7 @@ impl AIACSApp {
                             record
                                 .certificate_status
                                 .clone()
+                                .map(|status| format_status_label(&status))
                                 .unwrap_or_else(|| "Not Issued".to_string())
                         ),
                         format!(
@@ -1763,6 +1762,7 @@ impl AIACSApp {
                             record
                                 .provisioning_status
                                 .clone()
+                                .map(|status| format_status_label(&status))
                                 .unwrap_or_else(|| "Pending".to_string())
                         ),
                     ];
@@ -1900,6 +1900,7 @@ impl AIACSApp {
                     ),
                     button_label: "Connect Vehicle",
                     message: Message::ConnectVehicle,
+                    disabled: self.management_state.cloud_operation_in_progress,
                 })]
                 .spacing(6),
             ),
@@ -1919,6 +1920,7 @@ impl AIACSApp {
                         ),
                         button_label: "Detect Fob",
                         message: Message::DetectKeyFob,
+                        disabled: self.management_state.cloud_operation_in_progress,
                     }),
                     self.workflow_step_card(WorkflowStep {
                         icon_name: "register-key",
@@ -1932,6 +1934,7 @@ impl AIACSApp {
                         ),
                         button_label: "Register Fob",
                         message: Message::RegisterDigitalKeyFob,
+                        disabled: self.management_state.cloud_operation_in_progress,
                     }),
                 ]
                 .spacing(6),
@@ -1951,6 +1954,7 @@ impl AIACSApp {
                         ),
                         button_label: "Initialize Trust",
                         message: Message::InitializeVehicleTrust,
+                        disabled: self.management_state.cloud_operation_in_progress,
                     }),
                     self.workflow_step_card(WorkflowStep {
                         icon_name: "issue-cert",
@@ -1963,6 +1967,7 @@ impl AIACSApp {
                         ),
                         button_label: "Issue Certificate",
                         message: Message::IssueCertificate,
+                        disabled: self.management_state.cloud_operation_in_progress,
                     }),
                     self.workflow_step_card(WorkflowStep {
                         icon_name: "certificate",
@@ -1976,6 +1981,7 @@ impl AIACSApp {
                         ),
                         button_label: "View Certificate",
                         message: Message::ViewCertificateDetails,
+                        disabled: self.management_state.cloud_operation_in_progress,
                     }),
                 ]
                 .spacing(6),
@@ -1995,6 +2001,7 @@ impl AIACSApp {
                         ),
                         button_label: "Generate",
                         message: Message::GenerateChallenge,
+                        disabled: self.management_state.cloud_operation_in_progress,
                     }),
                     self.workflow_step_card(WorkflowStep {
                         icon_name: "verify-auth",
@@ -2007,6 +2014,7 @@ impl AIACSApp {
                         ),
                         button_label: "Sign Payload",
                         message: Message::SignCanonicalPayload,
+                        disabled: self.management_state.cloud_operation_in_progress,
                     }),
                     self.workflow_step_card(WorkflowStep {
                         icon_name: "auth",
@@ -2022,6 +2030,8 @@ impl AIACSApp {
                         ),
                         button_label: "Verify Authentication",
                         message: Message::VerifyAuthentication,
+                        disabled: self.management_state.cloud_operation_in_progress
+                            || !self.controller.can_verify_authentication(),
                     }),
                 ]
                 .spacing(6),
@@ -2040,6 +2050,7 @@ impl AIACSApp {
                     ),
                     button_label: "Activate Session",
                     message: Message::ActivateSecureChannel,
+                    disabled: self.management_state.cloud_operation_in_progress,
                 })]
                 .spacing(6),
             ),
@@ -2060,6 +2071,7 @@ impl AIACSApp {
                         ),
                         button_label: "Finalize & Export Report",
                         message: Message::ExportProvisioningReport,
+                        disabled: self.management_state.cloud_operation_in_progress,
                     }),
                 ]
                 .spacing(6),
@@ -2127,12 +2139,20 @@ impl AIACSApp {
                 .spacing(3)
                 .width(Length::Fill),
                 status_chip(step.status),
-                compact_button(
-                    step.icon_name,
-                    step.button_label,
-                    step.message,
-                    ButtonKind::StepAction,
-                ),
+                if step.disabled {
+                    disabled_compact_button(
+                        step.icon_name,
+                        step.button_label,
+                        ButtonKind::StepAction,
+                    )
+                } else {
+                    compact_button(
+                        step.icon_name,
+                        step.button_label,
+                        step.message,
+                        ButtonKind::StepAction,
+                    )
+                },
             ]
             .spacing(12)
             .align_items(Alignment::Center),
@@ -2922,6 +2942,13 @@ impl AIACSApp {
                             .unwrap_or_else(|| context.fob_id.clone()),
                     ),
                     (
+                        "Vehicle ID",
+                        certificate
+                            .vehicle_id
+                            .clone()
+                            .unwrap_or_else(|| context.vehicle_id.clone()),
+                    ),
+                    (
                         "Subject ID",
                         certificate
                             .subject_id
@@ -2948,6 +2975,21 @@ impl AIACSApp {
                             .public_key_fingerprint
                             .clone()
                             .unwrap_or_else(|| crypto_identity.public_key_fingerprint.clone()),
+                    ),
+                    (
+                        "Certificate Signature Fingerprint",
+                        certificate
+                            .certificate_signature_fingerprint
+                            .clone()
+                            .unwrap_or_else(|| "N/A".to_string()),
+                    ),
+                    (
+                        "Certificate JSON",
+                        if certificate.certificate_json_available {
+                            "Available".to_string()
+                        } else {
+                            "N/A".to_string()
+                        },
                     ),
                     (
                         "Issued At",
@@ -3330,6 +3372,7 @@ struct WorkflowStep<'a> {
     status: ChipState,
     button_label: &'a str,
     message: Message,
+    disabled: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -3935,7 +3978,16 @@ fn trace_parts(entry: &str) -> (&str, &str) {
 }
 
 fn timestamped(tag: &str, message: &str) -> String {
-    format!("{} {} {}", Local::now().format("%H:%M:%S"), tag, message)
+    let nepal_offset = FixedOffset::east_opt(5 * 3600 + 45 * 60)
+        .expect("Nepal offset should be a valid fixed offset");
+    format!(
+        "{} {} {}",
+        Utc::now()
+            .with_timezone(&nepal_offset)
+            .format("%H:%M:%S NPT"),
+        tag,
+        message
+    )
 }
 
 #[cfg(test)]
@@ -3963,6 +4015,13 @@ mod tests {
         assert!(!DIAGNOSTIC_SYNC_REDACTION_LINE.contains("raw_nonce"));
         assert!(!DIAGNOSTIC_SYNC_REDACTION_LINE.contains("encrypted_key_blob"));
         assert!(!DIAGNOSTIC_SYNC_REDACTION_LINE.contains("encryption_nonce"));
+    }
+
+    #[test]
+    fn gui_event_log_timestamps_are_labelled_npt() {
+        let line = timestamped("[INFO]", "timestamp test");
+
+        assert!(line.contains("NPT [INFO] timestamp test"));
     }
 
     #[test]

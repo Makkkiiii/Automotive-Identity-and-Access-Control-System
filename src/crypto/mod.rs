@@ -75,6 +75,18 @@ impl CryptoEngine {
         })
     }
 
+    /// Derive the Ed25519 public key from a 32-byte private signing seed.
+    pub fn derive_ed25519_public_key(private_key: &[u8]) -> Result<Vec<u8>, String> {
+        if private_key.len() != 32 {
+            return Err("Invalid private key length. Expected 32 bytes for Ed25519".to_string());
+        }
+
+        let mut key_bytes = [0u8; 32];
+        key_bytes.copy_from_slice(private_key);
+        let signing_key = SigningKey::from_bytes(&key_bytes);
+        Ok(signing_key.verifying_key().to_bytes().to_vec())
+    }
+
     /// Verify Ed25519 signature
     pub fn verify_signature(
         public_key: &[u8],
@@ -249,6 +261,15 @@ mod tests {
         let verify_result = CryptoEngine::verify_signature(&kp.public_key, data, &sig.data);
         assert!(verify_result.is_ok(), "Verification should succeed");
         assert!(verify_result.unwrap(), "Signature should be valid");
+    }
+
+    #[test]
+    fn test_public_key_derivation_from_private_seed() {
+        let kp = CryptoEngine::generate_ed25519_keypair().unwrap();
+        let derived = CryptoEngine::derive_ed25519_public_key(&kp.private_key)
+            .expect("public key derivation should succeed");
+
+        assert_eq!(derived, kp.public_key);
     }
 
     #[test]

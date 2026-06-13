@@ -417,7 +417,7 @@ AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metada
 - Raw private keys are not uploaded.
 - Raw session keys, shared secrets, HKDF output, AES keys, and X25519 private keys are not uploaded.
 - Raw attack payloads, raw ciphertext, and raw nonces are not uploaded.
-- Certificate JSON is not uploaded in the current metadata phase.
+- Safe certificate JSON metadata can be uploaded; private key material and session secrets are never included.
 - Cloud Phase 6D adds diagnostic result sync for rejected malicious scenarios.
 - Cloud Phase 7 adds automatic GUI workflow-to-cloud sync while preserving manual sync buttons for verification and recovery.
 - GUI cloud operations continue to call `AppController` only; the GUI does not call cloud storage or cryptographic modules directly.
@@ -444,7 +444,10 @@ AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metada
 - The GUI dashboard starts with no selected customer, vehicle, or key fob; cloud records load dynamically and the operator must select or create records before provisioning.
 - Customer, vehicle, and key fob records are displayed as selectable GUI lists/cards; the normal workflow no longer exposes demo-fill controls.
 - Protocol Artifacts and Credential Storage reflect the active selected context; certificate details are shown for the selected key fob and credential storage displays safe metadata only.
-- Newly issued certificates use issuer `Denish`; certificate metadata can be restored from cloud records after restart, and provisioning sessions store safe completion metadata such as authentication result, session method, provisioning status, and report status/path.
+- Newly issued certificates use issuer `Denish`; certificate metadata can be restored from cloud records after restart, certificate rows store safe `vehicle_id`, public/signature fingerprints, and safe JSON metadata, provisioning sessions store safe completion metadata, and audit logs include event tags plus selected customer/vehicle/fob context.
+- Provisioning sessions sync after secure session activation and finalization, key fob cloud statuses track provisioning progress with machine-readable values, and user-facing timestamps are displayed in Nepal time / NPT while database timestamps remain timezone-safe.
+- Phase 9.6.3 fixes first-click Verify Authentication readiness, syncs `vehicles.provisioning_status` through the workflow, creates selected key fob encrypted backup rows, and keeps encrypted key recovery local through `AIACS_MASTER_KEY` with fingerprint-match evidence only.
+- Cloud encrypted key storage keeps encrypted blobs and safe metadata only; plaintext private keys, session keys, shared secrets, HKDF output, AES keys, raw nonces, raw ciphertext, and database/master secrets are never displayed, logged, or uploaded.
 - Demo/default records are not automatically selected in the GUI; they remain only as controlled local fallback/sample data where applicable.
 
 ---
