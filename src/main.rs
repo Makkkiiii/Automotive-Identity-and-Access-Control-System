@@ -8,16 +8,6 @@ use iced::{
     Font, Length, Settings, Theme,
 };
 
-const OWNER_NAME: &str = "Dennis Maharjan";
-const CUSTOMER_EMAIL: &str = "dennis.m@example.com";
-const CUSTOMER_PHONE: &str = "+977-9800000000";
-const VEHICLE_DISPLAY_NAME: &str = "Nissan Magnite 2021";
-const VEHICLE_MAKE: &str = "Nissan";
-const VEHICLE_MODEL: &str = "Magnite";
-const VEHICLE_YEAR: &str = "2021";
-const VEHICLE_VIN: &str = "VIN-DEMO-001";
-const VEHICLE_REGISTRATION: &str = "BA-00-PA-0001";
-const KEY_FOB_LABEL: &str = "Primary Key Fob";
 const ICON_DIR: &str = "assets/icons";
 
 const WINDOW_BG: Color = Color::from_rgb(0.105, 0.09, 0.11);
@@ -248,28 +238,22 @@ enum ArtifactSection {
 enum Message {
     SelectTab(MainTab),
     SelectArtifact(ArtifactSection),
-    LoadCustomers,
     CreateCustomer,
-    SelectCustomer,
+    SelectCustomerRecord(String),
     CustomerOwnerChanged(String),
     CustomerEmailChanged(String),
     CustomerPhoneChanged(String),
-    FillDemoCustomer,
-    LoadVehicles,
     CreateVehicle,
-    SelectVehicle,
+    SelectVehicleRecord(String),
     VehicleDisplayNameChanged(String),
     VehicleMakeChanged(String),
     VehicleModelChanged(String),
     VehicleYearChanged(String),
     VehicleVinChanged(String),
     VehicleRegistrationChanged(String),
-    FillDemoVehicle,
-    LoadKeyFobs,
     CreateKeyFobRecord,
-    SelectKeyFobRecord,
+    SelectKeyFobRecord(String),
     KeyFobLabelChanged(String),
-    FillDemoKeyFob,
     RotateCredential,
     ConnectVehicle,
     DetectKeyFob,
@@ -370,14 +354,39 @@ impl Application for AIACSApp {
         match message {
             Message::SelectTab(tab) => {
                 self.selected_tab = tab;
+                match tab {
+                    MainTab::Customers
+                        if self.cloud_ui_status == CloudUiStatus::Connected
+                            && self.management_state.customer_load_status != "Customers loaded" =>
+                    {
+                        self.begin_cloud_operation("Loading customers...");
+                        self.management_state.customer_load_status =
+                            "Loading customers...".to_string();
+                        return self.run_cloud_operation(CloudOperation::LoadCustomers);
+                    }
+                    MainTab::Vehicles
+                        if self.controller.selected_customer_record().is_some()
+                            && self.management_state.vehicle_load_status != "Vehicles loaded" =>
+                    {
+                        self.begin_cloud_operation("Loading vehicles...");
+                        self.management_state.vehicle_load_status =
+                            "Loading vehicles...".to_string();
+                        return self.run_cloud_operation(CloudOperation::LoadVehicles);
+                    }
+                    MainTab::KeyFobs
+                        if self.controller.selected_vehicle_record().is_some()
+                            && self.management_state.key_fob_load_status != "Key fobs loaded" =>
+                    {
+                        self.begin_cloud_operation("Loading key fobs...");
+                        self.management_state.key_fob_load_status =
+                            "Loading key fobs...".to_string();
+                        return self.run_cloud_operation(CloudOperation::LoadKeyFobs);
+                    }
+                    _ => {}
+                }
             }
             Message::SelectArtifact(section) => {
                 self.selected_artifact = section;
-            }
-            Message::LoadCustomers => {
-                self.begin_cloud_operation("Loading customers...");
-                self.management_state.customer_load_status = "Loading customers...".to_string();
-                return self.run_cloud_operation(CloudOperation::LoadCustomers);
             }
             Message::CreateCustomer => match self.customer_form_values() {
                 Ok((owner_name, email, phone)) => {
@@ -397,13 +406,7 @@ impl Application for AIACSApp {
                 }
                 Err(message) => self.record_customer_form_error(message),
             },
-            Message::SelectCustomer => {
-                let Some(customer_id) = self.controller.customer_selection_candidate_id() else {
-                    self.record_customer_form_error(
-                        "No customer available. Load or create a customer first.".to_string(),
-                    );
-                    return Command::none();
-                };
+            Message::SelectCustomerRecord(customer_id) => {
                 self.begin_cloud_operation("Selecting customer...");
                 return self.run_cloud_operation_with(move |mut controller| {
                     let result = controller
@@ -424,18 +427,6 @@ impl Application for AIACSApp {
             }
             Message::CustomerPhoneChanged(value) => {
                 self.management_state.customer_phone_input = value;
-            }
-            Message::FillDemoCustomer => {
-                self.management_state.customer_owner_input = OWNER_NAME.to_string();
-                self.management_state.customer_email_input = CUSTOMER_EMAIL.to_string();
-                self.management_state.customer_phone_input = CUSTOMER_PHONE.to_string();
-                self.management_state.customer_note =
-                    "Demo customer fields filled for operator review".to_string();
-            }
-            Message::LoadVehicles => {
-                self.begin_cloud_operation("Loading vehicles...");
-                self.management_state.vehicle_load_status = "Loading vehicles...".to_string();
-                return self.run_cloud_operation(CloudOperation::LoadVehicles);
             }
             Message::CreateVehicle => match self.vehicle_form_values() {
                 Ok((display_name, make, model, year, vin, registration)) => {
@@ -469,13 +460,7 @@ impl Application for AIACSApp {
                 }
                 Err(message) => self.record_vehicle_form_error(message),
             },
-            Message::SelectVehicle => {
-                let Some(vehicle_id) = self.controller.vehicle_selection_candidate_id() else {
-                    self.record_vehicle_form_error(
-                        "Select a customer and load/create a vehicle first".to_string(),
-                    );
-                    return Command::none();
-                };
+            Message::SelectVehicleRecord(vehicle_id) => {
                 self.begin_cloud_operation("Selecting vehicle...");
                 return self.run_cloud_operation_with(move |mut controller| {
                     let result = controller
@@ -506,21 +491,6 @@ impl Application for AIACSApp {
             Message::VehicleRegistrationChanged(value) => {
                 self.management_state.vehicle_registration_input = value;
             }
-            Message::FillDemoVehicle => {
-                self.management_state.vehicle_display_name_input = VEHICLE_DISPLAY_NAME.to_string();
-                self.management_state.vehicle_make_input = VEHICLE_MAKE.to_string();
-                self.management_state.vehicle_model_input = VEHICLE_MODEL.to_string();
-                self.management_state.vehicle_year_input = VEHICLE_YEAR.to_string();
-                self.management_state.vehicle_vin_input = VEHICLE_VIN.to_string();
-                self.management_state.vehicle_registration_input = VEHICLE_REGISTRATION.to_string();
-                self.management_state.vehicle_note =
-                    "Demo vehicle fields filled for operator review".to_string();
-            }
-            Message::LoadKeyFobs => {
-                self.begin_cloud_operation("Loading key fobs...");
-                self.management_state.key_fob_load_status = "Loading key fobs...".to_string();
-                return self.run_cloud_operation(CloudOperation::LoadKeyFobs);
-            }
             Message::CreateKeyFobRecord => match self.key_fob_form_values() {
                 Ok(label) => {
                     let Some(vehicle) = self.controller.selected_vehicle_record() else {
@@ -545,13 +515,7 @@ impl Application for AIACSApp {
                 }
                 Err(message) => self.record_key_fob_form_error(message),
             },
-            Message::SelectKeyFobRecord => {
-                let Some(fob_id) = self.controller.key_fob_selection_candidate_id() else {
-                    self.record_key_fob_form_error(
-                        "Select a vehicle and load/create a key fob first".to_string(),
-                    );
-                    return Command::none();
-                };
+            Message::SelectKeyFobRecord(fob_id) => {
                 self.begin_cloud_operation("Selecting key fob...");
                 return self.run_cloud_operation_with(move |mut controller| {
                     let result = controller
@@ -566,11 +530,6 @@ impl Application for AIACSApp {
             }
             Message::KeyFobLabelChanged(value) => {
                 self.management_state.key_fob_label_input = value;
-            }
-            Message::FillDemoKeyFob => {
-                self.management_state.key_fob_label_input = KEY_FOB_LABEL.to_string();
-                self.management_state.keyfob_note =
-                    "Demo key fob label filled for operator review".to_string();
             }
             Message::RotateCredential => match self.controller.rotate_key_fob_credential() {
                 Ok(message) => {
@@ -592,7 +551,12 @@ impl Application for AIACSApp {
             }
             Message::DetectKeyFob => {
                 self.workflow_state.keyfob_detected = true;
-                self.management_state.keyfob_note = format!("{} detected", KEY_FOB_LABEL);
+                let fob_label = self
+                    .controller
+                    .selected_key_fob_record()
+                    .map(|record| record.fob_label)
+                    .unwrap_or_else(|| "No key fob selected".to_string());
+                self.management_state.keyfob_note = format!("{fob_label} detected");
                 self.cloud_sync_metadata_status = "Syncing metadata...".to_string();
                 self.begin_cloud_operation("Detecting key fob and syncing metadata...");
                 return self.run_cloud_operation(CloudOperation::ProvisioningDetectKeyFob);
@@ -607,7 +571,12 @@ impl Application for AIACSApp {
             }
             Message::RegisterDigitalKeyFob => {
                 self.workflow_state.keyfob_registered = true;
-                self.management_state.keyfob_note = format!("{} registered", KEY_FOB_LABEL);
+                let fob_label = self
+                    .controller
+                    .selected_key_fob_record()
+                    .map(|record| record.fob_label)
+                    .unwrap_or_else(|| "No key fob selected".to_string());
+                self.management_state.keyfob_note = format!("{fob_label} registered");
                 self.status.key_fob_status = "Registered".to_string();
                 self.status.top_badge = "Key Fob Registered".to_string();
                 self.cloud_sync_metadata_status = "Syncing metadata...".to_string();
@@ -691,7 +660,7 @@ impl Application for AIACSApp {
                 return self.run_cloud_operation(CloudOperation::DisableAutoSync);
             }
             Message::CloudOperationFinished(result) => {
-                self.finish_cloud_operation(*result);
+                return self.finish_cloud_operation(*result);
             }
             Message::ClearLog => match self.controller.clear_logs() {
                 Ok(message) => {
@@ -760,14 +729,43 @@ impl AIACSApp {
         self.selected_detail = message.to_string();
     }
 
-    fn finish_cloud_operation(&mut self, result: CloudOperationResult) {
+    fn finish_cloud_operation(&mut self, result: CloudOperationResult) -> Command<Message> {
         self.management_state.cloud_operation_in_progress = false;
         self.controller = result.controller;
+        let operation = result.operation;
 
-        match result.result {
-            Ok(message) => self.apply_cloud_success(result.operation, message),
-            Err(error) => self.apply_cloud_error(result.operation, error),
+        let succeeded = match result.result {
+            Ok(message) => {
+                self.apply_cloud_success(operation, message);
+                true
+            }
+            Err(error) => {
+                self.apply_cloud_error(operation, error);
+                false
+            }
+        };
+
+        match (succeeded, operation) {
+            (true, CloudOperation::SelectCustomer | CloudOperation::CreateCustomer) => {
+                if self.controller.selected_customer_record().is_some() {
+                    self.management_state.vehicle_load_status = "Loading vehicles...".to_string();
+                    self.management_state.vehicle_note =
+                        "Loading vehicles for selected customer...".to_string();
+                    return self.run_cloud_operation(CloudOperation::LoadVehicles);
+                }
+            }
+            (true, CloudOperation::SelectVehicle | CloudOperation::CreateVehicle) => {
+                if self.controller.selected_vehicle_record().is_some() {
+                    self.management_state.key_fob_load_status = "Loading key fobs...".to_string();
+                    self.management_state.keyfob_note =
+                        "Loading key fobs for selected vehicle...".to_string();
+                    return self.run_cloud_operation(CloudOperation::LoadKeyFobs);
+                }
+            }
+            _ => {}
         }
+
+        Command::none()
     }
 
     fn apply_startup_cloud_status(&mut self, message: String) {
@@ -778,6 +776,10 @@ impl AIACSApp {
             self.cloud_ui_status = CloudUiStatus::Connected;
             self.cloud_auto_sync_status = "Enabled automatically".to_string();
             self.cloud_sync_metadata_status = "Pending".to_string();
+            if message.contains("Customers loaded") {
+                self.management_state.customer_load_status = "Customers loaded".to_string();
+                self.management_state.customer_note = message.clone();
+            }
             self.selected_detail = format!("No customer selected; {}", message);
         } else if message.contains("not configured") {
             self.cloud_status = "Disconnected".to_string();
@@ -1396,6 +1398,39 @@ impl AIACSApp {
             .as_ref()
             .map(|record| record.vehicle_display_name.clone())
             .unwrap_or_else(|| "No vehicle selected".to_string());
+        let customer_records = self.controller.customer_records();
+        let selected_customer_id = customer.as_ref().map(|record| record.customer_id.as_str());
+        let customer_list = if customer_records.is_empty() {
+            column![self.empty_records_card(
+                "No customers found",
+                "Create a customer to begin provisioning."
+            )]
+            .spacing(8)
+        } else {
+            customer_records.into_iter().fold(
+                column![].spacing(8).width(Length::Fill),
+                |column, record| {
+                    let is_selected = selected_customer_id
+                        .map(|id| id == record.customer_id)
+                        .unwrap_or(false);
+                    let mut details = Vec::new();
+                    if let Some(email) = record.email.as_ref().filter(|value| !value.is_empty()) {
+                        details.push(format!("Email: {email}"));
+                    }
+                    if let Some(phone) = record.phone.as_ref().filter(|value| !value.is_empty()) {
+                        details.push(format!("Phone: {phone}"));
+                    }
+                    column.push(self.selectable_record_card(
+                        "auth",
+                        record.owner_name,
+                        record.customer_id.clone(),
+                        details,
+                        is_selected,
+                        Message::SelectCustomerRecord(record.customer_id),
+                    ))
+                },
+            )
+        };
         row![
             self.management_details_panel(
                 "Customer / Owner",
@@ -1435,24 +1470,17 @@ impl AIACSApp {
                             &self.management_state.customer_phone_input,
                             Message::CustomerPhoneChanged,
                         ),
-                        self.cloud_action_button("auth", "Load Customers", Message::LoadCustomers),
                         self.cloud_action_button(
                             "auth",
                             "Create Customer",
                             Message::CreateCustomer
                         ),
-                        self.cloud_action_button(
-                            "auth",
-                            "Select Customer",
-                            Message::SelectCustomer
-                        ),
-                        compact_button(
-                            "auth",
-                            "Fill Demo Customer",
-                            Message::FillDemoCustomer,
-                            ButtonKind::Nav
-                        ),
-                        self.status_text("Load", &self.management_state.customer_load_status),
+                        text("Customer Records")
+                            .size(16)
+                            .font(Font::MONOSPACE)
+                            .style(theme::Text::Color(ACCENT_PINK)),
+                        customer_list,
+                        self.status_text("Records", &self.management_state.customer_load_status),
                         self.status_text("Create", &self.management_state.customer_create_status),
                         text(self.management_state.customer_note.as_str())
                             .size(12)
@@ -1509,6 +1537,61 @@ impl AIACSApp {
             .as_ref()
             .map(|record| record.owner_name.clone())
             .unwrap_or_else(|| "No customer selected".to_string());
+        let vehicle_records = self.controller.vehicle_records_for_selected_customer();
+        let selected_vehicle_id = vehicle.as_ref().map(|record| record.vehicle_id.as_str());
+        let vehicle_list = if customer.is_none() {
+            column![self.empty_records_card(
+                "Select a customer to view vehicles",
+                "Vehicle records load automatically after customer selection."
+            )]
+            .spacing(8)
+        } else if vehicle_records.is_empty() {
+            column![self.empty_records_card(
+                "No vehicles found for selected customer",
+                "Create a vehicle for this customer."
+            )]
+            .spacing(8)
+        } else {
+            vehicle_records.into_iter().fold(
+                column![].spacing(8).width(Length::Fill),
+                |column, record| {
+                    let is_selected = selected_vehicle_id
+                        .map(|id| id == record.vehicle_id)
+                        .unwrap_or(false);
+                    let mut details = Vec::new();
+                    let make_model_year = [
+                        record.make.clone(),
+                        record.model.clone(),
+                        record.year.map(|year| year.to_string()),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                    if !make_model_year.is_empty() {
+                        details.push(make_model_year);
+                    }
+                    if let Some(vin) = record.vin.as_ref().filter(|value| !value.is_empty()) {
+                        details.push(format!("VIN: {vin}"));
+                    }
+                    if let Some(registration) = record
+                        .registration_number
+                        .as_ref()
+                        .filter(|value| !value.is_empty())
+                    {
+                        details.push(format!("Registration: {registration}"));
+                    }
+                    column.push(self.selectable_record_card(
+                        "vehicle",
+                        record.vehicle_display_name,
+                        record.vehicle_id.clone(),
+                        details,
+                        is_selected,
+                        Message::SelectVehicleRecord(record.vehicle_id),
+                    ))
+                },
+            )
+        };
         row![
             self.management_details_panel(
                 "Vehicle",
@@ -1566,24 +1649,17 @@ impl AIACSApp {
                             &self.management_state.vehicle_registration_input,
                             Message::VehicleRegistrationChanged,
                         ),
-                        self.cloud_action_button("vehicle", "Load Vehicles", Message::LoadVehicles),
                         self.cloud_action_button(
                             "vehicle",
                             "Create Vehicle",
                             Message::CreateVehicle
                         ),
-                        self.cloud_action_button(
-                            "vehicle",
-                            "Select Vehicle",
-                            Message::SelectVehicle
-                        ),
-                        compact_button(
-                            "vehicle",
-                            "Fill Demo Vehicle",
-                            Message::FillDemoVehicle,
-                            ButtonKind::Nav
-                        ),
-                        self.status_text("Load", &self.management_state.vehicle_load_status),
+                        text("Vehicle Records")
+                            .size(16)
+                            .font(Font::MONOSPACE)
+                            .style(theme::Text::Color(ACCENT_PINK)),
+                        vehicle_list,
+                        self.status_text("Records", &self.management_state.vehicle_load_status),
                         self.status_text("Create", &self.management_state.vehicle_create_status),
                         text(self.management_state.vehicle_note.as_str())
                             .size(12)
@@ -1632,6 +1708,54 @@ impl AIACSApp {
             .as_ref()
             .and_then(|record| record.public_key_fingerprint.clone())
             .unwrap_or_else(|| "Pending".to_string());
+        let key_fob_records = self.controller.key_fob_records_for_selected_vehicle();
+        let selected_fob_id = key_fob.as_ref().map(|record| record.fob_id.as_str());
+        let key_fob_list = if vehicle.is_none() {
+            column![self.empty_records_card(
+                "Select a vehicle to view key fobs",
+                "Key fob records load automatically after vehicle selection."
+            )]
+            .spacing(8)
+        } else if key_fob_records.is_empty() {
+            column![self.empty_records_card(
+                "No key fobs found for selected vehicle",
+                "Create a key fob for this vehicle."
+            )]
+            .spacing(8)
+        } else {
+            key_fob_records.into_iter().fold(
+                column![].spacing(8).width(Length::Fill),
+                |column, record| {
+                    let is_selected = selected_fob_id
+                        .map(|id| id == record.fob_id)
+                        .unwrap_or(false);
+                    let details = vec![
+                        format!(
+                            "Certificate: {}",
+                            record
+                                .certificate_status
+                                .clone()
+                                .unwrap_or_else(|| "Not Issued".to_string())
+                        ),
+                        format!(
+                            "Provisioning: {}",
+                            record
+                                .provisioning_status
+                                .clone()
+                                .unwrap_or_else(|| "Pending".to_string())
+                        ),
+                    ];
+                    column.push(self.selectable_record_card(
+                        "key",
+                        record.fob_label,
+                        record.fob_id.clone(),
+                        details,
+                        is_selected,
+                        Message::SelectKeyFobRecord(record.fob_id),
+                    ))
+                },
+            )
+        };
         row![
             self.management_details_panel(
                 "Digital Key Fob",
@@ -1666,23 +1790,16 @@ impl AIACSApp {
                             &self.management_state.key_fob_label_input,
                             Message::KeyFobLabelChanged,
                         ),
-                        self.cloud_action_button("key", "Load Key Fobs", Message::LoadKeyFobs),
                         self.cloud_action_button(
                             "register-key",
                             "Create/Register Key Fob",
                             Message::CreateKeyFobRecord
                         ),
-                        self.cloud_action_button(
-                            "key",
-                            "Select Key Fob",
-                            Message::SelectKeyFobRecord
-                        ),
-                        compact_button(
-                            "key",
-                            "Fill Demo Key Fob",
-                            Message::FillDemoKeyFob,
-                            ButtonKind::Nav
-                        ),
+                        text("Key Fob Records")
+                            .size(16)
+                            .font(Font::MONOSPACE)
+                            .style(theme::Text::Color(ACCENT_PINK)),
+                        key_fob_list,
                         compact_button(
                             "certificate",
                             "View Certificate",
@@ -1695,7 +1812,7 @@ impl AIACSApp {
                             Message::RotateCredential,
                             ButtonKind::Nav
                         ),
-                        self.status_text("Load", &self.management_state.key_fob_load_status),
+                        self.status_text("Records", &self.management_state.key_fob_load_status),
                         self.status_text("Create", &self.management_state.key_fob_create_status),
                         text(self.management_state.keyfob_note.as_str())
                             .size(12)
@@ -2347,6 +2464,89 @@ impl AIACSApp {
             .padding(14)
             .style(container_style(PanelKind::Panel))
             .into()
+    }
+
+    fn selectable_record_card(
+        &self,
+        icon_name: &'static str,
+        title: String,
+        record_id: String,
+        details: Vec<String>,
+        selected: bool,
+        select_message: Message,
+    ) -> Element<'static, Message> {
+        let detail_column = details.into_iter().fold(
+            column![
+                text(title)
+                    .size(14)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(PRIMARY_TEXT)),
+                text(record_id)
+                    .size(11)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(SECONDARY_TEXT)),
+            ]
+            .spacing(4)
+            .width(Length::Fill),
+            |column, detail| {
+                column.push(
+                    text(detail)
+                        .size(11)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(MUTED_TEXT)),
+                )
+            },
+        );
+        let chip_label = if selected { "Selected" } else { "Available" };
+        let action = if self.management_state.cloud_operation_in_progress {
+            disabled_compact_button(icon_name, "Select", ButtonKind::Nav)
+        } else {
+            compact_button(icon_name, "Select", select_message, ButtonKind::Nav)
+        };
+
+        container(
+            row![
+                icon(icon_name, 20),
+                detail_column,
+                column![status_badge(chip_label), action]
+                    .spacing(8)
+                    .align_items(Alignment::End)
+            ]
+            .spacing(10)
+            .align_items(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .padding(10)
+        .style(container_style(if selected {
+            PanelKind::Elevated
+        } else {
+            PanelKind::Panel
+        }))
+        .into()
+    }
+
+    fn empty_records_card(
+        &self,
+        title: &'static str,
+        message: &'static str,
+    ) -> Element<'static, Message> {
+        container(
+            column![
+                text(title)
+                    .size(14)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(SECONDARY_TEXT)),
+                text(message)
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(MUTED_TEXT)),
+            ]
+            .spacing(6),
+        )
+        .width(Length::Fill)
+        .padding(12)
+        .style(container_style(PanelKind::Panel))
+        .into()
     }
 
     fn form_input<'a>(
@@ -3847,15 +4047,31 @@ mod tests {
             "Cloud-backed customer record",
             "Cloud-backed vehicle record",
             "Cloud-backed key fob metadata",
-            "Load Customers",
             "Create Customer",
-            "Load Vehicles",
             "Create Vehicle",
-            "Load Key Fobs",
             "Create/Register Key Fob",
-            "Select Key Fob",
+            "Customer Records",
+            "Vehicle Records",
+            "Key Fob Records",
+            "Select a customer to view vehicles",
+            "Select a vehicle to view key fobs",
         ] {
             assert!(source.contains(expected), "missing GUI text: {expected}");
+        }
+
+        for forbidden in [
+            concat!("Fill ", "Demo ", "Customer"),
+            concat!("Fill ", "Demo ", "Vehicle"),
+            concat!("Fill ", "Demo ", "Key ", "Fob"),
+            concat!("Fill", "Demo"),
+            concat!("Load ", "Customers"),
+            concat!("Load ", "Vehicles"),
+            concat!("Load ", "Key ", "Fobs"),
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "visible legacy control remains: {forbidden}"
+            );
         }
 
         let old_vehicle_message = concat!(
@@ -3868,6 +4084,63 @@ mod tests {
         let old_unwired_copy = concat!("not ", "wired");
         assert!(!source.contains(old_demo_action));
         assert!(!source.contains(old_unwired_copy));
+    }
+
+    #[test]
+    fn management_pages_render_selectable_cloud_record_lists() {
+        let source = include_str!("main.rs");
+
+        for expected in [
+            "selectable_record_card",
+            "empty_records_card",
+            "Customer Records",
+            "Vehicle Records",
+            "Key Fob Records",
+            "Message::SelectCustomerRecord",
+            "Message::SelectVehicleRecord",
+            "Message::SelectKeyFobRecord",
+            "No customers found",
+            "No vehicles found for selected customer",
+            "No key fobs found for selected vehicle",
+        ] {
+            assert!(
+                source.contains(expected),
+                "missing record-list UI: {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn management_pages_auto_load_without_visible_manual_load_buttons() {
+        let source = include_str!("main.rs");
+
+        for forbidden in [
+            concat!("Fill ", "Demo"),
+            concat!("Load ", "Customers"),
+            concat!("Load ", "Vehicles"),
+            concat!("Load ", "Key ", "Fobs"),
+            concat!("Use ", "Demo ", "Data"),
+            concat!("Reset ", "to ", "Demo"),
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "legacy visible control remains: {forbidden}"
+            );
+        }
+
+        for expected in [
+            "CloudOperation::StartupAutoEnable",
+            "controller.load_customer_records()",
+            "CloudOperation::SelectCustomer | CloudOperation::CreateCustomer",
+            "CloudOperation::LoadVehicles",
+            "CloudOperation::SelectVehicle | CloudOperation::CreateVehicle",
+            "CloudOperation::LoadKeyFobs",
+        ] {
+            assert!(
+                source.contains(expected),
+                "missing automatic load marker: {expected}"
+            );
+        }
     }
 
     #[test]

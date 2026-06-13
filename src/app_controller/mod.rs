@@ -286,9 +286,9 @@ impl AppController {
             selected_key_fob: None,
             selection_source: "None".to_string(),
             active_session_id: DEMO_SESSION_ID.to_string(),
-            customer_records: vec![active_customer],
-            vehicle_records: vec![active_vehicle],
-            key_fob_records: vec![active_key_fob],
+            customer_records: Vec::new(),
+            vehicle_records: Vec::new(),
+            key_fob_records: Vec::new(),
             cloud_client: None,
             schema_initialized: false,
             cloud_runtime: Arc::new(
@@ -1390,11 +1390,14 @@ impl AppController {
             Err(error) => return Err(error),
         };
         match self.run_cloud(async { client.list_customers().await }) {
-            Ok(records) if !records.is_empty() => {
+            Ok(records) => {
                 self.customer_records = records;
-                Ok(format!("Customers loaded: {}", self.customer_records.len()))
+                if self.customer_records.is_empty() {
+                    Ok("Customers loaded: no cloud records available".to_string())
+                } else {
+                    Ok(format!("Customers loaded: {}", self.customer_records.len()))
+                }
             }
-            Ok(_) => Ok("Customers loaded: no cloud records available".to_string()),
             Err(error) => self.safe_demo_fallback_or_error(error),
         }
     }
@@ -1488,11 +1491,14 @@ impl AppController {
             Err(error) => return Err(error),
         };
         match self.run_cloud(async { client.list_vehicles().await }) {
-            Ok(records) if !records.is_empty() => {
+            Ok(records) => {
                 self.vehicle_records = records;
-                Ok(format!("Vehicles loaded: {}", self.vehicle_records.len()))
+                if self.vehicle_records.is_empty() {
+                    Ok("Vehicles loaded: no cloud records available".to_string())
+                } else {
+                    Ok(format!("Vehicles loaded: {}", self.vehicle_records.len()))
+                }
             }
-            Ok(_) => Ok("Vehicles loaded: no cloud records available".to_string()),
             Err(error) => self.safe_demo_fallback_or_error(error),
         }
     }
@@ -1509,11 +1515,14 @@ impl AppController {
             Err(error) => return Err(error),
         };
         match self.run_cloud(async { client.list_vehicles_for_customer(customer_id).await }) {
-            Ok(records) if !records.is_empty() => {
+            Ok(records) => {
                 self.vehicle_records = records;
-                Ok(format!("Vehicles loaded: {}", self.vehicle_records.len()))
+                if self.vehicle_records.is_empty() {
+                    Ok("Vehicles loaded: no cloud records for selected customer".to_string())
+                } else {
+                    Ok(format!("Vehicles loaded: {}", self.vehicle_records.len()))
+                }
             }
-            Ok(_) => Ok("Vehicles loaded: no cloud records for selected customer".to_string()),
             Err(error) => Err(Self::map_cloud_error(error)),
         }
     }
@@ -1592,11 +1601,14 @@ impl AppController {
             Err(error) => return Err(error),
         };
         match self.run_cloud(async { client.list_key_fobs().await }) {
-            Ok(records) if !records.is_empty() => {
+            Ok(records) => {
                 self.key_fob_records = records;
-                Ok(format!("Key fobs loaded: {}", self.key_fob_records.len()))
+                if self.key_fob_records.is_empty() {
+                    Ok("Key fobs loaded: no cloud records available".to_string())
+                } else {
+                    Ok(format!("Key fobs loaded: {}", self.key_fob_records.len()))
+                }
             }
-            Ok(_) => Ok("Key fobs loaded: no cloud records available".to_string()),
             Err(error) => self.safe_demo_fallback_or_error(error),
         }
     }
@@ -1613,11 +1625,14 @@ impl AppController {
             Err(error) => return Err(error),
         };
         match self.run_cloud(async { client.list_key_fobs_for_vehicle(vehicle_id).await }) {
-            Ok(records) if !records.is_empty() => {
+            Ok(records) => {
                 self.key_fob_records = records;
-                Ok(format!("Key fobs loaded: {}", self.key_fob_records.len()))
+                if self.key_fob_records.is_empty() {
+                    Ok("Key fobs loaded: no cloud records for selected vehicle".to_string())
+                } else {
+                    Ok(format!("Key fobs loaded: {}", self.key_fob_records.len()))
+                }
             }
-            Ok(_) => Ok("Key fobs loaded: no cloud records for selected vehicle".to_string()),
             Err(error) => Err(Self::map_cloud_error(error)),
         }
     }
@@ -1944,15 +1959,38 @@ impl AppController {
         self.selected_key_fob.clone()
     }
 
+    pub fn customer_records(&self) -> Vec<CustomerMetadata> {
+        self.customer_records.clone()
+    }
+
+    pub fn vehicle_records_for_selected_customer(&self) -> Vec<VehicleMetadata> {
+        let Some(customer) = self.selected_customer.as_ref() else {
+            return Vec::new();
+        };
+
+        self.vehicle_records
+            .iter()
+            .filter(|record| record.customer_id == customer.customer_id)
+            .cloned()
+            .collect()
+    }
+
+    pub fn key_fob_records_for_selected_vehicle(&self) -> Vec<KeyFobMetadata> {
+        let Some(vehicle) = self.selected_vehicle.as_ref() else {
+            return Vec::new();
+        };
+
+        self.key_fob_records
+            .iter()
+            .filter(|record| record.vehicle_id == vehicle.vehicle_id)
+            .cloned()
+            .collect()
+    }
+
     pub fn customer_selection_candidate_id(&self) -> Option<String> {
         self.selected_customer
             .as_ref()
             .map(|record| record.customer_id.clone())
-            .or_else(|| {
-                self.customer_records
-                    .first()
-                    .map(|record| record.customer_id.clone())
-            })
     }
 
     pub fn vehicle_selection_candidate_id(&self) -> Option<String> {
@@ -1961,12 +1999,6 @@ impl AppController {
             .as_ref()
             .filter(|record| record.customer_id == selected_customer_id)
             .map(|record| record.vehicle_id.clone())
-            .or_else(|| {
-                self.vehicle_records
-                    .iter()
-                    .find(|record| record.customer_id == selected_customer_id)
-                    .map(|record| record.vehicle_id.clone())
-            })
     }
 
     pub fn key_fob_selection_candidate_id(&self) -> Option<String> {
@@ -1975,12 +2007,6 @@ impl AppController {
             .as_ref()
             .filter(|record| record.vehicle_id == selected_vehicle_id)
             .map(|record| record.fob_id.clone())
-            .or_else(|| {
-                self.key_fob_records
-                    .iter()
-                    .find(|record| record.vehicle_id == selected_vehicle_id)
-                    .map(|record| record.fob_id.clone())
-            })
     }
 
     pub fn get_visible_provisioning_context(&self) -> VisibleProvisioningContext {
@@ -4434,14 +4460,101 @@ mod tests {
         }];
 
         assert!(controller.selected_customer_record().is_none());
-        assert_eq!(
-            controller.customer_selection_candidate_id(),
-            Some("CUST-LOAD-TEST".to_string())
-        );
+        assert_eq!(controller.customer_selection_candidate_id(), None);
+        assert_eq!(controller.customer_records().len(), 1);
         assert!(
             !controller
                 .get_visible_provisioning_context()
                 .customer_selected
+        );
+    }
+
+    #[test]
+    fn test_fresh_visible_record_lists_start_empty() {
+        let controller = AppController::new();
+
+        assert!(controller.customer_records().is_empty());
+        assert!(controller
+            .vehicle_records_for_selected_customer()
+            .is_empty());
+        assert!(controller.key_fob_records_for_selected_vehicle().is_empty());
+        assert!(controller.selected_customer_record().is_none());
+        assert!(controller.selected_vehicle_record().is_none());
+        assert!(controller.selected_key_fob_record().is_none());
+    }
+
+    #[test]
+    fn test_visible_record_lists_filter_by_selected_parent() {
+        let mut controller = AppController::new();
+        let customer = CustomerMetadata {
+            customer_id: "CUST-LIST".to_string(),
+            owner_name: "List Owner".to_string(),
+            email: Some("list@example.com".to_string()),
+            phone: Some("+977-9800000000".to_string()),
+        };
+        let other_customer = CustomerMetadata {
+            customer_id: "CUST-OTHER".to_string(),
+            owner_name: "Other Owner".to_string(),
+            email: Some("other@example.com".to_string()),
+            phone: None,
+        };
+        let vehicle = VehicleMetadata {
+            vehicle_id: "VEH-LIST".to_string(),
+            customer_id: customer.customer_id.clone(),
+            vehicle_display_name: "List Vehicle".to_string(),
+            make: Some("Nissan".to_string()),
+            model: Some("Magnite".to_string()),
+            year: Some(2021),
+            vin: Some("VIN-LIST".to_string()),
+            registration_number: None,
+            provisioning_status: Some(DEFAULT_PROVISIONING_STATUS.to_string()),
+        };
+        let other_vehicle = VehicleMetadata {
+            vehicle_id: "VEH-OTHER".to_string(),
+            customer_id: other_customer.customer_id.clone(),
+            vehicle_display_name: "Other Vehicle".to_string(),
+            make: Some("Nissan".to_string()),
+            model: Some("Leaf".to_string()),
+            year: Some(2022),
+            vin: None,
+            registration_number: None,
+            provisioning_status: Some(DEFAULT_PROVISIONING_STATUS.to_string()),
+        };
+        let key_fob = KeyFobMetadata {
+            fob_id: "FOB-LIST".to_string(),
+            vehicle_id: vehicle.vehicle_id.clone(),
+            customer_id: customer.customer_id.clone(),
+            fob_label: "List Fob".to_string(),
+            public_key_fingerprint: Some("fp-list".to_string()),
+            certificate_status: Some(DEFAULT_CERTIFICATE_STATUS.to_string()),
+            provisioning_status: Some(DEFAULT_PROVISIONING_STATUS.to_string()),
+        };
+        let other_key_fob = KeyFobMetadata {
+            fob_id: "FOB-OTHER".to_string(),
+            vehicle_id: other_vehicle.vehicle_id.clone(),
+            customer_id: other_customer.customer_id.clone(),
+            fob_label: "Other Fob".to_string(),
+            public_key_fingerprint: None,
+            certificate_status: Some(DEFAULT_CERTIFICATE_STATUS.to_string()),
+            provisioning_status: Some(DEFAULT_PROVISIONING_STATUS.to_string()),
+        };
+
+        controller.customer_records = vec![customer.clone(), other_customer];
+        controller.vehicle_records = vec![vehicle.clone(), other_vehicle];
+        controller.key_fob_records = vec![key_fob.clone(), other_key_fob];
+        controller.select_customer_context(customer, "CloudSelected");
+        controller.select_vehicle_context(vehicle, "CloudSelected");
+
+        assert_eq!(controller.customer_records().len(), 2);
+        assert_eq!(controller.vehicle_records_for_selected_customer().len(), 1);
+        assert_eq!(
+            controller.vehicle_records_for_selected_customer()[0].vehicle_id,
+            "VEH-LIST"
+        );
+        assert_eq!(controller.key_fob_records_for_selected_vehicle().len(), 1);
+        assert_eq!(
+            controller.key_fob_records_for_selected_vehicle()[0].fob_id,
+            key_fob.fob_id
         );
     }
 
