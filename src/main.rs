@@ -167,8 +167,6 @@ enum CloudOperation {
     CreateKeyFob,
     SelectKeyFob,
     StartupAutoEnable,
-    EnableAutoSync,
-    DisableAutoSync,
     ProvisioningConnectVehicle,
     ProvisioningDetectKeyFob,
     ProvisioningRegisterKeyFob,
@@ -211,7 +209,6 @@ enum CloudUiStatus {
     Connected,
     Disconnected,
     NotConfigured,
-    Disabled,
 }
 
 impl CloudUiStatus {
@@ -221,7 +218,6 @@ impl CloudUiStatus {
             CloudUiStatus::Connected => "Cloud: Connected",
             CloudUiStatus::Disconnected => "Cloud: Disconnected",
             CloudUiStatus::NotConfigured => "Cloud: Not Configured",
-            CloudUiStatus::Disabled => "Cloud: Disabled",
         }
     }
 }
@@ -267,8 +263,6 @@ enum Message {
     VerifyAuthentication,
     ActivateSecureChannel,
     LaunchDiagnosticsTool,
-    EnableCloudAutoSync,
-    DisableCloudAutoSync,
     CloudOperationFinished(Box<CloudOperationResult>),
     ClearLog,
     ExportLogs,
@@ -667,16 +661,6 @@ impl Application for AIACSApp {
                 self.begin_cloud_operation("Launching diagnostics tool...");
                 return self.run_cloud_operation(CloudOperation::ProvisioningDiagnostics);
             }
-            Message::EnableCloudAutoSync => {
-                self.cloud_ui_status = CloudUiStatus::Connecting;
-                self.begin_cloud_operation("Cloud sync running...");
-                return self.run_cloud_operation(CloudOperation::EnableAutoSync);
-            }
-            Message::DisableCloudAutoSync => {
-                self.cloud_ui_status = CloudUiStatus::Disabled;
-                self.begin_cloud_operation("Cloud sync running...");
-                return self.run_cloud_operation(CloudOperation::DisableAutoSync);
-            }
             Message::CloudOperationFinished(result) => {
                 return self.finish_cloud_operation(*result);
             }
@@ -912,22 +896,6 @@ impl AIACSApp {
                 self.selected_detail = message.clone();
                 self.push_log("[INFO]", message);
             }
-            CloudOperation::EnableAutoSync => {
-                self.cloud_status = "Connected".to_string();
-                self.cloud_ui_status = CloudUiStatus::Connected;
-                self.cloud_auto_sync_status =
-                    self.controller.get_cloud_auto_sync_status().to_string();
-                self.selected_detail = message.clone();
-                self.push_log("[DB]", message);
-                self.push_log("[SECURITY]", "Cloud secret material: [REDACTED]");
-            }
-            CloudOperation::DisableAutoSync => {
-                self.cloud_ui_status = CloudUiStatus::Disabled;
-                self.cloud_auto_sync_status =
-                    self.controller.get_cloud_auto_sync_status().to_string();
-                self.selected_detail = message.clone();
-                self.push_log("[DB]", message);
-            }
             CloudOperation::ProvisioningConnectVehicle => {
                 self.workflow_state.vehicle_connected = true;
                 self.status.top_badge = "Vehicle Connected".to_string();
@@ -1047,21 +1015,6 @@ impl AIACSApp {
             }
             CloudOperation::SelectKeyFob => {
                 self.record_key_fob_form_error(format!("Key fob selection failed: {}", error))
-            }
-            CloudOperation::EnableAutoSync => {
-                self.cloud_ui_status = if error.contains("not configured") {
-                    CloudUiStatus::NotConfigured
-                } else {
-                    CloudUiStatus::Disconnected
-                };
-                self.cloud_auto_sync_status = "Disabled".to_string();
-                self.selected_detail = format!("Cloud auto-sync enable failed: {}", error);
-                self.push_log("[DB]", self.selected_detail.clone());
-            }
-            CloudOperation::DisableAutoSync => {
-                self.cloud_ui_status = CloudUiStatus::Disabled;
-                self.selected_detail = format!("Cloud auto-sync disable failed: {}", error);
-                self.push_log("[DB]", self.selected_detail.clone());
             }
             CloudOperation::ProvisioningConnectVehicle => {
                 self.workflow_state.vehicle_connected = false;
@@ -2287,23 +2240,7 @@ impl AIACSApp {
                     .size(16)
                     .font(Font::MONOSPACE)
                     .style(theme::Text::Color(ACCENT_PINK)),
-                self.selected_setup_card("key", "Fob ID", crypto_identity.fob_id),
-                self.selected_setup_card("certificate", "Certificate ID", crypto_identity.certificate_id),
-                self.selected_setup_card("certificate", "Certificate Status", crypto_identity.certificate_status),
-                self.selected_setup_card("auth", "Public Fingerprint", crypto_identity.public_key_fingerprint),
-                self.selected_setup_card("shield", "Binding", crypto_identity.binding_status),
-                text("Selected records now bind to the active cryptographic fob identity; private key material remains redacted.")
-                    .size(10)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(SECONDARY_TEXT)),
-                text("Provisioning Status")
-                    .size(16)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(ACCENT_PINK)),
-                self.provisioning_completion_card(),
-                self.view_compact_status_rows(),
-                self.view_cloud_sync_status_rows(),
-                self.compact_current_result_card(),
+                self.selected_setup_card("auth", "Fob ID", crypto_identity.fob_id),
             ]
             .spacing(8),
         )
@@ -2668,7 +2605,7 @@ impl AIACSApp {
                     .size(11)
                     .font(Font::MONOSPACE)
                     .style(theme::Text::Color(SECONDARY_TEXT)),
-                compact_button(
+                wide_compact_button(
                     "lock",
                     "Test / Decrypt Selected Fob Backup",
                     Message::TestDecryptSelectedFobBackup,
@@ -2709,29 +2646,6 @@ impl AIACSApp {
                         Message::ExportLogs,
                         ButtonKind::Nav
                     ),
-                    compact_button(
-                        "terminal",
-                        "Finalize & Export Report",
-                        Message::ExportProvisioningReport,
-                        ButtonKind::Nav
-                    ),
-                    compact_button(
-                        "shield",
-                        "Retry Cloud Connection",
-                        Message::EnableCloudAutoSync,
-                        ButtonKind::Nav
-                    ),
-                    compact_button(
-                        "terminal",
-                        "Disable Cloud Auto Sync",
-                        Message::DisableCloudAutoSync,
-                        ButtonKind::Nav
-                    ),
-                    text(self.selected_detail.as_str())
-                        .size(11)
-                        .font(Font::MONOSPACE)
-                        .style(theme::Text::Color(SECONDARY_TEXT))
-                        .width(Length::Fill),
                 ]
                 .spacing(8)
                 .align_items(Alignment::Center),
@@ -3177,82 +3091,6 @@ impl AIACSApp {
         .into()
     }
 
-    fn view_compact_status_rows(&self) -> Element<'_, Message> {
-        container(
-            column![
-                self.view_summary_row(
-                    "certificate",
-                    "Certificate",
-                    &self.status.certificate_status
-                ),
-                self.view_summary_row("auth", "Authentication", &self.status.authentication_status),
-                self.view_summary_row("lock", "Session", &self.status.session_status),
-                self.view_summary_row("decision", "Access", &self.status.access_decision),
-            ]
-            .spacing(7),
-        )
-        .width(Length::Fill)
-        .padding(8)
-        .style(container_style(PanelKind::Detail))
-        .into()
-    }
-
-    fn view_cloud_sync_status_rows(&self) -> Element<'_, Message> {
-        container(
-            column![
-                text("Cloud Sync Status")
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(ACCENT_BLUE)),
-                self.view_summary_row("terminal", "Auto Sync", &self.cloud_auto_sync_status),
-                self.view_summary_row("auth", "Metadata", &self.cloud_sync_metadata_status),
-                self.view_summary_row(
-                    "certificate",
-                    "Certificate",
-                    &self.cloud_sync_certificate_status
-                ),
-                self.view_summary_row(
-                    "shield",
-                    "Encrypted Key Blob",
-                    &self.cloud_sync_encrypted_key_status
-                ),
-                self.view_summary_row("lock", "Session", &self.cloud_sync_session_status),
-                self.view_summary_row("terminal", "Audit Logs", &self.cloud_sync_audit_status),
-                self.view_summary_row(
-                    "warning-shield",
-                    "Diagnostics",
-                    &self.cloud_sync_diagnostic_status
-                ),
-            ]
-            .spacing(7),
-        )
-        .width(Length::Fill)
-        .padding(8)
-        .style(container_style(PanelKind::Detail))
-        .into()
-    }
-
-    fn compact_current_result_card(&self) -> Element<'_, Message> {
-        container(
-            column![
-                text("Current Result")
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(ACCENT_BLUE)),
-                text(self.selected_detail.as_str())
-                    .size(11)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(PRIMARY_TEXT))
-                    .width(Length::Fill),
-            ]
-            .spacing(5),
-        )
-        .width(Length::Fill)
-        .padding(9)
-        .style(container_style(PanelKind::Detail))
-        .into()
-    }
-
     fn setup_complete(&self) -> bool {
         self.status.session_status == "Active" && self.status.access_decision == "Access Granted"
     }
@@ -3687,6 +3525,27 @@ fn compact_button<'a>(
     .into()
 }
 
+fn wide_compact_button<'a>(
+    icon_name: &'static str,
+    label: &'a str,
+    message: Message,
+    kind: ButtonKind,
+) -> Element<'a, Message> {
+    button(
+        row![
+            icon(icon_name, 16),
+            text(label).size(11).font(Font::MONOSPACE)
+        ]
+        .spacing(7)
+        .align_items(Alignment::Center),
+    )
+    .width(Length::Fixed(360.0))
+    .padding([8, 12])
+    .style(button_style(kind))
+    .on_press(message)
+    .into()
+}
+
 fn disabled_compact_button<'a>(
     icon_name: &'static str,
     label: &'a str,
@@ -3746,8 +3605,6 @@ fn perform_cloud_operation(
                 Ok("Select a vehicle before loading key fobs".to_string())
             }
         }
-        CloudOperation::EnableAutoSync => controller.enable_cloud_auto_sync(),
-        CloudOperation::DisableAutoSync => controller.disable_cloud_auto_sync(),
         CloudOperation::ProvisioningConnectVehicle => controller
             .connect_vehicle_with_cloud_sync()
             .map(|result| result.to_string()),
@@ -3896,7 +3753,7 @@ fn cloud_ui_status_color(status: CloudUiStatus) -> Color {
         CloudUiStatus::Connecting => ACCENT_BLUE,
         CloudUiStatus::Connected => SUCCESS_GREEN,
         CloudUiStatus::Disconnected => DANGER_RED,
-        CloudUiStatus::NotConfigured | CloudUiStatus::Disabled => PENDING_TEXT,
+        CloudUiStatus::NotConfigured => PENDING_TEXT,
     }
 }
 
@@ -4075,8 +3932,6 @@ mod tests {
 
         for expected in [
             "Cloud Auto Sync",
-            "Retry Cloud Connection",
-            "Disable Cloud Auto Sync",
             "Cloud: Connected",
             "Cloud: Not Configured",
             "[REDACTED]",
@@ -4104,8 +3959,8 @@ mod tests {
         assert!(!source.contains(concat!("view_", "cloud_", "storage_", "tab")));
         assert!(!source.contains("\"Sync Customer Metadata\""));
         assert!(!source.contains("\"Sync Provisioning Session\""));
-        assert!(source.contains("\"Retry Cloud Connection\""));
-        assert!(source.contains("\"Disable Cloud Auto Sync\""));
+        assert!(!source.contains("\"Retry Cloud Connection\""));
+        assert!(!source.contains("\"Disable Cloud Auto Sync\""));
     }
 
     #[test]
@@ -4127,7 +3982,6 @@ mod tests {
             CloudUiStatus::Connected.label(),
             CloudUiStatus::Disconnected.label(),
             CloudUiStatus::NotConfigured.label(),
-            CloudUiStatus::Disabled.label(),
             "Enabled automatically",
             "Disabled - cloud database not configured",
             "Disabled - health check failed",
