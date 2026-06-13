@@ -443,6 +443,8 @@ AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metada
 - Authentication verifies trusted certificate validation, subject binding, Ed25519 signature binding, freshness, and replay protection; production hardware secure element / TPM storage remains out of scope.
 - The GUI dashboard starts with no selected customer, vehicle, or key fob; cloud records load dynamically and the operator must select or create records before provisioning.
 - Customer, vehicle, and key fob records are displayed as selectable GUI lists/cards; the normal workflow no longer exposes demo-fill controls.
+- Protocol Artifacts and Credential Storage reflect the active selected context; certificate details are shown for the selected key fob and credential storage displays safe metadata only.
+- Newly issued certificates use issuer `Denish`; certificate metadata can be restored from cloud records after restart, and provisioning sessions store safe completion metadata such as authentication result, session method, provisioning status, and report status/path.
 - Demo/default records are not automatically selected in the GUI; they remain only as controlled local fallback/sample data where applicable.
 
 ---

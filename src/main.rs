@@ -596,12 +596,33 @@ impl Application for AIACSApp {
                 return self.run_cloud_operation(CloudOperation::ProvisioningIssueCertificate);
             }
             Message::ViewCertificateDetails => {
-                self.workflow_state.certificate_viewed = true;
-                self.management_state.keyfob_note =
-                    "Certificate details available for selected key fob".to_string();
-                self.selected_detail =
-                    "Certificate details are shown in the Protocol Artifact Viewer.".to_string();
-                self.push_log("[INFO]", "Certificate details viewed");
+                match self.controller.view_active_certificate_details() {
+                    Ok(certificate) => {
+                        self.workflow_state.certificate_issued = true;
+                        self.workflow_state.certificate_viewed = true;
+                        self.status.certificate_status = certificate
+                            .certificate_status
+                            .clone()
+                            .unwrap_or_else(|| "Issued".to_string());
+                        self.status.top_badge = "Access Certificate Issued".to_string();
+                        self.selected_tab = MainTab::ProtocolArtifacts;
+                        self.selected_artifact = ArtifactSection::CertificateDetails;
+                        self.management_state.keyfob_note =
+                            "Certificate details available for selected key fob".to_string();
+                        self.selected_detail = format!(
+                            "Viewing certificate details: {}",
+                            certificate
+                                .certificate_id
+                                .unwrap_or_else(|| "active certificate".to_string())
+                        );
+                        self.push_log("[INFO]", "Certificate details viewed");
+                    }
+                    Err(error) => {
+                        self.selected_detail = error.to_string();
+                        self.management_state.keyfob_note = self.selected_detail.clone();
+                        self.push_log("[WARN]", self.selected_detail.clone());
+                    }
+                }
             }
             Message::GenerateChallenge => {
                 self.workflow_state.challenge_generated = true;
@@ -1966,7 +1987,7 @@ impl AIACSApp {
                     self.workflow_step_card(WorkflowStep {
                         icon_name: "auth",
                         title: "Generate Challenge",
-                        description: "Create vehicle nonce challenge; raw nonce remains redacted.",
+                        description: "Create vehicle challenge; nonce material remains redacted.",
                         status: self.completed_status(
                             self.workflow_state.challenge_generated,
                             "Generated",
@@ -2827,12 +2848,19 @@ impl AIACSApp {
 
     fn selected_artifact_rows(&self) -> (&'static str, Vec<(&'static str, String)>) {
         let context = self.controller.get_visible_provisioning_context();
+        let certificate = self.controller.get_active_certificate_details();
+        let crypto_identity = self.controller.get_active_key_fob_crypto_identity();
         match self.selected_artifact {
             ArtifactSection::ChallengeMessage => (
                 "Challenge Message",
                 vec![
                     ("Status", self.challenge_status().to_string()),
+                    ("Customer ID", context.customer_id.clone()),
+                    ("Owner", context.owner_name.clone()),
                     ("Vehicle ID", context.vehicle_id.clone()),
+                    ("Vehicle", context.vehicle_display_name.clone()),
+                    ("Key Fob ID", context.fob_id.clone()),
+                    ("Key Fob", context.fob_label.clone()),
                     ("Protocol", "AIACS_AUTH_V1".to_string()),
                     ("Nonce", "[REDACTED]".to_string()),
                     (
@@ -2845,7 +2873,22 @@ impl AIACSApp {
                 "Authentication Proof",
                 vec![
                     ("Status", self.authentication_proof_status().to_string()),
+                    ("Active Fob ID", context.fob_id.clone()),
                     ("Subject ID", context.fob_id.clone()),
+                    (
+                        "Signing Status",
+                        if self.workflow_state.payload_signed && context.key_fob_selected {
+                            format!("Signed by {}", context.fob_id)
+                        } else if context.key_fob_selected {
+                            "Not Signed".to_string()
+                        } else {
+                            "No authentication artifact available".to_string()
+                        },
+                    ),
+                    (
+                        "Verification Status",
+                        self.authentication_artifact_status().to_string(),
+                    ),
                     ("Auth Method", "Ed25519 + PKI".to_string()),
                     (
                         "Canonical Payload",
@@ -2857,23 +2900,86 @@ impl AIACSApp {
             ArtifactSection::CertificateDetails => (
                 "Certificate Details",
                 vec![
-                    ("Status", self.certificate_artifact_status().to_string()),
-                    ("Subject ID", context.fob_id.clone()),
-                    ("Issuer", "AIACS-Demo-CA".to_string()),
                     (
-                        "Certificate Path",
-                        format!("certs/fob_{}.json", context.fob_id),
+                        "Status",
+                        certificate
+                            .certificate_status
+                            .clone()
+                            .unwrap_or_else(|| self.certificate_artifact_status().to_string()),
                     ),
                     (
-                        "Public Key",
-                        "Fingerprint only; see credential storage".to_string(),
+                        "Certificate ID",
+                        certificate
+                            .certificate_id
+                            .clone()
+                            .unwrap_or_else(|| "N/A".to_string()),
                     ),
+                    (
+                        "Fob ID",
+                        certificate
+                            .fob_id
+                            .clone()
+                            .unwrap_or_else(|| context.fob_id.clone()),
+                    ),
+                    (
+                        "Subject ID",
+                        certificate
+                            .subject_id
+                            .clone()
+                            .unwrap_or_else(|| "No certificate issued".to_string()),
+                    ),
+                    (
+                        "Issuer",
+                        certificate
+                            .issuer
+                            .clone()
+                            .unwrap_or_else(|| "No certificate issued".to_string()),
+                    ),
+                    (
+                        "Signature Algorithm",
+                        certificate
+                            .signature_algorithm
+                            .clone()
+                            .unwrap_or_else(|| "Ed25519".to_string()),
+                    ),
+                    (
+                        "Public Key Fingerprint",
+                        certificate
+                            .public_key_fingerprint
+                            .clone()
+                            .unwrap_or_else(|| crypto_identity.public_key_fingerprint.clone()),
+                    ),
+                    (
+                        "Issued At",
+                        certificate
+                            .issued_at
+                            .clone()
+                            .unwrap_or_else(|| "N/A".to_string()),
+                    ),
+                    (
+                        "Expires At",
+                        certificate
+                            .expires_at
+                            .clone()
+                            .unwrap_or_else(|| "N/A".to_string()),
+                    ),
+                    ("Source", certificate.source.clone()),
+                    ("Message", certificate.message.clone()),
                 ],
             ),
             ArtifactSection::SessionSummary => (
                 "Session Summary",
                 vec![
                     ("Status", self.session_artifact_status().to_string()),
+                    ("Session ID", context.session_id.clone()),
+                    ("Customer ID", context.customer_id.clone()),
+                    ("Vehicle ID", context.vehicle_id.clone()),
+                    ("Fob ID", context.fob_id.clone()),
+                    ("Certificate ID", context.certificate_id.clone()),
+                    (
+                        "Auth Status",
+                        self.authentication_artifact_status().to_string(),
+                    ),
                     ("Key Exchange", "X25519".to_string()),
                     ("KDF", "HKDF-SHA256".to_string()),
                     ("Cipher", "AES-GCM".to_string()),
@@ -2885,6 +2991,9 @@ impl AIACSApp {
                 "Access Decision",
                 vec![
                     ("Status", self.access_decision_artifact_status().to_string()),
+                    ("Customer ID", context.customer_id.clone()),
+                    ("Vehicle ID", context.vehicle_id.clone()),
+                    ("Fob ID", context.fob_id.clone()),
                     (
                         "Authentication",
                         self.authentication_artifact_status().to_string(),
@@ -4140,6 +4249,124 @@ mod tests {
                 source.contains(expected),
                 "missing automatic load marker: {expected}"
             );
+        }
+    }
+
+    fn seed_selected_management_context(app: &mut AIACSApp, suffix: &str) {
+        app.controller
+            .create_customer_record(
+                format!("Artifact Owner {suffix}"),
+                Some(format!("artifact-{suffix}@example.com")),
+                None,
+            )
+            .expect("customer should create");
+        let customer = app
+            .controller
+            .selected_customer_record()
+            .expect("customer selected");
+        app.controller
+            .create_vehicle_record(
+                customer.customer_id,
+                format!("Artifact Vehicle {suffix}"),
+                Some("Nissan".to_string()),
+                Some("Magnite".to_string()),
+                Some(2021),
+                None,
+                None,
+            )
+            .expect("vehicle should create");
+        let vehicle = app
+            .controller
+            .selected_vehicle_record()
+            .expect("vehicle selected");
+        app.controller
+            .create_key_fob_record(vehicle.vehicle_id, format!("Artifact Fob {suffix}"))
+            .expect("key fob should create");
+    }
+
+    #[test]
+    fn protocol_artifact_rows_show_empty_state_without_selection() {
+        let (mut app, _) = <AIACSApp as Application>::new(());
+
+        app.selected_artifact = ArtifactSection::CertificateDetails;
+        let (_, certificate_rows) = app.selected_artifact_rows();
+        let combined = certificate_rows
+            .into_iter()
+            .map(|(_, value)| value)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(combined.contains("N/A"));
+        assert!(combined.contains("No certificate issued"));
+        assert!(combined.contains("No key fob selected"));
+        assert!(!combined.contains("CERT-FOB-0001"));
+        assert!(!combined.contains("FOB-0001"));
+    }
+
+    #[test]
+    fn view_certificate_requires_selected_fob_and_issued_certificate() {
+        let (mut app, _) = <AIACSApp as Application>::new(());
+
+        let _ = app.update(Message::ViewCertificateDetails);
+        assert_eq!(
+            app.selected_detail,
+            "Select a key fob before viewing certificate"
+        );
+        assert_eq!(app.selected_tab, MainTab::Dashboard);
+
+        seed_selected_management_context(&mut app, "NOCERT");
+        let _ = app.update(Message::ViewCertificateDetails);
+        assert!(
+            app.selected_detail == "No certificate issued for selected key fob"
+                || app.selected_detail == "Certificate lookup unavailable: cloud disconnected"
+        );
+        assert_ne!(app.selected_tab, MainTab::ProtocolArtifacts);
+    }
+
+    #[test]
+    fn view_certificate_navigates_to_selected_certificate_details() {
+        let (mut app, _) = <AIACSApp as Application>::new(());
+        seed_selected_management_context(&mut app, "VIEWCERT");
+        app.controller
+            .issue_keyfob_certificate()
+            .expect("certificate should issue");
+
+        let _ = app.update(Message::ViewCertificateDetails);
+
+        assert_eq!(app.selected_tab, MainTab::ProtocolArtifacts);
+        assert_eq!(app.selected_artifact, ArtifactSection::CertificateDetails);
+        assert!(app.selected_detail.contains("CERT-FOB-"));
+        let (_, rows) = app.selected_artifact_rows();
+        let combined = rows
+            .into_iter()
+            .map(|(_, value)| value)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(combined.contains("CERT-FOB-"));
+        assert!(!combined.contains("CERT-FOB-0001"));
+    }
+
+    #[test]
+    fn credential_storage_gui_rows_use_safe_dynamic_summary() {
+        let (mut app, _) = <AIACSApp as Application>::new(());
+        let empty = app.controller.credential_storage_summary().join("\n");
+        assert!(empty.contains("No key fob selected"));
+        assert!(!empty.contains("FOB-0001"));
+
+        seed_selected_management_context(&mut app, "CREDGUI");
+        let storage = app.controller.credential_storage_summary().join("\n");
+        assert!(storage.contains("Fob ID: FOB-"));
+        assert!(storage.contains("Certificate ID: CERT-FOB-"));
+        assert!(storage.contains("Private Key: [REDACTED]"));
+        for forbidden in [
+            "AIACS_MASTER_KEY",
+            "DATABASE_URL",
+            "encrypted_key_blob",
+            "encryption_nonce",
+            "session_key",
+            "shared_secret",
+        ] {
+            assert!(!storage.contains(forbidden));
         }
     }
 

@@ -17,7 +17,7 @@ const DATABASE_URL_ENV: &str = "DATABASE_URL";
 const MASTER_KEY_ENV: &str = "AIACS_MASTER_KEY";
 const HEALTHY_MESSAGE: &str = "Cloud database connection healthy";
 const SCHEMA_INITIALIZED_MESSAGE: &str = "Cloud database schema initialized";
-const CURRENT_SCHEMA_VERSION: &str = "8.9.2";
+const CURRENT_SCHEMA_VERSION: &str = "9.5";
 const CUSTOMER_SYNCED_MESSAGE: &str = "Customer metadata synced";
 const VEHICLE_SYNCED_MESSAGE: &str = "Vehicle metadata synced";
 const KEY_FOB_SYNCED_MESSAGE: &str = "Key fob metadata synced";
@@ -51,6 +51,8 @@ pub const AUTHENTICATED_STATUS: &str = "authenticated";
 pub const SECURE_SESSION_ESTABLISHED_STATUS: &str = "secure_session_established";
 pub const GRANT_ACCESS_DECISION: &str = "grant_access";
 pub const SESSION_ALGORITHM: &str = "X25519 + HKDF-SHA256 + AES-256-GCM";
+pub const FINALIZED_PROVISIONING_STATUS: &str = "finalized";
+pub const IN_APP_REPORT_ONLY_PATH: &str = "in_app_report_only";
 pub const AUDIT_LOG_IDS: [&str; 7] = [
     "AUDIT-0001",
     "AUDIT-0002",
@@ -295,6 +297,10 @@ ADD COLUMN IF NOT EXISTS certificate_id TEXT;
 "#,
     r#"
 ALTER TABLE provisioning_sessions
+ADD COLUMN IF NOT EXISTS auth_result TEXT;
+"#,
+    r#"
+ALTER TABLE provisioning_sessions
 ADD COLUMN IF NOT EXISTS auth_status TEXT;
 "#,
     r#"
@@ -307,7 +313,19 @@ ADD COLUMN IF NOT EXISTS access_decision TEXT;
 "#,
     r#"
 ALTER TABLE provisioning_sessions
+ADD COLUMN IF NOT EXISTS session_method TEXT;
+"#,
+    r#"
+ALTER TABLE provisioning_sessions
 ADD COLUMN IF NOT EXISTS session_algorithm TEXT;
+"#,
+    r#"
+ALTER TABLE provisioning_sessions
+ADD COLUMN IF NOT EXISTS provisioning_status TEXT;
+"#,
+    r#"
+ALTER TABLE provisioning_sessions
+ADD COLUMN IF NOT EXISTS report_path TEXT;
 "#,
     r#"
 ALTER TABLE provisioning_sessions
@@ -569,6 +587,20 @@ ON CONFLICT (certificate_id) DO UPDATE SET
     updated_at = NOW();
 "#;
 
+const GET_CERTIFICATE_BY_ID_SQL: &str = r#"
+SELECT certificate_id, fob_id, subject_id, issuer, issued_at, expires_at, public_key_fingerprint, signature_algorithm, certificate_status
+FROM certificates
+WHERE certificate_id = $1;
+"#;
+
+const GET_CERTIFICATE_BY_FOB_ID_SQL: &str = r#"
+SELECT certificate_id, fob_id, subject_id, issuer, issued_at, expires_at, public_key_fingerprint, signature_algorithm, certificate_status
+FROM certificates
+WHERE fob_id = $1 OR subject_id = $1
+ORDER BY updated_at DESC, created_at DESC, certificate_id
+LIMIT 1;
+"#;
+
 const UPSERT_PROVISIONING_SESSION_SQL: &str = r#"
 INSERT INTO provisioning_sessions (
     session_id,
@@ -577,23 +609,31 @@ INSERT INTO provisioning_sessions (
     fob_id,
     certificate_id,
     auth_status,
+    auth_result,
     session_status,
     access_decision,
     session_algorithm,
+    session_method,
+    provisioning_status,
+    report_path,
     started_at,
     completed_at,
     created_at,
     updated_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(), NOW())
 ON CONFLICT (session_id) DO UPDATE SET
     customer_id = EXCLUDED.customer_id,
     vehicle_id = EXCLUDED.vehicle_id,
     fob_id = EXCLUDED.fob_id,
     certificate_id = EXCLUDED.certificate_id,
     auth_status = EXCLUDED.auth_status,
+    auth_result = EXCLUDED.auth_result,
     session_status = EXCLUDED.session_status,
     access_decision = EXCLUDED.access_decision,
     session_algorithm = EXCLUDED.session_algorithm,
+    session_method = EXCLUDED.session_method,
+    provisioning_status = EXCLUDED.provisioning_status,
+    report_path = EXCLUDED.report_path,
     started_at = EXCLUDED.started_at,
     completed_at = EXCLUDED.completed_at,
     updated_at = NOW();
@@ -711,6 +751,18 @@ pub struct CertificateMetadata {
     pub certificate_status: String,
 }
 
+type CertificateMetadataRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<DateTime<Utc>>,
+    Option<DateTime<Utc>>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProvisioningSessionMetadata {
     pub session_id: String,
@@ -719,9 +771,13 @@ pub struct ProvisioningSessionMetadata {
     pub fob_id: String,
     pub certificate_id: String,
     pub auth_status: String,
+    pub auth_result: String,
     pub session_status: String,
     pub access_decision: String,
     pub session_algorithm: String,
+    pub session_method: String,
+    pub provisioning_status: String,
+    pub report_path: String,
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
 }
@@ -844,7 +900,7 @@ pub fn demo_certificate_metadata(
         certificate_id: DEMO_CERTIFICATE_ID.to_string(),
         fob_id: DEMO_FOB_ID.to_string(),
         subject_id: DEMO_FOB_ID.to_string(),
-        issuer: "AIACS-Demo-CA".to_string(),
+        issuer: "Denish".to_string(),
         issued_at,
         expires_at,
         public_key_fingerprint,
@@ -864,11 +920,33 @@ pub fn demo_provisioning_session_metadata(
         fob_id: DEMO_FOB_ID.to_string(),
         certificate_id: DEMO_CERTIFICATE_ID.to_string(),
         auth_status: AUTHENTICATED_STATUS.to_string(),
+        auth_result: AUTHENTICATED_STATUS.to_string(),
         session_status: SECURE_SESSION_ESTABLISHED_STATUS.to_string(),
         access_decision: GRANT_ACCESS_DECISION.to_string(),
         session_algorithm: SESSION_ALGORITHM.to_string(),
+        session_method: SESSION_ALGORITHM.to_string(),
+        provisioning_status: FINALIZED_PROVISIONING_STATUS.to_string(),
+        report_path: IN_APP_REPORT_ONLY_PATH.to_string(),
         started_at,
         completed_at,
+    }
+}
+
+fn certificate_metadata_from_row(row: CertificateMetadataRow) -> CertificateMetadata {
+    CertificateMetadata {
+        certificate_id: row.0,
+        fob_id: row.1,
+        subject_id: row.2,
+        issuer: row.3,
+        issued_at: row.4,
+        expires_at: row.5,
+        public_key_fingerprint: row.6,
+        signature_algorithm: row
+            .7
+            .unwrap_or_else(|| CERTIFICATE_SIGNATURE_ALGORITHM.to_string()),
+        certificate_status: row
+            .8
+            .unwrap_or_else(|| DEFAULT_CERTIFICATE_STATUS.to_string()),
     }
 }
 
@@ -1386,6 +1464,30 @@ impl CloudStorageClient {
         .await
     }
 
+    pub async fn get_certificate_by_certificate_id(
+        &self,
+        certificate_id: &str,
+    ) -> Result<Option<CertificateMetadata>, CloudStorageError> {
+        sqlx::query_as::<_, CertificateMetadataRow>(GET_CERTIFICATE_BY_ID_SQL)
+            .bind(certificate_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map(|row| row.map(certificate_metadata_from_row))
+            .map_err(|_| CloudStorageError::CertificateMetadataSyncFailed)
+    }
+
+    pub async fn get_certificate_by_fob_id(
+        &self,
+        fob_id: &str,
+    ) -> Result<Option<CertificateMetadata>, CloudStorageError> {
+        sqlx::query_as::<_, CertificateMetadataRow>(GET_CERTIFICATE_BY_FOB_ID_SQL)
+            .bind(fob_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map(|row| row.map(certificate_metadata_from_row))
+            .map_err(|_| CloudStorageError::CertificateMetadataSyncFailed)
+    }
+
     pub async fn upsert_provisioning_session(
         &self,
         metadata: &ProvisioningSessionMetadata,
@@ -1397,9 +1499,13 @@ impl CloudStorageClient {
             .bind(&metadata.fob_id)
             .bind(&metadata.certificate_id)
             .bind(&metadata.auth_status)
+            .bind(&metadata.auth_result)
             .bind(&metadata.session_status)
             .bind(&metadata.access_decision)
             .bind(&metadata.session_algorithm)
+            .bind(&metadata.session_method)
+            .bind(&metadata.provisioning_status)
+            .bind(&metadata.report_path)
             .bind(metadata.started_at)
             .bind(metadata.completed_at)
             .execute(&self.pool)
@@ -1811,10 +1917,14 @@ mod tests {
 
         assert!(schema.contains("ALTER TABLE provisioning_sessions"));
         assert!(schema.contains("ADD COLUMN IF NOT EXISTS certificate_id TEXT"));
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS auth_result TEXT"));
         assert!(schema.contains("ADD COLUMN IF NOT EXISTS auth_status TEXT"));
         assert!(schema.contains("ADD COLUMN IF NOT EXISTS session_status TEXT"));
         assert!(schema.contains("ADD COLUMN IF NOT EXISTS access_decision TEXT"));
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS session_method TEXT"));
         assert!(schema.contains("ADD COLUMN IF NOT EXISTS session_algorithm TEXT"));
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS provisioning_status TEXT"));
+        assert!(schema.contains("ADD COLUMN IF NOT EXISTS report_path TEXT"));
         assert!(schema.contains("ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ"));
         assert!(schema.contains("ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ"));
         assert!(schema.contains("ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()"));
@@ -2116,7 +2226,7 @@ mod tests {
         assert_eq!(metadata.certificate_id, DEMO_CERTIFICATE_ID);
         assert_eq!(metadata.fob_id, DEMO_FOB_ID);
         assert_eq!(metadata.subject_id, DEMO_FOB_ID);
-        assert_eq!(metadata.issuer, "AIACS-Demo-CA");
+        assert_eq!(metadata.issuer, "Denish");
         assert_eq!(
             metadata.signature_algorithm,
             CERTIFICATE_SIGNATURE_ALGORITHM
@@ -2155,6 +2265,35 @@ mod tests {
         assert!(sql.contains("certificate_status"));
         assert!(sql.contains("created_at"));
         assert!(sql.contains("updated_at"));
+    }
+
+    #[test]
+    fn certificate_lookup_sql_uses_safe_metadata_only() {
+        let sql = format!("{GET_CERTIFICATE_BY_ID_SQL}\n{GET_CERTIFICATE_BY_FOB_ID_SQL}");
+
+        for expected in [
+            "FROM certificates",
+            "WHERE certificate_id = $1",
+            "WHERE fob_id = $1 OR subject_id = $1",
+            "public_key_fingerprint",
+            "signature_algorithm",
+            "certificate_status",
+        ] {
+            assert!(sql.contains(expected), "missing lookup SQL: {expected}");
+        }
+
+        for forbidden in [
+            "private_key",
+            "session_key",
+            "shared_secret",
+            "master_key",
+            "DATABASE_URL",
+            "AIACS_MASTER_KEY",
+            "encrypted_key_blob",
+            "encryption_nonce",
+        ] {
+            assert!(!sql.contains(forbidden));
+        }
     }
 
     #[test]
@@ -2204,9 +2343,13 @@ mod tests {
         assert_eq!(metadata.fob_id, DEMO_FOB_ID);
         assert_eq!(metadata.certificate_id, DEMO_CERTIFICATE_ID);
         assert_eq!(metadata.auth_status, AUTHENTICATED_STATUS);
+        assert_eq!(metadata.auth_result, AUTHENTICATED_STATUS);
         assert_eq!(metadata.session_status, SECURE_SESSION_ESTABLISHED_STATUS);
         assert_eq!(metadata.access_decision, GRANT_ACCESS_DECISION);
         assert_eq!(metadata.session_algorithm, SESSION_ALGORITHM);
+        assert_eq!(metadata.session_method, SESSION_ALGORITHM);
+        assert_eq!(metadata.provisioning_status, FINALIZED_PROVISIONING_STATUS);
+        assert_eq!(metadata.report_path, IN_APP_REPORT_ONLY_PATH);
 
         assert!(!debug.contains("AIACS_MASTER_KEY"));
         assert!(!debug.contains("DATABASE_URL"));
@@ -2227,9 +2370,13 @@ mod tests {
         assert!(sql.contains("fob_id"));
         assert!(sql.contains("certificate_id"));
         assert!(sql.contains("auth_status"));
+        assert!(sql.contains("auth_result"));
         assert!(sql.contains("session_status"));
         assert!(sql.contains("access_decision"));
         assert!(sql.contains("session_algorithm"));
+        assert!(sql.contains("session_method"));
+        assert!(sql.contains("provisioning_status"));
+        assert!(sql.contains("report_path"));
         assert!(sql.contains("started_at"));
         assert!(sql.contains("completed_at"));
         assert!(sql.contains("updated_at = NOW()"));
@@ -2699,7 +2846,7 @@ mod tests {
         let ca_record = test_encrypted_key_record(
             CA_ENCRYPTED_KEY_ID,
             "ca",
-            "AIACS-Demo-CA",
+            "Denish",
             CA_KEY_PURPOSE,
             b"test-only CA private key material",
             &master_key,

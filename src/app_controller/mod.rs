@@ -10,9 +10,9 @@ use crate::cloud_storage::{
     AUTHENTICATED_STATUS, CA_ENCRYPTED_KEY_ID, CA_KEY_PURPOSE, CERTIFICATE_SIGNATURE_ALGORITHM,
     DEFAULT_CERTIFICATE_STATUS, DEFAULT_PROVISIONING_STATUS, DEMO_CERTIFICATE_ID, DEMO_CUSTOMER_ID,
     DEMO_FOB_ID, DEMO_SESSION_ID, DEMO_VEHICLE_ID, DIAGNOSTIC_RESULT_IDS,
-    ENCRYPTED_KEY_STORAGE_STATUS, GRANT_ACCESS_DECISION, ISSUED_CERTIFICATE_STATUS,
-    KEY_FOB_ENCRYPTED_KEY_ID, KEY_FOB_KEY_PURPOSE, SECURE_SESSION_ESTABLISHED_STATUS,
-    SESSION_ALGORITHM,
+    ENCRYPTED_KEY_STORAGE_STATUS, FINALIZED_PROVISIONING_STATUS, GRANT_ACCESS_DECISION,
+    IN_APP_REPORT_ONLY_PATH, ISSUED_CERTIFICATE_STATUS, KEY_FOB_ENCRYPTED_KEY_ID,
+    KEY_FOB_KEY_PURPOSE, SECURE_SESSION_ESTABLISHED_STATUS, SESSION_ALGORITHM,
 };
 use crate::keyfob::{AuthenticationProof, DigitalKeyFob, KeyFobError};
 use crate::session::{SessionState, SessionValidationEngine};
@@ -28,7 +28,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use uuid::Uuid;
 
-const DEFAULT_CA_NAME: &str = "AIACS-Demo-CA";
+const DEFAULT_CA_NAME: &str = "Denish";
 const DEFAULT_VEHICLE_ID: &str = DEMO_VEHICLE_ID;
 const DEFAULT_TIMEOUT_SECONDS: i64 = 60;
 const DEFAULT_LOG_DIR: &str = "logs";
@@ -72,6 +72,22 @@ pub struct ActiveKeyFobCryptoIdentity {
     pub certificate_status: String,
     pub identity_source: String,
     pub binding_status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveCertificateDetails {
+    pub available: bool,
+    pub certificate_id: Option<String>,
+    pub fob_id: Option<String>,
+    pub subject_id: Option<String>,
+    pub issuer: Option<String>,
+    pub signature_algorithm: Option<String>,
+    pub public_key_fingerprint: Option<String>,
+    pub certificate_status: Option<String>,
+    pub issued_at: Option<String>,
+    pub expires_at: Option<String>,
+    pub source: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,6 +196,36 @@ impl From<String> for AppControllerError {
     }
 }
 
+pub fn format_status_label(status: &str) -> String {
+    match status.trim() {
+        "" => "Unknown".to_string(),
+        "issued" => "Issued".to_string(),
+        "not_issued" => "Not Issued".to_string(),
+        "expired" => "Expired".to_string(),
+        "revoked" => "Revoked".to_string(),
+        "pending" => "Pending".to_string(),
+        "authenticated" => "Authenticated".to_string(),
+        "secure_session_established" => "Secure Session Established".to_string(),
+        "grant_access" => "Grant Access".to_string(),
+        "finalized" => "Finalized".to_string(),
+        "in_app_report_only" => "In App Report Only".to_string(),
+        other => other
+            .split('_')
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                let mut chars = part.chars();
+                match chars.next() {
+                    Some(first) => {
+                        first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase()
+                    }
+                    None => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
+}
+
 #[derive(Clone)]
 pub struct AppController {
     ca: Option<CertificateAuthority>,
@@ -193,6 +239,7 @@ pub struct AppController {
     log_dir: PathBuf,
     vehicle_connected: bool,
     keyfob_detected: bool,
+    provisioning_report_exported: bool,
     cloud_auto_sync_enabled: bool,
     active_customer: CustomerMetadata,
     active_vehicle: VehicleMetadata,
@@ -200,6 +247,7 @@ pub struct AppController {
     selected_customer: Option<CustomerMetadata>,
     selected_vehicle: Option<VehicleMetadata>,
     selected_key_fob: Option<KeyFobMetadata>,
+    active_certificate_metadata: Option<CertificateMetadata>,
     selection_source: String,
     active_session_id: String,
     customer_records: Vec<CustomerMetadata>,
@@ -230,6 +278,10 @@ impl fmt::Debug for AppController {
             .field("log_dir", &self.log_dir)
             .field("vehicle_connected", &self.vehicle_connected)
             .field("keyfob_detected", &self.keyfob_detected)
+            .field(
+                "provisioning_report_exported",
+                &self.provisioning_report_exported,
+            )
             .field("cloud_auto_sync_enabled", &self.cloud_auto_sync_enabled)
             .field("active_customer", &self.active_customer)
             .field("active_vehicle", &self.active_vehicle)
@@ -277,6 +329,7 @@ impl AppController {
             log_dir: log_dir.into(),
             vehicle_connected: false,
             keyfob_detected: false,
+            provisioning_report_exported: false,
             cloud_auto_sync_enabled: false,
             active_customer: active_customer.clone(),
             active_vehicle: active_vehicle.clone(),
@@ -284,6 +337,7 @@ impl AppController {
             selected_customer: None,
             selected_vehicle: None,
             selected_key_fob: None,
+            active_certificate_metadata: None,
             selection_source: "None".to_string(),
             active_session_id: DEMO_SESSION_ID.to_string(),
             customer_records: Vec::new(),
@@ -448,6 +502,7 @@ impl AppController {
         )?;
 
         self.keyfob = Some(keyfob);
+        self.active_certificate_metadata = Some(self.certificate_metadata()?);
         self.log(message.clone());
         Ok(message)
     }
@@ -705,45 +760,79 @@ impl AppController {
 
     pub fn get_protocol_artifacts(&self) -> Vec<String> {
         let mut artifacts = Vec::new();
+        let visible = self.get_visible_provisioning_context();
+        let certificate = self.get_active_certificate_details();
+        let crypto_identity = self.get_active_key_fob_crypto_identity();
 
         artifacts.push("[Challenge Message]".to_string());
-        artifacts.push(format!("vehicle_id: {}", self.active_vehicle.vehicle_id));
-        artifacts.push("nonce_hash: see [AUTH] trace after challenge generation".to_string());
+        artifacts.push(format!("customer_id: {}", visible.customer_id));
+        artifacts.push(format!("owner_name: {}", visible.owner_name));
+        artifacts.push(format!("vehicle_id: {}", visible.vehicle_id));
+        artifacts.push(format!("vehicle: {}", visible.vehicle_display_name));
+        if visible.vehicle_selected && visible.key_fob_selected {
+            artifacts
+                .push("challenge_status: generated after vehicle challenge action".to_string());
+        } else {
+            artifacts.push("challenge_status: No authentication artifact available".to_string());
+        }
         artifacts.push("raw nonce material: [REDACTED]".to_string());
         artifacts.push("protocol_version: AIACS_AUTH_V1".to_string());
 
         artifacts.push("[Authentication Proof]".to_string());
-        artifacts.push(format!("subject_id: {}", self.active_key_fob.fob_id));
+        artifacts.push(format!("fob_id: {}", visible.fob_id));
+        artifacts.push(format!("fob_label: {}", visible.fob_label));
+        artifacts.push(format!(
+            "signing_status: {}",
+            if visible.key_fob_selected {
+                format!("Signed by {} after signing action", visible.fob_id)
+            } else {
+                "No authentication artifact available".to_string()
+            }
+        ));
         artifacts.push(
             "payload_format: AIACS_AUTH_V1|vehicle_id|subject_id|base64(nonce)|timestamp"
                 .to_string(),
         );
-        artifacts.push("signature_fingerprint: see [AUTH] trace after signing".to_string());
+        artifacts.push("signature_material: [REDACTED]".to_string());
         artifacts.push("private key material: [REDACTED]".to_string());
 
         artifacts.push("[Certificate Details]".to_string());
-        if let Some(cert) = self.current_certificate() {
-            artifacts.push(format!("subject: {}", cert.subject_id));
-            artifacts.push(format!("issuer: {}", cert.issuer));
-            artifacts.push(format!(
-                "validity: {} -> {}",
-                cert.issued_at, cert.expires_at
-            ));
-            artifacts.push(format!(
-                "certificate_path: {}",
-                self.key_fob_certificate_path()
-            ));
-            artifacts.push("certificate_signature: Verified".to_string());
-            artifacts.push(format!(
-                "public_key_fingerprint: {}",
-                fingerprint(&cert.public_key)
-            ));
-        } else {
-            artifacts.push("subject: Pending".to_string());
-            artifacts.push("issuer: Pending".to_string());
-            artifacts.push("validity: Pending".to_string());
-            artifacts.push("certificate_signature: Pending".to_string());
-        }
+        artifacts.push(format!(
+            "certificate_id: {}",
+            certificate
+                .certificate_id
+                .clone()
+                .unwrap_or_else(|| "N/A".to_string())
+        ));
+        artifacts.push(format!(
+            "subject_id: {}",
+            certificate
+                .subject_id
+                .clone()
+                .unwrap_or_else(|| "No certificate issued".to_string())
+        ));
+        artifacts.push(format!(
+            "issuer: {}",
+            certificate
+                .issuer
+                .clone()
+                .unwrap_or_else(|| "No certificate issued".to_string())
+        ));
+        artifacts.push(format!(
+            "signature_algorithm: {}",
+            certificate
+                .signature_algorithm
+                .clone()
+                .unwrap_or_else(|| CERTIFICATE_SIGNATURE_ALGORITHM.to_string())
+        ));
+        artifacts.push(format!(
+            "public_key_fingerprint: {}",
+            certificate
+                .public_key_fingerprint
+                .clone()
+                .unwrap_or(crypto_identity.public_key_fingerprint)
+        ));
+        artifacts.push(format!("certificate_status: {}", certificate.message));
 
         artifacts.push("[Credential Storage]".to_string());
         artifacts.extend(self.credential_storage_summary());
@@ -752,7 +841,7 @@ impl AppController {
         artifacts.push("key_exchange: X25519".to_string());
         artifacts.push("kdf: HKDF-SHA256".to_string());
         artifacts.push("encryption: AES-GCM".to_string());
-        artifacts.push(format!("session_id: {}", self.active_session_id));
+        artifacts.push(format!("session_id: {}", visible.session_id));
         artifacts.push("session key material: [REDACTED]".to_string());
         artifacts.push("shared secret material: [REDACTED]".to_string());
 
@@ -774,36 +863,53 @@ impl AppController {
     }
 
     pub fn credential_storage_summary(&self) -> Vec<String> {
-        let ca_public = self
-            .ca
-            .as_ref()
-            .and_then(|ca| ca.root_public_key.as_ref())
-            .map(|key| fingerprint(key))
-            .unwrap_or_else(|| "Pending".to_string());
-        let fob_public = self
-            .keyfob
-            .as_ref()
-            .and_then(|fob| fob.public_key.as_ref())
-            .map(|key| fingerprint(key))
-            .unwrap_or_else(|| "Pending".to_string());
+        if self.selected_key_fob.is_none() {
+            return vec![
+                "Fob ID: No key fob selected".to_string(),
+                "Credential Metadata: Select a key fob to view credential metadata".to_string(),
+                "Private Key: [REDACTED]".to_string(),
+                "Encrypted Blob Status: Unavailable".to_string(),
+            ];
+        }
+
+        let identity = self.get_active_key_fob_crypto_identity();
+        let certificate = self.get_active_certificate_details();
+        let encrypted_blob_status = if self.keyfob.is_some() {
+            "Available for encrypted local/cloud storage"
+        } else {
+            "Unavailable"
+        };
 
         vec![
-            format!("CA private key path: {}", CA_PRIVATE_KEY_PATH),
-            "CA private key material: [REDACTED]".to_string(),
-            format!("CA public key path: {}", CA_PUBLIC_KEY_PATH),
-            format!("CA public key fingerprint: {}", ca_public),
+            format!("Fob ID: {}", identity.fob_id),
+            format!("Certificate ID: {}", identity.certificate_id),
+            "Key Owner Type: key_fob".to_string(),
+            format!("Key Owner ID: {}", identity.fob_id),
+            "Encryption Algorithm: AES-256-GCM envelope encryption".to_string(),
+            format!("Key Status: {}", identity.binding_status),
             format!(
-                "Key fob private key path: {}",
+                "Public Key Fingerprint: {}",
+                identity.public_key_fingerprint
+            ),
+            format!(
+                "Key Fob Private Key Path: {}",
                 self.key_fob_private_key_path()
             ),
-            "Key fob private key material: [REDACTED]".to_string(),
             format!(
-                "Key fob public key path: {}",
+                "Key Fob Public Key Path: {}",
                 self.key_fob_public_key_path()
             ),
-            format!("Key fob public key fingerprint: {}", fob_public),
-            "Storage mode: Local prototype key file".to_string(),
-            "Production note: secure element / OS key store / encrypted key storage recommended"
+            format!(
+                "Certificate Status: {}",
+                certificate
+                    .certificate_status
+                    .unwrap_or_else(|| DEFAULT_CERTIFICATE_STATUS.to_string())
+            ),
+            format!("Encrypted Blob Status: {}", encrypted_blob_status),
+            "Private Key: [REDACTED]".to_string(),
+            "Storage Mode: Local prototype key file plus encrypted cloud metadata where enabled"
+                .to_string(),
+            "Production Note: secure element / OS key store / encrypted key storage recommended"
                 .to_string(),
         ]
     }
@@ -1027,6 +1133,7 @@ impl AppController {
 
         fs::write(&report_path, redact_sensitive_terms(&report))
             .map_err(|e| AppControllerError::Backend(e.to_string()))?;
+        self.provisioning_report_exported = true;
         let message = format!("Provisioning report exported: {}", report_path.display());
         self.save_log_entry("[INFO]", message.clone())?;
         Ok(message)
@@ -1650,6 +1757,7 @@ impl AppController {
             self.last_auth_result = None;
             self.last_access_decision = None;
             self.ensure_active_key_fob_crypto_identity()?;
+            let _ = self.load_active_certificate_from_cloud();
             return Ok(format!(
                 "Key fob selected: {}; crypto identity ready",
                 key_fob.fob_id
@@ -1666,6 +1774,7 @@ impl AppController {
                 self.last_auth_result = None;
                 self.last_access_decision = None;
                 self.ensure_active_key_fob_crypto_identity()?;
+                let _ = self.load_active_certificate_from_cloud();
                 Ok(format!(
                     "Key fob selected: {}; crypto identity ready",
                     key_fob.fob_id
@@ -2112,6 +2221,158 @@ impl AppController {
         }
     }
 
+    pub fn get_active_certificate_details(&self) -> ActiveCertificateDetails {
+        let Some(selected_key_fob) = self.selected_key_fob.as_ref() else {
+            return ActiveCertificateDetails {
+                available: false,
+                certificate_id: None,
+                fob_id: None,
+                subject_id: None,
+                issuer: None,
+                signature_algorithm: None,
+                public_key_fingerprint: None,
+                certificate_status: Some(format_status_label(DEFAULT_CERTIFICATE_STATUS)),
+                issued_at: None,
+                expires_at: None,
+                source: "NotIssued".to_string(),
+                message: "No key fob selected".to_string(),
+            };
+        };
+
+        let certificate_id = self.derive_certificate_id_for_active_context();
+        if let Some(certificate) = self
+            .current_certificate()
+            .filter(|_| self.current_certificate_belongs_to_active_fob())
+        {
+            return ActiveCertificateDetails {
+                available: true,
+                certificate_id: Some(certificate_id),
+                fob_id: Some(selected_key_fob.fob_id.clone()),
+                subject_id: Some(certificate.subject_id.clone()),
+                issuer: Some(certificate.issuer.clone()),
+                signature_algorithm: Some(CERTIFICATE_SIGNATURE_ALGORITHM.to_string()),
+                public_key_fingerprint: Some(fingerprint(&certificate.public_key)),
+                certificate_status: Some(format_status_label(ISSUED_CERTIFICATE_STATUS)),
+                issued_at: Some(certificate.issued_at),
+                expires_at: Some(certificate.expires_at),
+                source: "ActiveContext".to_string(),
+                message: "Certificate issued".to_string(),
+            };
+        }
+
+        if let Some(metadata) = self
+            .active_certificate_metadata
+            .as_ref()
+            .filter(|metadata| metadata.fob_id == selected_key_fob.fob_id)
+        {
+            return ActiveCertificateDetails {
+                available: true,
+                certificate_id: Some(metadata.certificate_id.clone()),
+                fob_id: Some(metadata.fob_id.clone()),
+                subject_id: Some(metadata.subject_id.clone()),
+                issuer: Some(metadata.issuer.clone()),
+                signature_algorithm: Some(metadata.signature_algorithm.clone()),
+                public_key_fingerprint: metadata.public_key_fingerprint.clone(),
+                certificate_status: Some(format_status_label(&metadata.certificate_status)),
+                issued_at: metadata.issued_at.map(|value| value.to_rfc3339()),
+                expires_at: metadata.expires_at.map(|value| value.to_rfc3339()),
+                source: "CloudMetadata".to_string(),
+                message: "Certificate metadata loaded from cloud".to_string(),
+            };
+        }
+
+        ActiveCertificateDetails {
+            available: false,
+            certificate_id: Some(certificate_id),
+            fob_id: Some(selected_key_fob.fob_id.clone()),
+            subject_id: None,
+            issuer: None,
+            signature_algorithm: Some(CERTIFICATE_SIGNATURE_ALGORITHM.to_string()),
+            public_key_fingerprint: self
+                .key_fob_public_key_fingerprint()
+                .or_else(|| selected_key_fob.public_key_fingerprint.clone()),
+            certificate_status: selected_key_fob
+                .certificate_status
+                .clone()
+                .map(|status| format_status_label(&status))
+                .or_else(|| Some(format_status_label(DEFAULT_CERTIFICATE_STATUS))),
+            issued_at: None,
+            expires_at: None,
+            source: "NotIssued".to_string(),
+            message: "No certificate issued for selected key fob".to_string(),
+        }
+    }
+
+    pub fn load_active_certificate_from_cloud(&mut self) -> Result<String, AppControllerError> {
+        let fob_id = self
+            .selected_key_fob
+            .as_ref()
+            .map(|record| record.fob_id.clone())
+            .ok_or_else(|| {
+                AppControllerError::Backend(
+                    "Select a key fob before viewing certificate".to_string(),
+                )
+            })?;
+        let certificate_id = self.derive_certificate_id_for_active_context();
+        let client = match self.ensure_schema_initialized() {
+            Ok(client) => client,
+            Err(error) if is_cloud_not_configured(&error.to_string()) => {
+                return Err(AppControllerError::Backend(
+                    "Certificate lookup unavailable: cloud disconnected".to_string(),
+                ));
+            }
+            Err(error) => return Err(error),
+        };
+
+        let by_id = self
+            .run_cloud(async {
+                client
+                    .get_certificate_by_certificate_id(&certificate_id)
+                    .await
+            })
+            .map_err(Self::map_cloud_error)?;
+        let metadata = match by_id {
+            Some(metadata) => Some(metadata),
+            None => self
+                .run_cloud(async { client.get_certificate_by_fob_id(&fob_id).await })
+                .map_err(Self::map_cloud_error)?,
+        };
+
+        let Some(metadata) = metadata else {
+            return Err(AppControllerError::Backend(
+                "No certificate issued for selected key fob".to_string(),
+            ));
+        };
+
+        self.apply_loaded_certificate_metadata(metadata);
+        Ok("Certificate metadata loaded from cloud".to_string())
+    }
+
+    pub fn view_active_certificate_details(
+        &mut self,
+    ) -> Result<ActiveCertificateDetails, AppControllerError> {
+        if self.selected_key_fob.is_none() {
+            return Err(AppControllerError::Backend(
+                "Select a key fob before viewing certificate".to_string(),
+            ));
+        }
+
+        let current = self.get_active_certificate_details();
+        if current.available {
+            return Ok(current);
+        }
+
+        self.load_active_certificate_from_cloud()?;
+        let loaded = self.get_active_certificate_details();
+        if loaded.available {
+            Ok(loaded)
+        } else {
+            Err(AppControllerError::Backend(
+                "No certificate issued for selected key fob".to_string(),
+            ))
+        }
+    }
+
     pub fn active_customer_record(&self) -> CustomerMetadata {
         self.active_customer.clone()
     }
@@ -2359,6 +2620,23 @@ impl AppController {
         upsert_local_key_fob(&mut self.key_fob_records, self.active_key_fob.clone());
     }
 
+    fn apply_loaded_certificate_metadata(&mut self, metadata: CertificateMetadata) {
+        self.active_key_fob.certificate_status =
+            Some(format_status_label(&metadata.certificate_status));
+        if let Some(fingerprint) = metadata.public_key_fingerprint.clone() {
+            self.active_key_fob.public_key_fingerprint = Some(fingerprint);
+        }
+        if let Some(selected_key_fob) = self.selected_key_fob.as_mut() {
+            selected_key_fob.certificate_status =
+                Some(format_status_label(&metadata.certificate_status));
+            if let Some(fingerprint) = metadata.public_key_fingerprint.clone() {
+                selected_key_fob.public_key_fingerprint = Some(fingerprint);
+            }
+        }
+        upsert_local_key_fob(&mut self.key_fob_records, self.active_key_fob.clone());
+        self.active_certificate_metadata = Some(metadata);
+    }
+
     fn context_source_label(&self) -> &'static str {
         let customer_is_demo = self.active_customer.customer_id == DEMO_CUSTOMER_ID;
         let vehicle_is_demo = self.active_vehicle.vehicle_id == DEMO_VEHICLE_ID;
@@ -2425,6 +2703,7 @@ impl AppController {
     fn select_key_fob_context(&mut self, key_fob: KeyFobMetadata, source: &str) {
         self.active_key_fob = key_fob.clone();
         self.selected_key_fob = Some(key_fob);
+        self.active_certificate_metadata = None;
         self.selection_source = source.to_string();
         self.align_active_vehicle_to_key_fob();
         if self
@@ -2453,11 +2732,13 @@ impl AppController {
 
     fn clear_selected_key_fob(&mut self) {
         self.selected_key_fob = None;
+        self.active_certificate_metadata = None;
         self.keyfob = None;
         self.keyfob_detected = false;
         self.session = None;
         self.last_auth_result = None;
         self.last_access_decision = None;
+        self.provisioning_report_exported = false;
     }
 
     fn ensure_visible_customer_selected(&self) -> Result<(), AppControllerError> {
@@ -2575,12 +2856,31 @@ impl AppController {
             fob_id: self.active_key_fob.fob_id.clone(),
             certificate_id: self.derive_certificate_id_for_active_context(),
             auth_status: AUTHENTICATED_STATUS.to_string(),
+            auth_result: AUTHENTICATED_STATUS.to_string(),
             session_status: SECURE_SESSION_ESTABLISHED_STATUS.to_string(),
             access_decision: GRANT_ACCESS_DECISION.to_string(),
             session_algorithm: SESSION_ALGORITHM.to_string(),
+            session_method: SESSION_ALGORITHM.to_string(),
+            provisioning_status: self.provisioning_session_status_value(),
+            report_path: IN_APP_REPORT_ONLY_PATH.to_string(),
             started_at: Some(started_at),
             completed_at: Some(completed_at),
         })
+    }
+
+    fn provisioning_session_status_value(&self) -> String {
+        if self.provisioning_report_exported {
+            FINALIZED_PROVISIONING_STATUS.to_string()
+        } else if self
+            .session
+            .as_ref()
+            .map(|session| session.established)
+            .unwrap_or(false)
+        {
+            SECURE_SESSION_ESTABLISHED_STATUS.to_string()
+        } else {
+            DEFAULT_PROVISIONING_STATUS.to_string()
+        }
     }
 
     fn active_audit_log_records(&self) -> Vec<AuditLogRecord> {
@@ -4127,7 +4427,8 @@ mod tests {
         assert!(report.contains("Diagnostics Summary"));
         assert!(report.contains("[REDACTED]"));
         assert!(report.contains(CA_PRIVATE_KEY_PATH));
-        assert!(report.contains(KEYFOB_PRIVATE_KEY_PATH));
+        assert!(report.contains("No key fob selected"));
+        assert!(!report.contains(KEYFOB_PRIVATE_KEY_PATH));
         assert!(report.contains("SHA256:"));
         assert!(!report.contains(&ca_private_key_debug));
         assert!(!report.contains(&fob_private_key_debug));
@@ -4556,6 +4857,169 @@ mod tests {
             controller.key_fob_records_for_selected_vehicle()[0].fob_id,
             key_fob.fob_id
         );
+    }
+
+    #[test]
+    fn test_protocol_artifacts_and_storage_start_with_visible_empty_state() {
+        let controller = AppController::new();
+        let artifacts = controller.get_protocol_artifacts().join("\n");
+        let storage = controller.credential_storage_summary().join("\n");
+        let certificate = controller.get_active_certificate_details();
+
+        assert!(artifacts.contains("No customer selected"));
+        assert!(artifacts.contains("No vehicle selected"));
+        assert!(artifacts.contains("No key fob selected"));
+        assert!(artifacts.contains("No certificate issued"));
+        assert!(!artifacts.contains("CUST-0001"));
+        assert!(!artifacts.contains("VEH-0001"));
+        assert!(!artifacts.contains("FOB-0001"));
+        assert!(storage.contains("No key fob selected"));
+        assert!(storage.contains("Select a key fob to view credential metadata"));
+        assert!(!storage.contains("FOB-0001"));
+        assert!(!certificate.available);
+        assert_eq!(certificate.message, "No key fob selected");
+    }
+
+    #[test]
+    fn test_active_certificate_details_use_selected_fob_after_issuance() {
+        let mut controller = AppController::new();
+        bind_custom_context(&mut controller, "ARTCERT");
+        controller
+            .issue_keyfob_certificate()
+            .expect("certificate should issue for selected fob");
+
+        let details = controller.get_active_certificate_details();
+        let identity = controller.get_active_key_fob_crypto_identity();
+        let artifacts = controller.get_protocol_artifacts().join("\n");
+
+        assert!(details.available);
+        assert_eq!(
+            details.certificate_id.as_deref(),
+            Some("CERT-FOB-CRYPTO-ARTCERT")
+        );
+        assert_eq!(details.fob_id.as_deref(), Some("FOB-CRYPTO-ARTCERT"));
+        assert_eq!(details.subject_id.as_deref(), Some("FOB-CRYPTO-ARTCERT"));
+        assert_eq!(details.signature_algorithm.as_deref(), Some("Ed25519"));
+        assert_eq!(
+            details.public_key_fingerprint.as_deref(),
+            Some(identity.public_key_fingerprint.as_str())
+        );
+        assert!(artifacts.contains("CERT-FOB-CRYPTO-ARTCERT"));
+        assert!(artifacts.contains("subject_id: FOB-CRYPTO-ARTCERT"));
+        assert!(!artifacts.contains("CERT-FOB-0001"));
+    }
+
+    #[test]
+    fn test_newly_issued_certificate_uses_denish_issuer_and_title_status() {
+        let mut controller = AppController::new();
+        bind_custom_context(&mut controller, "DENISH");
+        controller
+            .issue_keyfob_certificate()
+            .expect("certificate should issue");
+
+        let details = controller.get_active_certificate_details();
+        let metadata = controller
+            .certificate_metadata()
+            .expect("certificate metadata should build");
+        let artifacts = controller.get_protocol_artifacts().join("\n");
+
+        assert_eq!(details.issuer.as_deref(), Some("Denish"));
+        assert_eq!(details.certificate_status.as_deref(), Some("Issued"));
+        assert_eq!(metadata.issuer, "Denish");
+        assert_eq!(metadata.certificate_status, ISSUED_CERTIFICATE_STATUS);
+        assert!(artifacts.contains("issuer: Denish"));
+        assert!(artifacts.contains("certificate_status: Certificate issued"));
+    }
+
+    #[test]
+    fn test_status_formatter_title_cases_storage_values() {
+        assert_eq!(format_status_label("issued"), "Issued");
+        assert_eq!(
+            format_status_label("secure_session_established"),
+            "Secure Session Established"
+        );
+        assert_eq!(format_status_label("grant_access"), "Grant Access");
+        assert_eq!(
+            format_status_label("in_app_report_only"),
+            "In App Report Only"
+        );
+        assert_eq!(format_status_label("authenticated"), "Authenticated");
+    }
+
+    #[test]
+    fn test_cloud_loaded_certificate_metadata_restores_details_after_restart() {
+        let mut controller = AppController::new();
+        bind_custom_context(&mut controller, "RESTORE");
+        let metadata = CertificateMetadata {
+            certificate_id: "CERT-FOB-CRYPTO-RESTORE".to_string(),
+            fob_id: "FOB-CRYPTO-RESTORE".to_string(),
+            subject_id: "FOB-CRYPTO-RESTORE".to_string(),
+            issuer: "Denish".to_string(),
+            issued_at: Some(Utc::now()),
+            expires_at: Some(Utc::now() + chrono::Duration::days(365)),
+            public_key_fingerprint: Some("SHA256:RESTORED".to_string()),
+            signature_algorithm: CERTIFICATE_SIGNATURE_ALGORITHM.to_string(),
+            certificate_status: ISSUED_CERTIFICATE_STATUS.to_string(),
+        };
+
+        controller.apply_loaded_certificate_metadata(metadata);
+        let details = controller
+            .view_active_certificate_details()
+            .expect("cloud metadata should satisfy certificate view");
+
+        assert!(details.available);
+        assert_eq!(details.source, "CloudMetadata");
+        assert_eq!(details.issuer.as_deref(), Some("Denish"));
+        assert_eq!(details.certificate_status.as_deref(), Some("Issued"));
+        assert_eq!(
+            details.certificate_id.as_deref(),
+            Some("CERT-FOB-CRYPTO-RESTORE")
+        );
+        assert_eq!(details.subject_id.as_deref(), Some("FOB-CRYPTO-RESTORE"));
+    }
+
+    #[test]
+    fn test_credential_storage_uses_selected_fob_and_redacts_secrets() {
+        let mut controller = AppController::new();
+        bind_custom_context(&mut controller, "CREDMETA");
+        controller
+            .ensure_active_key_fob_crypto_identity()
+            .expect("selected fob identity should generate");
+
+        let storage = controller.credential_storage_summary().join("\n");
+
+        assert!(storage.contains("Fob ID: FOB-CRYPTO-CREDMETA"));
+        assert!(storage.contains("Certificate ID: CERT-FOB-CRYPTO-CREDMETA"));
+        assert!(storage.contains("Key Owner Type: key_fob"));
+        assert!(storage.contains("Public Key Fingerprint: SHA256:"));
+        assert!(storage.contains("Private Key: [REDACTED]"));
+        assert!(!storage.contains("AIACS_MASTER_KEY"));
+        assert!(!storage.contains("DATABASE_URL"));
+        assert!(!storage.contains("encrypted_key_blob"));
+        assert!(!storage.contains("encryption_nonce"));
+        assert!(!storage.contains("FOB-0001"));
+    }
+
+    #[test]
+    fn test_protocol_session_artifact_uses_active_session_after_activation() {
+        let mut controller = AppController::new();
+        bind_custom_context(&mut controller, "ARTSESSION");
+        controller
+            .issue_keyfob_certificate()
+            .expect("certificate should issue");
+        controller
+            .run_legitimate_authentication_demo()
+            .expect("authentication should verify");
+        controller
+            .establish_secure_session_demo()
+            .expect("session should activate");
+
+        let artifacts = controller.get_protocol_artifacts().join("\n");
+        let active_session_id = controller.derive_session_id_for_active_context();
+
+        assert!(artifacts.contains(&format!("session_id: {active_session_id}")));
+        assert!(artifacts.contains("Access granted"));
+        assert!(!artifacts.contains("SESSION-0001"));
     }
 
     #[test]
@@ -5320,6 +5784,10 @@ mod tests {
             crate::cloud_storage::AUTHENTICATED_STATUS
         );
         assert_eq!(
+            metadata.auth_result,
+            crate::cloud_storage::AUTHENTICATED_STATUS
+        );
+        assert_eq!(
             metadata.session_status,
             crate::cloud_storage::SECURE_SESSION_ESTABLISHED_STATUS
         );
@@ -5330,6 +5798,18 @@ mod tests {
         assert_eq!(
             metadata.session_algorithm,
             crate::cloud_storage::SESSION_ALGORITHM
+        );
+        assert_eq!(
+            metadata.session_method,
+            crate::cloud_storage::SESSION_ALGORITHM
+        );
+        assert_eq!(
+            metadata.provisioning_status,
+            crate::cloud_storage::SECURE_SESSION_ESTABLISHED_STATUS
+        );
+        assert_eq!(
+            metadata.report_path,
+            crate::cloud_storage::IN_APP_REPORT_ONLY_PATH
         );
         assert!(metadata.started_at.is_some());
         assert!(metadata.completed_at.is_some());
@@ -5348,6 +5828,31 @@ mod tests {
         ] {
             assert!(!debug.contains(&disallowed.to_lowercase()));
         }
+    }
+
+    #[test]
+    fn test_finalize_stages_finalized_session_metadata_and_safe_report_path() {
+        let mut controller = AppController::new();
+        controller
+            .run_legitimate_authentication_demo()
+            .expect("auth demo failed");
+        controller
+            .establish_secure_session_demo()
+            .expect("session demo failed");
+        controller
+            .export_provisioning_report()
+            .expect("report should export");
+
+        let metadata = controller
+            .provisioning_session_metadata()
+            .expect("session metadata should build");
+
+        assert_eq!(metadata.auth_result, AUTHENTICATED_STATUS);
+        assert_eq!(metadata.session_method, SESSION_ALGORITHM);
+        assert_eq!(metadata.provisioning_status, FINALIZED_PROVISIONING_STATUS);
+        assert_eq!(metadata.report_path, IN_APP_REPORT_ONLY_PATH);
+        assert!(!metadata.report_path.contains("Users"));
+        assert!(!metadata.report_path.contains("DATABASE_URL"));
     }
 
     #[test]
