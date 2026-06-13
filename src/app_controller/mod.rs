@@ -1239,12 +1239,51 @@ impl AppController {
         &mut self,
     ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
         self.export_provisioning_report()?;
-        Ok(self.provisioning_sync_result(
-            "Finalize Provisioning",
-            "Provisioning finalized",
-            "audit_logs",
-            |controller| controller.sync_audit_log_records(),
-        ))
+        let action_name = "Finalize & Export Report";
+        let provisioning_status = "Provisioning finalized and report exported";
+
+        if !self.cloud_auto_sync_enabled {
+            let _ = self.save_log_entry("[DB]", "Cloud sync skipped: disabled");
+            return Ok(self.build_provisioning_cloud_sync_result(
+                action_name,
+                provisioning_status,
+                false,
+                "Skipped - disabled".to_string(),
+                "None",
+                None,
+            ));
+        }
+
+        match self.sync_audit_log_records() {
+            Ok(_) => {
+                let _ = self
+                    .save_log_entry("[DB]", "Cloud sync completed for Finalize & Export Report");
+                let _ = self.save_log_entry("[SECURITY]", "Cloud secret material: [REDACTED]");
+                Ok(self.build_provisioning_cloud_sync_result(
+                    action_name,
+                    provisioning_status,
+                    true,
+                    "Audit logs synced".to_string(),
+                    "audit_logs",
+                    None,
+                ))
+            }
+            Err(error) => {
+                let safe_error = error.to_string();
+                let _ = self.save_log_entry(
+                    "[DB]",
+                    format!("Audit log sync failed after local finalization: {safe_error}"),
+                );
+                Ok(self.build_provisioning_cloud_sync_result(
+                    action_name,
+                    provisioning_status,
+                    true,
+                    format!("Audit log sync failed: {safe_error}"),
+                    "audit_logs",
+                    Some(safe_error),
+                ))
+            }
+        }
     }
 
     pub fn run_diagnostics_with_cloud_sync(
@@ -4239,7 +4278,10 @@ mod tests {
         let finalized = controller
             .finalize_provisioning_with_cloud_sync()
             .expect("report export should succeed locally");
-        assert_eq!(finalized.provisioning_status, "Provisioning finalized");
+        assert_eq!(
+            finalized.provisioning_status,
+            "Provisioning finalized and report exported"
+        );
         assert!(!finalized.cloud_sync_attempted);
         assert_eq!(finalized.cloud_sync_status, "Skipped - disabled");
     }
@@ -4356,6 +4398,85 @@ mod tests {
         assert_eq!(result.provisioning_status, "Vehicle connected");
         assert!(!result.cloud_sync_status.contains("DATABASE_URL"));
         assert!(!result.cloud_sync_status.contains("AIACS_MASTER_KEY"));
+    }
+
+    #[test]
+    fn test_finalize_export_action_uses_audit_log_sync_path() {
+        let source = fs::read_to_string("src/app_controller/mod.rs")
+            .expect("app controller source should be readable");
+        let finalize_index = source
+            .find("pub fn finalize_provisioning_with_cloud_sync")
+            .expect("finalize method should exist");
+        let sync_index = source[finalize_index..]
+            .find("self.sync_audit_log_records()")
+            .expect("finalize method should call audit log sync");
+
+        assert!(sync_index > 0);
+        assert!(source[finalize_index..].contains("Finalize & Export Report"));
+        assert!(source[finalize_index..].contains("Provisioning finalized and report exported"));
+    }
+
+    #[test]
+    fn test_finalize_export_cloud_failure_keeps_local_success_status() {
+        let controller = AppController::new();
+        let result = controller.build_provisioning_cloud_sync_result(
+            "Finalize & Export Report",
+            "Provisioning finalized and report exported",
+            true,
+            "Audit log sync failed: Cloud database connection failed. Retry after database warm-up."
+                .to_string(),
+            "audit_logs",
+            Some("Cloud database connection failed. Retry after database warm-up.".to_string()),
+        );
+        let display = result.to_string();
+
+        assert!(result.local_success);
+        assert_eq!(
+            result.provisioning_status,
+            "Provisioning finalized and report exported"
+        );
+        assert!(result.cloud_sync_attempted);
+        assert!(result
+            .cloud_sync_status
+            .starts_with("Audit log sync failed:"));
+        assert_eq!(result.cloud_table_updated, "audit_logs");
+        assert!(display.contains("Finalize & Export Report"));
+        assert!(display.contains("Cloud Sync: Audit log sync failed:"));
+        assert!(!display.contains("DATABASE_URL"));
+        assert!(!display.contains("AIACS_MASTER_KEY"));
+    }
+
+    #[test]
+    fn test_finalize_audit_logs_use_active_session_id_and_redact_material() {
+        let mut controller = AppController::new();
+        bind_custom_context(&mut controller, "AUDITFINAL");
+        controller
+            .run_legitimate_authentication_demo()
+            .expect("auth should succeed");
+        controller
+            .establish_secure_session_demo()
+            .expect("session should establish");
+
+        let records = controller.active_audit_log_records();
+        let active_session_id = controller.active_session_id.clone();
+
+        assert!(!records.is_empty());
+        assert!(records
+            .iter()
+            .all(|record| record.session_id == active_session_id));
+        let debug = format!("{records:?}");
+        assert!(debug.contains("FOB-CRYPTO-AUDITFINAL"));
+        assert!(debug.contains("[REDACTED]"));
+        for forbidden in [
+            "DATABASE_URL",
+            "AIACS_MASTER_KEY",
+            "private_key",
+            "session_key",
+            "shared_secret",
+            "hkdf_output",
+        ] {
+            assert!(!debug.contains(forbidden));
+        }
     }
 
     #[test]

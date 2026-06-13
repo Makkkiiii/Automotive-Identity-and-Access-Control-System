@@ -691,7 +691,7 @@ impl Application for AIACSApp {
             Message::ExportProvisioningReport => {
                 self.workflow_state.report_exported = true;
                 self.cloud_sync_audit_status = "Syncing audit logs...".to_string();
-                self.begin_cloud_operation("Finalizing provisioning...");
+                self.begin_cloud_operation("Finalizing provisioning and exporting report...");
                 return self.run_cloud_operation(CloudOperation::ProvisioningFinalize);
             }
         }
@@ -1058,7 +1058,7 @@ impl AIACSApp {
                 self.workflow_state.report_exported = false;
                 self.record_provisioning_cloud_error(
                     "Audit Logs",
-                    "Provisioning finalization",
+                    "Finalize and export report",
                     error,
                 );
             }
@@ -1799,19 +1799,20 @@ impl AIACSApp {
             ),
             self.workflow_group(
                 "F. Finalize",
-                "Export the safe provisioning report after setup is complete.",
+                "Finalize provisioning and export the safe report after setup is complete.",
                 column![
                     self.provisioning_completion_card(),
                     self.workflow_step_card(WorkflowStep {
                         icon_name: "terminal",
-                        title: "Export Provisioning Report",
-                        description: "Save safe provisioning report with all secrets redacted.",
+                        title: "Finalize & Export Report",
+                        description:
+                            "Finalize provisioning, sync audit logs, and save the safe report.",
                         status: self.completed_status(
                             self.workflow_state.report_exported,
-                            "Exported",
+                            "Finalized",
                             false,
                         ),
-                        button_label: "Export Report",
+                        button_label: "Finalize & Export Report",
                         message: Message::ExportProvisioningReport,
                     }),
                 ]
@@ -2317,7 +2318,7 @@ impl AIACSApp {
                     ),
                     compact_button(
                         "terminal",
-                        "Export Report",
+                        "Finalize & Export Report",
                         Message::ExportProvisioningReport,
                         ButtonKind::Nav
                     ),
@@ -2842,7 +2843,7 @@ impl AIACSApp {
         self.management_state.cloud_sync_status = format!("Cloud sync {}", cloud_status);
         self.selected_detail = message.clone();
         self.update_cloud_sync_area(area, &cloud_status);
-        if cloud_status == "Synced" {
+        if cloud_status == "Synced" || cloud_status.to_lowercase().contains("synced") {
             self.cloud_status = "Connected".to_string();
         }
         self.push_log(tag, message);
@@ -3629,11 +3630,20 @@ mod tests {
             "Sign Payload",
             "Verify Authentication",
             "Activate Session",
-            "Export Report",
+            "Finalize & Export Report",
             "Sync Diagnostic Results",
         ] {
             assert!(source.contains(security_label));
         }
+    }
+
+    #[test]
+    fn provisioning_finalize_button_uses_clear_label() {
+        let source = include_str!("main.rs");
+
+        assert!(source.contains("\"Finalize & Export Report\""));
+        assert!(source.contains("Finalizing provisioning and exporting report..."));
+        assert!(!source.contains("button_label: \"Export Report\""));
     }
 
     #[test]

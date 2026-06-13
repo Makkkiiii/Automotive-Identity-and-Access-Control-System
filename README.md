@@ -269,7 +269,7 @@ sequenceDiagram
 | Certificate Provisioning    | Initialize vehicle trust, issue access certificate, view certificate details |
 | Authentication Verification | Generate challenge, sign canonical payload, verify authentication            |
 | Secure Session              | Activate secure session                                                      |
-| Finalize                    | Export provisioning report, sync safe metadata                               |
+| Finalize                    | Finalize & Export Report, sync safe audit metadata                           |
 
 ---
 
