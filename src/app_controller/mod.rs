@@ -75,6 +75,22 @@ pub struct ActiveKeyFobCryptoIdentity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisibleProvisioningContext {
+    pub customer_selected: bool,
+    pub vehicle_selected: bool,
+    pub key_fob_selected: bool,
+    pub customer_id: String,
+    pub owner_name: String,
+    pub vehicle_id: String,
+    pub vehicle_display_name: String,
+    pub fob_id: String,
+    pub fob_label: String,
+    pub certificate_id: String,
+    pub session_id: String,
+    pub selection_source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProvisioningCloudSyncResult {
     pub action_name: String,
     pub provisioning_status: String,
@@ -181,6 +197,10 @@ pub struct AppController {
     active_customer: CustomerMetadata,
     active_vehicle: VehicleMetadata,
     active_key_fob: KeyFobMetadata,
+    selected_customer: Option<CustomerMetadata>,
+    selected_vehicle: Option<VehicleMetadata>,
+    selected_key_fob: Option<KeyFobMetadata>,
+    selection_source: String,
     active_session_id: String,
     customer_records: Vec<CustomerMetadata>,
     vehicle_records: Vec<VehicleMetadata>,
@@ -214,6 +234,10 @@ impl fmt::Debug for AppController {
             .field("active_customer", &self.active_customer)
             .field("active_vehicle", &self.active_vehicle)
             .field("active_key_fob", &self.active_key_fob)
+            .field("selected_customer", &self.selected_customer)
+            .field("selected_vehicle", &self.selected_vehicle)
+            .field("selected_key_fob", &self.selected_key_fob)
+            .field("selection_source", &self.selection_source)
             .field("active_session_id", &self.active_session_id)
             .field("cloud_client_cached", &self.cloud_client.is_some())
             .field("schema_initialized", &self.schema_initialized)
@@ -257,6 +281,10 @@ impl AppController {
             active_customer: active_customer.clone(),
             active_vehicle: active_vehicle.clone(),
             active_key_fob: active_key_fob.clone(),
+            selected_customer: None,
+            selected_vehicle: None,
+            selected_key_fob: None,
+            selection_source: "None".to_string(),
             active_session_id: DEMO_SESSION_ID.to_string(),
             customer_records: vec![active_customer],
             vehicle_records: vec![active_vehicle],
@@ -1133,6 +1161,7 @@ impl AppController {
     pub fn connect_vehicle_with_cloud_sync(
         &mut self,
     ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
+        self.ensure_visible_provisioning_context_selected()?;
         self.connect_vehicle()?;
         Ok(self.provisioning_sync_result(
             "Connect Vehicle",
@@ -1145,6 +1174,7 @@ impl AppController {
     pub fn detect_key_fob_with_cloud_sync(
         &mut self,
     ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
+        self.ensure_visible_provisioning_context_selected()?;
         self.detect_key_fob()?;
         Ok(self.provisioning_sync_result(
             "Detect Key Fob",
@@ -1157,6 +1187,7 @@ impl AppController {
     pub fn register_key_fob_with_cloud_sync(
         &mut self,
     ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
+        self.ensure_visible_provisioning_context_selected()?;
         self.register_digital_key_fob()?;
         Ok(self.provisioning_sync_result(
             "Register Digital Key Fob",
@@ -1169,6 +1200,7 @@ impl AppController {
     pub fn initialize_vehicle_trust_with_cloud_sync(
         &mut self,
     ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
+        self.ensure_visible_provisioning_context_selected()?;
         self.initialize_ca()?;
         Ok(self.provisioning_sync_result(
             "Initialize Vehicle Trust",
@@ -1181,6 +1213,7 @@ impl AppController {
     pub fn issue_access_certificate_with_cloud_sync(
         &mut self,
     ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
+        self.ensure_visible_key_fob_selected()?;
         self.issue_keyfob_certificate()?;
         Ok(self.provisioning_sync_result(
             "Issue Access Certificate",
@@ -1193,6 +1226,7 @@ impl AppController {
     pub fn generate_challenge_with_cloud_sync(
         &mut self,
     ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
+        self.ensure_visible_provisioning_context_selected()?;
         self.generate_authentication_challenge()?;
         Ok(self.no_cloud_sync_result(
             "Generate Challenge",
@@ -1204,6 +1238,12 @@ impl AppController {
     pub fn sign_canonical_payload_with_cloud_sync(
         &mut self,
     ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
+        self.ensure_visible_key_fob_selected()?;
+        if self.current_certificate().is_none() {
+            return Err(AppControllerError::Backend(
+                "Issue an access certificate before signing the payload.".to_string(),
+            ));
+        }
         self.sign_canonical_auth_payload()?;
         Ok(self.no_cloud_sync_result(
             "Sign Canonical Payload",
@@ -1215,6 +1255,12 @@ impl AppController {
     pub fn verify_authentication_with_cloud_sync(
         &mut self,
     ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
+        self.ensure_visible_key_fob_selected()?;
+        if self.current_certificate().is_none() {
+            return Err(AppControllerError::Backend(
+                "Issue an access certificate before verifying authentication.".to_string(),
+            ));
+        }
         self.run_legitimate_authentication_demo()?;
         Ok(self.no_cloud_sync_result(
             "Verify Key Authentication",
@@ -1226,6 +1272,7 @@ impl AppController {
     pub fn activate_secure_session_with_cloud_sync(
         &mut self,
     ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
+        self.ensure_visible_provisioning_context_selected()?;
         self.establish_secure_session_demo()?;
         Ok(self.provisioning_sync_result(
             "Activate Secure Session",
@@ -1238,6 +1285,7 @@ impl AppController {
     pub fn finalize_provisioning_with_cloud_sync(
         &mut self,
     ) -> Result<ProvisioningCloudSyncResult, AppControllerError> {
+        self.ensure_visible_provisioning_context_selected()?;
         self.export_provisioning_report()?;
         let action_name = "Finalize & Export Report";
         let provisioning_status = "Provisioning finalized and report exported";
@@ -1328,9 +1376,8 @@ impl AppController {
             phone,
         };
         let message = self.persist_customer_record(customer.clone())?;
-        self.active_customer = customer.clone();
+        self.select_customer_context(customer.clone(), "CreatedThisSession");
         upsert_local_customer(&mut self.customer_records, customer);
-        self.refresh_session_id_for_active_context();
         Ok(message)
     }
 
@@ -1338,23 +1385,16 @@ impl AppController {
         let client = match self.ensure_schema_initialized() {
             Ok(client) => client,
             Err(error) if is_cloud_not_configured(&error.to_string()) => {
-                return Ok("Cloud database is not configured; using local demo records".to_string());
+                return Ok("Cloud database is not configured; no customer selected".to_string());
             }
             Err(error) => return Err(error),
         };
         match self.run_cloud(async { client.list_customers().await }) {
             Ok(records) if !records.is_empty() => {
                 self.customer_records = records;
-                if !self
-                    .customer_records
-                    .iter()
-                    .any(|record| record.customer_id == self.active_customer.customer_id)
-                {
-                    self.active_customer = self.customer_records[0].clone();
-                }
                 Ok(format!("Customers loaded: {}", self.customer_records.len()))
             }
-            Ok(_) => Ok("Customers loaded: using local demo records".to_string()),
+            Ok(_) => Ok("Customers loaded: no cloud records available".to_string()),
             Err(error) => self.safe_demo_fallback_or_error(error),
         }
     }
@@ -1366,17 +1406,15 @@ impl AppController {
             .find(|record| record.customer_id == customer_id)
             .cloned()
         {
-            self.active_customer = customer.clone();
-            self.refresh_session_id_for_active_context();
+            self.select_customer_context(customer.clone(), "CloudSelected");
             return Ok(format!("Customer selected: {}", customer.customer_id));
         }
 
         let client = self.ensure_schema_initialized()?;
         match self.run_cloud(async { client.get_customer(customer_id).await }) {
             Ok(Some(customer)) => {
-                self.active_customer = customer.clone();
+                self.select_customer_context(customer.clone(), "CloudSelected");
                 upsert_local_customer(&mut self.customer_records, customer.clone());
-                self.refresh_session_id_for_active_context();
                 Ok(format!("Customer selected: {}", customer.customer_id))
             }
             Ok(None) => Err(AppControllerError::Backend(
@@ -1436,10 +1474,8 @@ impl AppController {
             provisioning_status: Some(DEFAULT_PROVISIONING_STATUS.to_string()),
         };
         let message = self.persist_vehicle_record(vehicle.clone())?;
-        self.active_vehicle = vehicle.clone();
+        self.select_vehicle_context(vehicle.clone(), "CreatedThisSession");
         upsert_local_vehicle(&mut self.vehicle_records, vehicle);
-        self.align_active_customer_to_vehicle();
-        self.refresh_session_id_for_active_context();
         Ok(message)
     }
 
@@ -1447,25 +1483,16 @@ impl AppController {
         let client = match self.ensure_schema_initialized() {
             Ok(client) => client,
             Err(error) if is_cloud_not_configured(&error.to_string()) => {
-                return Ok("Cloud database is not configured; using local demo records".to_string());
+                return Ok("Cloud database is not configured; no vehicle selected".to_string());
             }
             Err(error) => return Err(error),
         };
         match self.run_cloud(async { client.list_vehicles().await }) {
             Ok(records) if !records.is_empty() => {
                 self.vehicle_records = records;
-                if !self
-                    .vehicle_records
-                    .iter()
-                    .any(|record| record.vehicle_id == self.active_vehicle.vehicle_id)
-                {
-                    self.active_vehicle = self.vehicle_records[0].clone();
-                    self.align_active_customer_to_vehicle();
-                    self.refresh_session_id_for_active_context();
-                }
                 Ok(format!("Vehicles loaded: {}", self.vehicle_records.len()))
             }
-            Ok(_) => Ok("Vehicles loaded: using local demo records".to_string()),
+            Ok(_) => Ok("Vehicles loaded: no cloud records available".to_string()),
             Err(error) => self.safe_demo_fallback_or_error(error),
         }
     }
@@ -1477,16 +1504,13 @@ impl AppController {
         let client = match self.ensure_schema_initialized() {
             Ok(client) => client,
             Err(error) if is_cloud_not_configured(&error.to_string()) => {
-                return Ok("Cloud database is not configured; using local demo records".to_string());
+                return Ok("Cloud database is not configured; no vehicle selected".to_string());
             }
             Err(error) => return Err(error),
         };
         match self.run_cloud(async { client.list_vehicles_for_customer(customer_id).await }) {
             Ok(records) if !records.is_empty() => {
                 self.vehicle_records = records;
-                self.active_vehicle = self.vehicle_records[0].clone();
-                self.align_active_customer_to_vehicle();
-                self.refresh_session_id_for_active_context();
                 Ok(format!("Vehicles loaded: {}", self.vehicle_records.len()))
             }
             Ok(_) => Ok("Vehicles loaded: no cloud records for selected customer".to_string()),
@@ -1501,19 +1525,15 @@ impl AppController {
             .find(|record| record.vehicle_id == vehicle_id)
             .cloned()
         {
-            self.active_vehicle = vehicle.clone();
-            self.align_active_customer_to_vehicle();
-            self.refresh_session_id_for_active_context();
+            self.select_vehicle_context(vehicle.clone(), "CloudSelected");
             return Ok(format!("Vehicle selected: {}", vehicle.vehicle_id));
         }
 
         let client = self.ensure_schema_initialized()?;
         match self.run_cloud(async { client.get_vehicle(vehicle_id).await }) {
             Ok(Some(vehicle)) => {
-                self.active_vehicle = vehicle.clone();
+                self.select_vehicle_context(vehicle.clone(), "CloudSelected");
                 upsert_local_vehicle(&mut self.vehicle_records, vehicle.clone());
-                self.align_active_customer_to_vehicle();
-                self.refresh_session_id_for_active_context();
                 Ok(format!("Vehicle selected: {}", vehicle.vehicle_id))
             }
             Ok(None) => Err(AppControllerError::Backend(
@@ -1549,10 +1569,8 @@ impl AppController {
             certificate_status: Some(DEFAULT_CERTIFICATE_STATUS.to_string()),
             provisioning_status: Some(DEFAULT_PROVISIONING_STATUS.to_string()),
         };
-        self.active_key_fob = key_fob.clone();
+        self.select_key_fob_context(key_fob.clone(), "CreatedThisSession");
         upsert_local_key_fob(&mut self.key_fob_records, key_fob);
-        self.align_active_vehicle_to_key_fob();
-        self.refresh_session_id_for_active_context();
         self.keyfob_detected = false;
         self.session = None;
         self.last_auth_result = None;
@@ -1560,7 +1578,7 @@ impl AppController {
         self.ensure_active_key_fob_crypto_identity()?;
         let key_fob = self.key_fob_metadata();
         let message = self.persist_key_fob_record(key_fob.clone())?;
-        self.active_key_fob = key_fob.clone();
+        self.select_key_fob_context(key_fob.clone(), "CreatedThisSession");
         upsert_local_key_fob(&mut self.key_fob_records, key_fob);
         Ok(message)
     }
@@ -1569,25 +1587,16 @@ impl AppController {
         let client = match self.ensure_schema_initialized() {
             Ok(client) => client,
             Err(error) if is_cloud_not_configured(&error.to_string()) => {
-                return Ok("Cloud database is not configured; using local demo records".to_string());
+                return Ok("Cloud database is not configured; no key fob selected".to_string());
             }
             Err(error) => return Err(error),
         };
         match self.run_cloud(async { client.list_key_fobs().await }) {
             Ok(records) if !records.is_empty() => {
                 self.key_fob_records = records;
-                if !self
-                    .key_fob_records
-                    .iter()
-                    .any(|record| record.fob_id == self.active_key_fob.fob_id)
-                {
-                    self.active_key_fob = self.key_fob_records[0].clone();
-                    self.align_active_vehicle_to_key_fob();
-                    self.refresh_session_id_for_active_context();
-                }
                 Ok(format!("Key fobs loaded: {}", self.key_fob_records.len()))
             }
-            Ok(_) => Ok("Key fobs loaded: using local demo records".to_string()),
+            Ok(_) => Ok("Key fobs loaded: no cloud records available".to_string()),
             Err(error) => self.safe_demo_fallback_or_error(error),
         }
     }
@@ -1599,16 +1608,13 @@ impl AppController {
         let client = match self.ensure_schema_initialized() {
             Ok(client) => client,
             Err(error) if is_cloud_not_configured(&error.to_string()) => {
-                return Ok("Cloud database is not configured; using local demo records".to_string());
+                return Ok("Cloud database is not configured; no key fob selected".to_string());
             }
             Err(error) => return Err(error),
         };
         match self.run_cloud(async { client.list_key_fobs_for_vehicle(vehicle_id).await }) {
             Ok(records) if !records.is_empty() => {
                 self.key_fob_records = records;
-                self.active_key_fob = self.key_fob_records[0].clone();
-                self.align_active_vehicle_to_key_fob();
-                self.refresh_session_id_for_active_context();
                 Ok(format!("Key fobs loaded: {}", self.key_fob_records.len()))
             }
             Ok(_) => Ok("Key fobs loaded: no cloud records for selected vehicle".to_string()),
@@ -1623,9 +1629,7 @@ impl AppController {
             .find(|record| record.fob_id == fob_id)
             .cloned()
         {
-            self.active_key_fob = key_fob.clone();
-            self.align_active_vehicle_to_key_fob();
-            self.refresh_session_id_for_active_context();
+            self.select_key_fob_context(key_fob.clone(), "CloudSelected");
             self.keyfob_detected = false;
             self.session = None;
             self.last_auth_result = None;
@@ -1640,10 +1644,8 @@ impl AppController {
         let client = self.ensure_schema_initialized()?;
         match self.run_cloud(async { client.get_key_fob(fob_id).await }) {
             Ok(Some(key_fob)) => {
-                self.active_key_fob = key_fob.clone();
+                self.select_key_fob_context(key_fob.clone(), "CloudSelected");
                 upsert_local_key_fob(&mut self.key_fob_records, key_fob.clone());
-                self.align_active_vehicle_to_key_fob();
-                self.refresh_session_id_for_active_context();
                 self.keyfob_detected = false;
                 self.session = None;
                 self.last_auth_result = None;
@@ -1930,7 +1932,107 @@ impl AppController {
         )
     }
 
+    pub fn selected_customer_record(&self) -> Option<CustomerMetadata> {
+        self.selected_customer.clone()
+    }
+
+    pub fn selected_vehicle_record(&self) -> Option<VehicleMetadata> {
+        self.selected_vehicle.clone()
+    }
+
+    pub fn selected_key_fob_record(&self) -> Option<KeyFobMetadata> {
+        self.selected_key_fob.clone()
+    }
+
+    pub fn customer_selection_candidate_id(&self) -> Option<String> {
+        self.selected_customer
+            .as_ref()
+            .map(|record| record.customer_id.clone())
+            .or_else(|| {
+                self.customer_records
+                    .first()
+                    .map(|record| record.customer_id.clone())
+            })
+    }
+
+    pub fn vehicle_selection_candidate_id(&self) -> Option<String> {
+        let selected_customer_id = self.selected_customer.as_ref()?.customer_id.as_str();
+        self.selected_vehicle
+            .as_ref()
+            .filter(|record| record.customer_id == selected_customer_id)
+            .map(|record| record.vehicle_id.clone())
+            .or_else(|| {
+                self.vehicle_records
+                    .iter()
+                    .find(|record| record.customer_id == selected_customer_id)
+                    .map(|record| record.vehicle_id.clone())
+            })
+    }
+
+    pub fn key_fob_selection_candidate_id(&self) -> Option<String> {
+        let selected_vehicle_id = self.selected_vehicle.as_ref()?.vehicle_id.as_str();
+        self.selected_key_fob
+            .as_ref()
+            .filter(|record| record.vehicle_id == selected_vehicle_id)
+            .map(|record| record.fob_id.clone())
+            .or_else(|| {
+                self.key_fob_records
+                    .iter()
+                    .find(|record| record.vehicle_id == selected_vehicle_id)
+                    .map(|record| record.fob_id.clone())
+            })
+    }
+
+    pub fn get_visible_provisioning_context(&self) -> VisibleProvisioningContext {
+        let customer = self.selected_customer.as_ref();
+        let vehicle = self.selected_vehicle.as_ref();
+        let key_fob = self.selected_key_fob.as_ref();
+
+        VisibleProvisioningContext {
+            customer_selected: customer.is_some(),
+            vehicle_selected: vehicle.is_some(),
+            key_fob_selected: key_fob.is_some(),
+            customer_id: customer
+                .map(|record| record.customer_id.clone())
+                .unwrap_or_else(|| "N/A".to_string()),
+            owner_name: customer
+                .map(|record| record.owner_name.clone())
+                .unwrap_or_else(|| "No customer selected".to_string()),
+            vehicle_id: vehicle
+                .map(|record| record.vehicle_id.clone())
+                .unwrap_or_else(|| "N/A".to_string()),
+            vehicle_display_name: vehicle
+                .map(|record| record.vehicle_display_name.clone())
+                .unwrap_or_else(|| "No vehicle selected".to_string()),
+            fob_id: key_fob
+                .map(|record| record.fob_id.clone())
+                .unwrap_or_else(|| "N/A".to_string()),
+            fob_label: key_fob
+                .map(|record| record.fob_label.clone())
+                .unwrap_or_else(|| "No key fob selected".to_string()),
+            certificate_id: key_fob
+                .map(|_| self.derive_certificate_id_for_active_context())
+                .unwrap_or_else(|| "N/A".to_string()),
+            session_id: key_fob
+                .map(|_| self.derive_session_id_for_active_context())
+                .unwrap_or_else(|| "N/A".to_string()),
+            selection_source: self.selection_source.clone(),
+        }
+    }
+
     pub fn get_active_key_fob_crypto_identity(&self) -> ActiveKeyFobCryptoIdentity {
+        if self.selected_key_fob.is_none() {
+            return ActiveKeyFobCryptoIdentity {
+                fob_id: "N/A".to_string(),
+                public_key_fingerprint: "Pending".to_string(),
+                certificate_id: "N/A".to_string(),
+                certificate_subject_id: None,
+                certificate_status: DEFAULT_CERTIFICATE_STATUS.to_string(),
+                identity_source: "Missing".to_string(),
+                binding_status: "Missing identity".to_string(),
+            };
+        }
+
         let certificate = self.current_certificate();
         let fob_is_active = self
             .keyfob
@@ -2251,6 +2353,121 @@ impl AppController {
         } else if self.active_session_id == DEMO_SESSION_ID {
             self.active_session_id = generated_record_id("SESSION");
         }
+    }
+
+    fn select_customer_context(&mut self, customer: CustomerMetadata, source: &str) {
+        self.active_customer = customer.clone();
+        self.selected_customer = Some(customer);
+        self.selection_source = source.to_string();
+
+        if self
+            .selected_vehicle
+            .as_ref()
+            .map(|vehicle| vehicle.customer_id != self.active_customer.customer_id)
+            .unwrap_or(false)
+        {
+            self.clear_selected_vehicle_and_fob();
+        }
+        self.refresh_session_id_for_active_context();
+    }
+
+    fn select_vehicle_context(&mut self, vehicle: VehicleMetadata, source: &str) {
+        self.active_vehicle = vehicle.clone();
+        self.selected_vehicle = Some(vehicle);
+        self.selection_source = source.to_string();
+        self.align_active_customer_to_vehicle();
+        if self
+            .selected_customer
+            .as_ref()
+            .map(|customer| customer.customer_id != self.active_customer.customer_id)
+            .unwrap_or(true)
+        {
+            self.selected_customer = Some(self.active_customer.clone());
+        }
+
+        if self
+            .selected_key_fob
+            .as_ref()
+            .map(|fob| fob.vehicle_id != self.active_vehicle.vehicle_id)
+            .unwrap_or(false)
+        {
+            self.clear_selected_key_fob();
+        }
+        self.refresh_session_id_for_active_context();
+    }
+
+    fn select_key_fob_context(&mut self, key_fob: KeyFobMetadata, source: &str) {
+        self.active_key_fob = key_fob.clone();
+        self.selected_key_fob = Some(key_fob);
+        self.selection_source = source.to_string();
+        self.align_active_vehicle_to_key_fob();
+        if self
+            .selected_vehicle
+            .as_ref()
+            .map(|vehicle| vehicle.vehicle_id != self.active_vehicle.vehicle_id)
+            .unwrap_or(true)
+        {
+            self.selected_vehicle = Some(self.active_vehicle.clone());
+        }
+        if self
+            .selected_customer
+            .as_ref()
+            .map(|customer| customer.customer_id != self.active_customer.customer_id)
+            .unwrap_or(true)
+        {
+            self.selected_customer = Some(self.active_customer.clone());
+        }
+        self.refresh_session_id_for_active_context();
+    }
+
+    fn clear_selected_vehicle_and_fob(&mut self) {
+        self.selected_vehicle = None;
+        self.clear_selected_key_fob();
+    }
+
+    fn clear_selected_key_fob(&mut self) {
+        self.selected_key_fob = None;
+        self.keyfob = None;
+        self.keyfob_detected = false;
+        self.session = None;
+        self.last_auth_result = None;
+        self.last_access_decision = None;
+    }
+
+    fn ensure_visible_customer_selected(&self) -> Result<(), AppControllerError> {
+        if self.selected_customer.is_some() {
+            Ok(())
+        } else {
+            Err(AppControllerError::Backend(
+                "Select customer, vehicle, and key fob before provisioning.".to_string(),
+            ))
+        }
+    }
+
+    fn ensure_visible_vehicle_selected(&self) -> Result<(), AppControllerError> {
+        if self.selected_vehicle.is_some() {
+            Ok(())
+        } else {
+            Err(AppControllerError::Backend(
+                "Select customer, vehicle, and key fob before provisioning.".to_string(),
+            ))
+        }
+    }
+
+    fn ensure_visible_key_fob_selected(&self) -> Result<(), AppControllerError> {
+        if self.selected_key_fob.is_some() {
+            Ok(())
+        } else {
+            Err(AppControllerError::Backend(
+                "Select a key fob before issuing certificate/signing/authentication.".to_string(),
+            ))
+        }
+    }
+
+    fn ensure_visible_provisioning_context_selected(&self) -> Result<(), AppControllerError> {
+        self.ensure_visible_customer_selected()?;
+        self.ensure_visible_vehicle_selected()?;
+        self.ensure_visible_key_fob_selected()
     }
 
     fn align_active_customer_to_vehicle(&mut self) {
@@ -2807,7 +3024,7 @@ impl AppController {
     ) -> Result<String, AppControllerError> {
         let mapped = Self::map_cloud_error(error).to_string();
         if is_cloud_not_configured(&mapped) {
-            Ok("Cloud database is not configured; using local demo records".to_string())
+            Ok("Cloud database is not configured; no record selected".to_string())
         } else {
             Err(AppControllerError::Backend(mapped))
         }
@@ -3232,13 +3449,12 @@ mod tests {
             provisioning_status: Some(DEFAULT_PROVISIONING_STATUS.to_string()),
         };
 
-        controller.active_customer = customer.clone();
-        controller.active_vehicle = vehicle.clone();
-        controller.active_key_fob = key_fob.clone();
-        upsert_local_customer(&mut controller.customer_records, customer);
-        upsert_local_vehicle(&mut controller.vehicle_records, vehicle);
-        upsert_local_key_fob(&mut controller.key_fob_records, key_fob);
-        controller.refresh_session_id_for_active_context();
+        upsert_local_customer(&mut controller.customer_records, customer.clone());
+        upsert_local_vehicle(&mut controller.vehicle_records, vehicle.clone());
+        upsert_local_key_fob(&mut controller.key_fob_records, key_fob.clone());
+        controller.select_customer_context(customer, "CloudSelected");
+        controller.select_vehicle_context(vehicle, "CloudSelected");
+        controller.select_key_fob_context(key_fob, "CloudSelected");
         controller.keyfob = None;
         controller.session = None;
         controller.last_auth_result = None;
@@ -4189,6 +4405,234 @@ mod tests {
     }
 
     #[test]
+    fn test_visible_selected_context_starts_empty() {
+        let controller = AppController::new();
+        let visible = controller.get_visible_provisioning_context();
+
+        assert!(!visible.customer_selected);
+        assert!(!visible.vehicle_selected);
+        assert!(!visible.key_fob_selected);
+        assert_eq!(visible.owner_name, "No customer selected");
+        assert_eq!(visible.vehicle_display_name, "No vehicle selected");
+        assert_eq!(visible.fob_label, "No key fob selected");
+        assert_eq!(visible.customer_id, "N/A");
+        assert_eq!(visible.vehicle_id, "N/A");
+        assert_eq!(visible.fob_id, "N/A");
+        assert_eq!(visible.certificate_id, "N/A");
+        assert_eq!(visible.session_id, "N/A");
+        assert_eq!(visible.selection_source, "None");
+    }
+
+    #[test]
+    fn test_loading_records_does_not_change_visible_selection() {
+        let mut controller = AppController::new();
+        controller.customer_records = vec![CustomerMetadata {
+            customer_id: "CUST-LOAD-TEST".to_string(),
+            owner_name: "Loaded Customer".to_string(),
+            email: Some("loaded@example.com".to_string()),
+            phone: None,
+        }];
+
+        assert!(controller.selected_customer_record().is_none());
+        assert_eq!(
+            controller.customer_selection_candidate_id(),
+            Some("CUST-LOAD-TEST".to_string())
+        );
+        assert!(
+            !controller
+                .get_visible_provisioning_context()
+                .customer_selected
+        );
+    }
+
+    #[test]
+    fn test_selecting_customer_updates_visible_context_and_clears_incompatible_children() {
+        let mut controller = AppController::new();
+        let customer_a = CustomerMetadata {
+            customer_id: "CUST-A".to_string(),
+            owner_name: "Owner A".to_string(),
+            email: Some("a@example.com".to_string()),
+            phone: None,
+        };
+        let customer_b = CustomerMetadata {
+            customer_id: "CUST-B".to_string(),
+            owner_name: "Owner B".to_string(),
+            email: Some("b@example.com".to_string()),
+            phone: None,
+        };
+        let vehicle_a = VehicleMetadata {
+            vehicle_id: "VEH-A".to_string(),
+            customer_id: "CUST-A".to_string(),
+            vehicle_display_name: "Vehicle A".to_string(),
+            make: Some("Nissan".to_string()),
+            model: Some("Magnite".to_string()),
+            year: Some(2021),
+            vin: None,
+            registration_number: None,
+            provisioning_status: Some(DEFAULT_PROVISIONING_STATUS.to_string()),
+        };
+        let fob_a = KeyFobMetadata {
+            fob_id: "FOB-A".to_string(),
+            vehicle_id: "VEH-A".to_string(),
+            customer_id: "CUST-A".to_string(),
+            fob_label: "Fob A".to_string(),
+            public_key_fingerprint: None,
+            certificate_status: Some(DEFAULT_CERTIFICATE_STATUS.to_string()),
+            provisioning_status: Some(DEFAULT_PROVISIONING_STATUS.to_string()),
+        };
+        controller.customer_records = vec![customer_a.clone(), customer_b.clone()];
+        controller.vehicle_records = vec![vehicle_a.clone()];
+        controller.key_fob_records = vec![fob_a.clone()];
+        controller.select_customer_context(customer_a, "CloudSelected");
+        controller.select_vehicle_context(vehicle_a, "CloudSelected");
+        controller.select_key_fob_context(fob_a, "CloudSelected");
+
+        controller
+            .select_customer("CUST-B")
+            .expect("customer B should select");
+        let visible = controller.get_visible_provisioning_context();
+
+        assert!(visible.customer_selected);
+        assert_eq!(visible.customer_id, "CUST-B");
+        assert!(!visible.vehicle_selected);
+        assert!(!visible.key_fob_selected);
+        assert!(controller.selected_vehicle_record().is_none());
+        assert!(controller.selected_key_fob_record().is_none());
+    }
+
+    #[test]
+    fn test_selecting_vehicle_updates_visible_context_and_clears_incompatible_fob() {
+        let mut controller = AppController::new();
+        let customer = CustomerMetadata {
+            customer_id: "CUST-VEH-SEL".to_string(),
+            owner_name: "Vehicle Select Owner".to_string(),
+            email: Some("veh@example.com".to_string()),
+            phone: None,
+        };
+        let vehicle_a = VehicleMetadata {
+            vehicle_id: "VEH-SEL-A".to_string(),
+            customer_id: customer.customer_id.clone(),
+            vehicle_display_name: "Vehicle A".to_string(),
+            make: Some("Nissan".to_string()),
+            model: Some("Magnite".to_string()),
+            year: Some(2021),
+            vin: None,
+            registration_number: None,
+            provisioning_status: Some(DEFAULT_PROVISIONING_STATUS.to_string()),
+        };
+        let vehicle_b = VehicleMetadata {
+            vehicle_id: "VEH-SEL-B".to_string(),
+            customer_id: customer.customer_id.clone(),
+            vehicle_display_name: "Vehicle B".to_string(),
+            make: Some("Nissan".to_string()),
+            model: Some("Magnite".to_string()),
+            year: Some(2021),
+            vin: None,
+            registration_number: None,
+            provisioning_status: Some(DEFAULT_PROVISIONING_STATUS.to_string()),
+        };
+        let fob_a = KeyFobMetadata {
+            fob_id: "FOB-SEL-A".to_string(),
+            vehicle_id: vehicle_a.vehicle_id.clone(),
+            customer_id: customer.customer_id.clone(),
+            fob_label: "Fob A".to_string(),
+            public_key_fingerprint: None,
+            certificate_status: Some(DEFAULT_CERTIFICATE_STATUS.to_string()),
+            provisioning_status: Some(DEFAULT_PROVISIONING_STATUS.to_string()),
+        };
+        controller.customer_records = vec![customer.clone()];
+        controller.vehicle_records = vec![vehicle_a.clone(), vehicle_b.clone()];
+        controller.key_fob_records = vec![fob_a.clone()];
+        controller.select_customer_context(customer, "CloudSelected");
+        controller.select_vehicle_context(vehicle_a, "CloudSelected");
+        controller.select_key_fob_context(fob_a, "CloudSelected");
+
+        controller
+            .select_vehicle("VEH-SEL-B")
+            .expect("vehicle B should select");
+        let visible = controller.get_visible_provisioning_context();
+
+        assert!(visible.vehicle_selected);
+        assert_eq!(visible.vehicle_id, "VEH-SEL-B");
+        assert!(!visible.key_fob_selected);
+        assert!(controller.selected_key_fob_record().is_none());
+    }
+
+    #[test]
+    fn test_creating_records_auto_selects_visible_context_and_binds_fob_identity() {
+        let mut controller = AppController::new();
+        controller
+            .create_customer_record(
+                "Created Owner",
+                Some("created@example.com".to_string()),
+                None,
+            )
+            .expect("customer should create locally when cloud is unavailable");
+        let customer = controller
+            .selected_customer_record()
+            .expect("created customer selected");
+        controller
+            .create_vehicle_record(
+                customer.customer_id.clone(),
+                "Created Vehicle",
+                Some("Nissan".to_string()),
+                Some("Magnite".to_string()),
+                Some(2021),
+                None,
+                None,
+            )
+            .expect("vehicle should create locally when cloud is unavailable");
+        let vehicle = controller
+            .selected_vehicle_record()
+            .expect("created vehicle selected");
+        controller
+            .create_key_fob_record(vehicle.vehicle_id, "Created Fob")
+            .expect("key fob should create locally when cloud is unavailable");
+
+        let visible = controller.get_visible_provisioning_context();
+        let identity = controller.get_active_key_fob_crypto_identity();
+
+        assert!(visible.customer_selected);
+        assert!(visible.vehicle_selected);
+        assert!(visible.key_fob_selected);
+        assert_ne!(visible.customer_id, DEMO_CUSTOMER_ID);
+        assert_ne!(visible.vehicle_id, DEMO_VEHICLE_ID);
+        assert_ne!(visible.fob_id, DEMO_FOB_ID);
+        assert_eq!(identity.binding_status, "Bound to selected key fob");
+        assert_eq!(identity.fob_id, visible.fob_id);
+    }
+
+    #[test]
+    fn test_provisioning_actions_fail_safely_without_visible_key_fob_selection() {
+        let mut controller = AppController::new();
+
+        let certificate_error = controller
+            .issue_access_certificate_with_cloud_sync()
+            .expect_err("certificate issuance should require selected key fob")
+            .to_string();
+        let sign_error = controller
+            .sign_canonical_payload_with_cloud_sync()
+            .expect_err("signing should require selected key fob")
+            .to_string();
+        let verify_error = controller
+            .verify_authentication_with_cloud_sync()
+            .expect_err("verification should require selected key fob")
+            .to_string();
+
+        assert_eq!(
+            certificate_error,
+            "Select a key fob before issuing certificate/signing/authentication."
+        );
+        assert_eq!(sign_error, certificate_error);
+        assert_eq!(verify_error, certificate_error);
+        for message in [certificate_error, sign_error, verify_error] {
+            assert!(!message.contains("DATABASE_URL"));
+            assert!(!message.contains("AIACS_MASTER_KEY"));
+            assert!(!message.contains("private_key"));
+        }
+    }
+
+    #[test]
     fn test_certificate_and_session_metadata_use_active_context() {
         let mut controller = AppController::new();
         controller.active_customer = CustomerMetadata {
@@ -4248,6 +4692,7 @@ mod tests {
     #[test]
     fn test_provisioning_cloud_sync_skips_when_disabled() {
         let mut controller = AppController::new();
+        bind_custom_context(&mut controller, "CLOUDSKIP");
 
         let connect = controller
             .connect_vehicle_with_cloud_sync()
@@ -4289,8 +4734,9 @@ mod tests {
     #[test]
     fn test_provisioning_no_sync_required_statuses() {
         let mut controller = AppController::new();
+        bind_custom_context(&mut controller, "NOSYNC");
         controller
-            .issue_keyfob_certificate()
+            .issue_access_certificate_with_cloud_sync()
             .expect("certificate should issue");
 
         let challenge = controller
@@ -4318,41 +4764,15 @@ mod tests {
     #[test]
     fn test_provisioning_sync_result_uses_active_context_and_safe_strings() {
         let mut controller = AppController::new();
-        controller.active_customer = CustomerMetadata {
-            customer_id: "CUST-PROVSYNC-TEST".to_string(),
-            owner_name: "Provisioning Sync Owner".to_string(),
-            email: Some("provsync@example.com".to_string()),
-            phone: None,
-        };
-        controller.active_vehicle = VehicleMetadata {
-            vehicle_id: "VEH-PROVSYNC-TEST".to_string(),
-            customer_id: "CUST-PROVSYNC-TEST".to_string(),
-            vehicle_display_name: "Provisioning Sync Vehicle".to_string(),
-            make: Some("Nissan".to_string()),
-            model: Some("Magnite".to_string()),
-            year: Some(2021),
-            vin: None,
-            registration_number: None,
-            provisioning_status: Some(DEFAULT_PROVISIONING_STATUS.to_string()),
-        };
-        controller.active_key_fob = KeyFobMetadata {
-            fob_id: "FOB-PROVSYNC-TEST".to_string(),
-            vehicle_id: "VEH-PROVSYNC-TEST".to_string(),
-            customer_id: "CUST-PROVSYNC-TEST".to_string(),
-            fob_label: "Provisioning Sync Fob".to_string(),
-            public_key_fingerprint: None,
-            certificate_status: Some(DEFAULT_CERTIFICATE_STATUS.to_string()),
-            provisioning_status: Some(DEFAULT_PROVISIONING_STATUS.to_string()),
-        };
-        controller.refresh_session_id_for_active_context();
+        bind_custom_context(&mut controller, "PROVSYNC");
 
         let result = controller
             .issue_access_certificate_with_cloud_sync()
             .expect("certificate should issue locally");
-        assert_eq!(result.active_customer_id, "CUST-PROVSYNC-TEST");
-        assert_eq!(result.active_vehicle_id, "VEH-PROVSYNC-TEST");
-        assert_eq!(result.active_fob_id, "FOB-PROVSYNC-TEST");
-        assert_eq!(result.active_certificate_id, "CERT-FOB-PROVSYNC-TEST");
+        assert_eq!(result.active_customer_id, "CUST-CRYPTO-PROVSYNC");
+        assert_eq!(result.active_vehicle_id, "VEH-CRYPTO-PROVSYNC");
+        assert_eq!(result.active_fob_id, "FOB-CRYPTO-PROVSYNC");
+        assert_eq!(result.active_certificate_id, "CERT-FOB-CRYPTO-PROVSYNC");
         assert_ne!(result.active_session_id, DEMO_SESSION_ID);
 
         let display = result.to_string();

@@ -441,6 +441,8 @@ AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metada
 - Selected/custom key fobs can use their own Ed25519 keypair and CA-issued certificate; the demo `FOB-0001` flow remains available as fallback when no custom fob is selected.
 - Customer, vehicle, and key fob tables store safe metadata only, never private keys or session secret material.
 - Authentication verifies trusted certificate validation, subject binding, Ed25519 signature binding, freshness, and replay protection; production hardware secure element / TPM storage remains out of scope.
+- The GUI dashboard starts with no selected customer, vehicle, or key fob; cloud records load dynamically and the operator must select or create records before provisioning.
+- Demo/default records are not automatically selected in the GUI; they remain only as controlled local fallback/sample data where applicable.
 
 ---
 
