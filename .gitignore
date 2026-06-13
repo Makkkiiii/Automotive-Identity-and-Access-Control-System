@@ -22,3 +22,10 @@
 keys/
 certs/
 logs/
+recovery_artifacts/
+reports/key_recovery_*.json
+**/encrypted_fob_key_local.bin
+**/encrypted_fob_key_cloud.bin
+**/decrypted_fob_key_recovered.json
+**/recovery_evidence.json
+**/encrypted_backup_metadata.json

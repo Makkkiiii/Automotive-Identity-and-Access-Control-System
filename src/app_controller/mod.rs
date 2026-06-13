@@ -40,6 +40,7 @@ const DEFAULT_LOG_DIR: &str = "logs";
 const GUI_LOG_FILE: &str = "aiacs_gui.log";
 const PROTOCOL_TRACE_LOG_FILE: &str = "aiacs_protocol_trace.log";
 const PROVISIONING_REPORT_FILE: &str = "aiacs_provisioning_report.txt";
+const RECOVERY_ARTIFACTS_DIR: &str = "recovery_artifacts";
 const CA_PRIVATE_KEY_PATH: &str = "keys/ca_private.json";
 const CA_PUBLIC_KEY_PATH: &str = "keys/ca_public.json";
 const KEYFOB_PRIVATE_KEY_PATH: &str = "keys/fob_FOB-0001_private.json";
@@ -108,8 +109,13 @@ pub struct EncryptedKeyRecoveryEvidence {
     pub encryption_algorithm: String,
     pub key_purpose: String,
     pub storage_status: String,
+    pub local_encrypted_file: String,
+    pub cloud_encrypted_file: String,
+    pub decrypted_recovery_file: String,
+    pub recovery_evidence_file: String,
     pub recovery_status: String,
     pub fingerprint_match: bool,
+    pub local_cloud_encrypted_backup_match: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -992,6 +998,7 @@ impl AppController {
 
         let identity = self.get_active_key_fob_crypto_identity();
         let certificate = self.get_active_certificate_details();
+        let paths = self.recovery_artifact_paths();
         let backup_configured = parse_master_key_from_env().is_ok();
         let encrypted_blob_status = if !backup_configured {
             "Encrypted key backup is not configured."
@@ -1028,6 +1035,22 @@ impl AppController {
             "Encryption Algorithm: AES-256-GCM".to_string(),
             format!("Key Purpose: {}", KEY_FOB_KEY_PURPOSE),
             format!("Storage Status: {}", ENCRYPTED_KEY_STORAGE_STATUS),
+            format!(
+                "Encrypted Local File: {}",
+                path_for_report(&paths.local_encrypted_file)
+            ),
+            format!(
+                "Encrypted Cloud File: {}",
+                path_for_report(&paths.cloud_encrypted_file)
+            ),
+            format!(
+                "Decrypted Recovery File: {}",
+                path_for_report(&paths.decrypted_recovery_file)
+            ),
+            format!(
+                "Recovery Evidence File: {}",
+                path_for_report(&paths.recovery_evidence_file)
+            ),
             format!("Key Status: {}", identity.binding_status),
             format!(
                 "Public Key Fingerprint: {}",
@@ -1039,6 +1062,13 @@ impl AppController {
             ),
             format!("Recovery Status: {}", recovery_status),
             format!("Fingerprint Match: {}", fingerprint_match),
+            format!(
+                "Local vs Cloud Encrypted Backup Match: {}",
+                self.last_key_fob_recovery_evidence
+                    .as_ref()
+                    .map(|evidence| evidence.local_cloud_encrypted_backup_match.to_string())
+                    .unwrap_or_else(|| "Not tested".to_string())
+            ),
             format!(
                 "Key Fob Private Key Path: {}",
                 self.key_fob_private_key_path()
@@ -2348,6 +2378,7 @@ impl AppController {
         self.key_fob_private_key_material()?;
         let master_key = parse_master_key_from_env().map_err(Self::map_cloud_error)?;
         let record = self.key_fob_encrypted_key_record(&master_key)?;
+        self.save_local_key_fob_encrypted_backup(&record)?;
         let client = self.ensure_schema_initialized()?;
         let message = self
             .run_cloud(async { client.upsert_encrypted_key(&record).await })
@@ -2371,14 +2402,24 @@ impl AppController {
     pub fn recover_key_fob_encrypted_key_backup(
         &mut self,
     ) -> Result<EncryptedKeyRecoveryEvidence, AppControllerError> {
+        self.ensure_visible_key_fob_selected()?;
         let master_key = parse_master_key_from_env().map_err(Self::map_encrypted_recovery_error)?;
         let key_id = self.derive_key_fob_encrypted_key_id();
+        let local_record = self.key_fob_encrypted_key_record(&master_key)?;
+        self.save_local_key_fob_encrypted_backup(&local_record)?;
         let client = self.ensure_schema_initialized()?;
         let record = self
-            .run_cloud(async { client.get_encrypted_key(&key_id).await })
+            .run_cloud(async {
+                client
+                    .get_encrypted_key_by_owner("key_fob", &local_record.owner_id)
+                    .await
+            })
             .map_err(Self::map_cloud_error)?
             .ok_or_else(|| {
-                AppControllerError::Backend("Encrypted key backup: Not stored".to_string())
+                AppControllerError::Backend(format!(
+                    "Encrypted key backup: Not stored for {}",
+                    key_id
+                ))
             })?;
         let evidence = self.recovery_evidence_from_record(&record, &master_key)?;
         self.last_key_fob_recovery_evidence = Some(evidence.clone());
@@ -2399,6 +2440,7 @@ impl AppController {
         let master_key = parse_master_key_from_env().map_err(Self::map_cloud_error)?;
         let ca_record = self.ca_encrypted_key_record(&master_key)?;
         let key_fob_record = self.key_fob_encrypted_key_record(&master_key)?;
+        self.save_local_key_fob_encrypted_backup(&key_fob_record)?;
         let client = self.ensure_schema_initialized()?;
         let message = self
             .run_cloud(async {
@@ -3586,7 +3628,11 @@ impl AppController {
         let Ok(master_key) = parse_master_key_from_env() else {
             return None;
         };
-        self.key_fob_encrypted_key_record(&master_key).ok()
+        self.key_fob_encrypted_key_record(&master_key)
+            .ok()
+            .inspect(|record| {
+                let _ = self.save_local_key_fob_encrypted_backup(record);
+            })
     }
 
     fn recovery_evidence_from_record(
@@ -3594,6 +3640,21 @@ impl AppController {
         record: &EncryptedKeyRecord,
         master_key: &[u8; 32],
     ) -> Result<EncryptedKeyRecoveryEvidence, AppControllerError> {
+        let paths = self.recovery_artifact_paths();
+        self.ensure_recovery_artifact_dir()?;
+        fs::write(
+            &paths.cloud_encrypted_file,
+            &record.encrypted_key.encrypted_key_blob,
+        )
+        .map_err(|error| AppControllerError::Backend(error.to_string()))?;
+        if !paths.local_encrypted_file.exists() {
+            self.save_local_key_fob_encrypted_backup(record)?;
+        }
+        let local_bytes = fs::read(&paths.local_encrypted_file)
+            .map_err(|error| AppControllerError::Backend(error.to_string()))?;
+        let cloud_bytes = fs::read(&paths.cloud_encrypted_file)
+            .map_err(|error| AppControllerError::Backend(error.to_string()))?;
+        let local_cloud_encrypted_backup_match = local_bytes == cloud_bytes;
         let decrypted_private_key =
             decrypt_private_key_from_cloud(&record.encrypted_key, master_key)
                 .map_err(Self::map_encrypted_recovery_error)?;
@@ -3611,7 +3672,7 @@ impl AppController {
             .unwrap_or_else(|| "Unavailable".to_string());
         let fingerprint_match = original_public_key_fingerprint == recovered_public_key_fingerprint;
 
-        Ok(EncryptedKeyRecoveryEvidence {
+        let evidence = EncryptedKeyRecoveryEvidence {
             key_id: record.key_id.clone(),
             owner_type: record.owner_type.clone(),
             owner_id: record.owner_id.clone(),
@@ -3620,13 +3681,21 @@ impl AppController {
             encryption_algorithm: record.encrypted_key.encryption_algorithm.clone(),
             key_purpose: record.key_purpose.clone(),
             storage_status: record.storage_status.clone(),
+            local_encrypted_file: path_for_report(&paths.local_encrypted_file),
+            cloud_encrypted_file: path_for_report(&paths.cloud_encrypted_file),
+            decrypted_recovery_file: path_for_report(&paths.decrypted_recovery_file),
+            recovery_evidence_file: path_for_report(&paths.recovery_evidence_file),
             recovery_status: if fingerprint_match {
                 "Success".to_string()
             } else {
                 "Fingerprint mismatch".to_string()
             },
             fingerprint_match,
-        })
+            local_cloud_encrypted_backup_match,
+        };
+        self.save_decrypted_key_recovery_file(&paths, record, &decrypted_private_key)?;
+        self.save_recovery_evidence_file(&paths, &evidence)?;
+        Ok(evidence)
     }
 
     fn derive_key_fob_encrypted_key_id(&self) -> String {
@@ -3659,6 +3728,95 @@ impl AppController {
         } else {
             format!("certs/fob_{}.json", self.active_key_fob.fob_id)
         }
+    }
+
+    fn recovery_artifact_paths(&self) -> RecoveryArtifactPaths {
+        let fob_id = safe_path_component(&self.active_key_fob.fob_id);
+        let dir = PathBuf::from(RECOVERY_ARTIFACTS_DIR).join(fob_id);
+        RecoveryArtifactPaths {
+            dir: dir.clone(),
+            local_encrypted_file: dir.join("encrypted_fob_key_local.bin"),
+            cloud_encrypted_file: dir.join("encrypted_fob_key_cloud.bin"),
+            metadata_file: dir.join("encrypted_backup_metadata.json"),
+            decrypted_recovery_file: dir.join("decrypted_fob_key_recovered.json"),
+            recovery_evidence_file: dir.join("recovery_evidence.json"),
+        }
+    }
+
+    fn ensure_recovery_artifact_dir(&self) -> Result<RecoveryArtifactPaths, AppControllerError> {
+        let paths = self.recovery_artifact_paths();
+        fs::create_dir_all(&paths.dir)
+            .map_err(|error| AppControllerError::Backend(error.to_string()))?;
+        Ok(paths)
+    }
+
+    fn save_local_key_fob_encrypted_backup(
+        &self,
+        record: &EncryptedKeyRecord,
+    ) -> Result<RecoveryArtifactPaths, AppControllerError> {
+        let paths = self.ensure_recovery_artifact_dir()?;
+        fs::write(
+            &paths.local_encrypted_file,
+            &record.encrypted_key.encrypted_key_blob,
+        )
+        .map_err(|error| AppControllerError::Backend(error.to_string()))?;
+        let metadata = serde_json::json!({
+            "fob_id": self.active_key_fob.fob_id,
+            "key_id": record.key_id,
+            "owner_type": record.owner_type,
+            "owner_id": record.owner_id,
+            "public_key_fingerprint": record.public_key_fingerprint,
+            "encryption_algorithm": record.encrypted_key.encryption_algorithm,
+            "key_purpose": record.key_purpose,
+            "storage_status": record.storage_status,
+            "created_at_nepal_time": format_nepal_time(Utc::now()),
+            "local_encrypted_file": path_for_report(&paths.local_encrypted_file),
+            "cloud_encrypted_file": path_for_report(&paths.cloud_encrypted_file)
+        });
+        write_pretty_json(&paths.metadata_file, &metadata)?;
+        Ok(paths)
+    }
+
+    fn save_decrypted_key_recovery_file(
+        &self,
+        paths: &RecoveryArtifactPaths,
+        record: &EncryptedKeyRecord,
+        recovered_private_key: &[u8],
+    ) -> Result<(), AppControllerError> {
+        let recovered = serde_json::json!({
+            "warning": "SENSITIVE RECOVERED KEY MATERIAL - DO NOT SHARE OR COMMIT",
+            "fob_id": self.active_key_fob.fob_id,
+            "key_id": record.key_id,
+            "recovered_from": "AES-256-GCM encrypted cloud/local backup",
+            "created_at_nepal_time": format_nepal_time(Utc::now()),
+            "private_key_material": general_purpose::STANDARD.encode(recovered_private_key)
+        });
+        write_pretty_json(&paths.decrypted_recovery_file, &recovered)
+    }
+
+    fn save_recovery_evidence_file(
+        &self,
+        paths: &RecoveryArtifactPaths,
+        evidence: &EncryptedKeyRecoveryEvidence,
+    ) -> Result<(), AppControllerError> {
+        let evidence_json = serde_json::json!({
+            "fob_id": self.active_key_fob.fob_id,
+            "key_id": evidence.key_id,
+            "owner_type": evidence.owner_type,
+            "owner_id": evidence.owner_id,
+            "encryption_algorithm": evidence.encryption_algorithm,
+            "key_purpose": evidence.key_purpose,
+            "stored_public_key_fingerprint": evidence.public_key_fingerprint,
+            "recovered_public_key_fingerprint": evidence.recovered_public_key_fingerprint,
+            "fingerprint_match": evidence.fingerprint_match,
+            "local_cloud_encrypted_backup_match": evidence.local_cloud_encrypted_backup_match,
+            "recovery_status": evidence.recovery_status.to_lowercase(),
+            "decryption_location": "local_app_only",
+            "master_key": "[REDACTED]",
+            "private_key_material_in_report": "[REDACTED]",
+            "created_at_nepal_time": format_nepal_time(Utc::now())
+        });
+        write_pretty_json(&paths.recovery_evidence_file, &evidence_json)
     }
 
     fn run_cloud<F: Future>(&self, future: F) -> F::Output {
@@ -4338,6 +4496,41 @@ fn upsert_local_key_fob(records: &mut Vec<KeyFobMetadata>, record: KeyFobMetadat
     } else {
         records.push(record);
     }
+}
+
+struct RecoveryArtifactPaths {
+    dir: PathBuf,
+    local_encrypted_file: PathBuf,
+    cloud_encrypted_file: PathBuf,
+    metadata_file: PathBuf,
+    decrypted_recovery_file: PathBuf,
+    recovery_evidence_file: PathBuf,
+}
+
+fn safe_path_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn path_for_report(path: &std::path::Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn write_pretty_json(
+    path: &std::path::Path,
+    value: &serde_json::Value,
+) -> Result<(), AppControllerError> {
+    let json = serde_json::to_string_pretty(value)
+        .map_err(|error| AppControllerError::Backend(error.to_string()))?;
+    fs::write(path, json).map_err(|error| AppControllerError::Backend(error.to_string()))
 }
 
 fn hex_preview(bytes: &[u8], take: usize) -> String {
@@ -7006,6 +7199,115 @@ mod tests {
         assert!(!message.contains("private_key"));
         assert!(!message.contains("encrypted_key_blob"));
         assert!(!message.contains("encryption_nonce"));
+    }
+
+    #[test]
+    fn test_key_recovery_artifact_folder_files_are_created_only_on_recovery() {
+        let mut controller = AppController::new();
+        let master_key = [41u8; 32];
+        let suffix = format!(
+            "ART{}",
+            &Uuid::new_v4().simple().to_string()[..8].to_uppercase()
+        );
+        bind_custom_context(&mut controller, &suffix);
+        controller
+            .issue_keyfob_certificate()
+            .expect("certificate should issue");
+        let record = controller
+            .key_fob_encrypted_key_record(&master_key)
+            .expect("encrypted key record should build");
+
+        let paths = controller
+            .save_local_key_fob_encrypted_backup(&record)
+            .expect("local encrypted backup should save");
+        assert!(paths.dir.exists());
+        assert!(paths.local_encrypted_file.exists());
+        assert!(paths.metadata_file.exists());
+        assert!(!paths.cloud_encrypted_file.exists());
+        assert!(!paths.recovery_evidence_file.exists());
+        assert!(!paths.decrypted_recovery_file.exists());
+
+        let evidence = controller
+            .recovery_evidence_from_record(&record, &master_key)
+            .expect("recovery should create all artifact files");
+        assert!(paths.cloud_encrypted_file.exists());
+        assert!(paths.recovery_evidence_file.exists());
+        assert!(paths.decrypted_recovery_file.exists());
+        assert!(evidence.fingerprint_match);
+        assert!(evidence.local_cloud_encrypted_backup_match);
+    }
+
+    #[test]
+    fn test_recovery_evidence_file_is_report_safe() {
+        let mut controller = AppController::new();
+        let master_key = [43u8; 32];
+        let suffix = format!(
+            "SAFE{}",
+            &Uuid::new_v4().simple().to_string()[..8].to_uppercase()
+        );
+        bind_custom_context(&mut controller, &suffix);
+        controller
+            .issue_keyfob_certificate()
+            .expect("certificate should issue");
+        let private_key = controller
+            .keyfob
+            .as_ref()
+            .and_then(|fob| fob.private_key.clone())
+            .expect("private key should exist");
+        let private_key_b64 = general_purpose::STANDARD.encode(&private_key);
+        let record = controller
+            .key_fob_encrypted_key_record(&master_key)
+            .expect("encrypted key record should build");
+
+        let evidence = controller
+            .recovery_evidence_from_record(&record, &master_key)
+            .expect("recovery should create evidence");
+        let evidence_json = fs::read_to_string(evidence.recovery_evidence_file)
+            .expect("recovery evidence should be readable");
+        let decrypted_json = fs::read_to_string(evidence.decrypted_recovery_file)
+            .expect("decrypted recovery file should be readable");
+
+        assert!(evidence_json.contains("stored_public_key_fingerprint"));
+        assert!(evidence_json.contains("recovered_public_key_fingerprint"));
+        assert!(evidence_json.contains("\"fingerprint_match\": true"));
+        assert!(evidence_json.contains("\"local_cloud_encrypted_backup_match\": true"));
+        assert!(evidence_json.contains("\"master_key\": \"[REDACTED]\""));
+        assert!(evidence_json.contains("\"private_key_material_in_report\": \"[REDACTED]\""));
+        assert!(!evidence_json.contains(&private_key_b64));
+        assert!(!evidence_json.contains("AIACS_MASTER_KEY"));
+        assert!(!evidence_json.contains("DATABASE_URL"));
+        assert!(decrypted_json.contains("SENSITIVE RECOVERED KEY MATERIAL"));
+        assert!(decrypted_json.contains("private_key_material"));
+    }
+
+    #[test]
+    fn test_missing_master_key_maps_to_recovery_not_configured_message() {
+        let message =
+            AppController::map_encrypted_recovery_error(CloudStorageError::MissingMasterKey)
+                .to_string();
+
+        assert_eq!(message, "Encrypted key backup is not configured.");
+        assert!(!message.contains("AIACS_MASTER_KEY"));
+        assert!(!message.contains("DATABASE_URL"));
+    }
+
+    #[test]
+    fn test_gitignore_blocks_recovery_artifacts() {
+        let gitignore = fs::read_to_string(".gitignore").expect(".gitignore should be readable");
+        for expected in [
+            "recovery_artifacts/",
+            "reports/key_recovery_*.json",
+            "**/encrypted_fob_key_local.bin",
+            "**/encrypted_fob_key_cloud.bin",
+            "**/decrypted_fob_key_recovered.json",
+            "**/recovery_evidence.json",
+            "**/encrypted_backup_metadata.json",
+        ] {
+            assert!(
+                gitignore.contains(expected),
+                "missing ignore rule {expected}"
+            );
+        }
     }
 
     #[test]

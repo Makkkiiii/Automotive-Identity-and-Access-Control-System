@@ -180,6 +180,7 @@ enum CloudOperation {
     ProvisioningActivateSession,
     ProvisioningFinalize,
     ProvisioningDiagnostics,
+    CredentialRecoveryTest,
 }
 
 #[derive(Debug, Clone)]
@@ -272,6 +273,7 @@ enum Message {
     ClearLog,
     ExportLogs,
     ExportProvisioningReport,
+    TestDecryptSelectedFobBackup,
 }
 
 impl Application for AIACSApp {
@@ -705,6 +707,12 @@ impl Application for AIACSApp {
                 self.begin_cloud_operation("Finalizing provisioning and exporting report...");
                 return self.run_cloud_operation(CloudOperation::ProvisioningFinalize);
             }
+            Message::TestDecryptSelectedFobBackup => {
+                self.cloud_sync_encrypted_key_status =
+                    "Testing encrypted key recovery...".to_string();
+                self.begin_cloud_operation("Testing selected fob encrypted backup recovery...");
+                return self.run_cloud_operation(CloudOperation::CredentialRecoveryTest);
+            }
         }
 
         Command::none()
@@ -981,6 +989,15 @@ impl AIACSApp {
             CloudOperation::ProvisioningDiagnostics => {
                 self.record_provisioning_cloud_result("Diagnostic Results", "[INFO]", message);
             }
+            CloudOperation::CredentialRecoveryTest => {
+                self.cloud_sync_encrypted_key_status = "Recovery tested".to_string();
+                self.selected_detail = message.clone();
+                self.push_log("[INFO]", message);
+                self.push_log(
+                    "[WARN]",
+                    "Decrypted private key file is sensitive. Do not share this file.",
+                );
+            }
         }
     }
 
@@ -1118,6 +1135,11 @@ impl AIACSApp {
                     "Diagnostics launch",
                     error,
                 );
+            }
+            CloudOperation::CredentialRecoveryTest => {
+                self.cloud_sync_encrypted_key_status = "Recovery failed".to_string();
+                self.selected_detail = format!("Encrypted key recovery failed: {}", error);
+                self.push_log("[ERROR]", self.selected_detail.clone());
             }
         }
     }
@@ -2646,6 +2668,16 @@ impl AIACSApp {
                     .size(11)
                     .font(Font::MONOSPACE)
                     .style(theme::Text::Color(SECONDARY_TEXT)),
+                compact_button(
+                    "lock",
+                    "Test / Decrypt Selected Fob Backup",
+                    Message::TestDecryptSelectedFobBackup,
+                    ButtonKind::Nav
+                ),
+                text("Decrypted private key file is sensitive. Do not share this file.")
+                    .size(11)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(WARNING_YELLOW)),
             ]
             .spacing(8)
             .width(Length::Fill),
@@ -3749,6 +3781,19 @@ fn perform_cloud_operation(
         CloudOperation::ProvisioningDiagnostics => controller
             .run_diagnostics_with_cloud_sync()
             .map(|result| result.to_string()),
+        CloudOperation::CredentialRecoveryTest => controller
+            .recover_key_fob_encrypted_key_backup()
+            .map(|evidence| {
+                format!(
+                    "Recovery Status: {}; Stored Public Key Fingerprint: {}; Recovered Public Key Fingerprint: {}; Fingerprint Match: {}; Local vs Cloud Encrypted Backup Match: {}; Evidence File: {}; Decrypted private key file is sensitive. Do not share this file.",
+                    evidence.recovery_status,
+                    evidence.public_key_fingerprint,
+                    evidence.recovered_public_key_fingerprint,
+                    evidence.fingerprint_match,
+                    evidence.local_cloud_encrypted_backup_match,
+                    evidence.recovery_evidence_file
+                )
+            }),
     }
     .map_err(|error| error.to_string());
 

@@ -789,6 +789,14 @@ FROM encrypted_keys
 WHERE key_id = $1;
 "#;
 
+const GET_ENCRYPTED_KEY_BY_OWNER_SQL: &str = r#"
+SELECT key_id, owner_type, owner_id, public_key_fingerprint, encrypted_key_blob, encryption_nonce, encryption_algorithm, key_purpose, storage_status
+FROM encrypted_keys
+WHERE owner_type = $1 AND owner_id = $2
+ORDER BY created_at DESC, key_id
+LIMIT 1;
+"#;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CustomerMetadata {
     pub customer_id: String,
@@ -932,6 +940,18 @@ pub struct EncryptedKeyRecord {
     pub encrypted_key: EncryptedKeyBlob,
 }
 
+type EncryptedKeyRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    Vec<u8>,
+    Vec<u8>,
+    String,
+    String,
+    String,
+);
+
 impl fmt::Debug for EncryptedKeyRecord {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EncryptedKeyRecord")
@@ -1062,6 +1082,22 @@ fn certificate_metadata_from_row(row: CertificateMetadataRow) -> CertificateMeta
         certificate_status: row
             .11
             .unwrap_or_else(|| DEFAULT_CERTIFICATE_STATUS.to_string()),
+    }
+}
+
+fn encrypted_key_record_from_row(row: EncryptedKeyRow) -> EncryptedKeyRecord {
+    EncryptedKeyRecord {
+        key_id: row.0,
+        owner_type: row.1,
+        owner_id: row.2,
+        public_key_fingerprint: row.3,
+        encrypted_key: EncryptedKeyBlob {
+            encrypted_key_blob: row.4,
+            encryption_nonce: row.5,
+            encryption_algorithm: row.6,
+        },
+        key_purpose: row.7,
+        storage_status: row.8,
     }
 }
 
@@ -1774,50 +1810,28 @@ impl CloudStorageClient {
         &self,
         key_id: &str,
     ) -> Result<Option<EncryptedKeyRecord>, CloudStorageError> {
-        let row = sqlx::query_as::<
-            _,
-            (
-                String,
-                String,
-                String,
-                Option<String>,
-                Vec<u8>,
-                Vec<u8>,
-                String,
-                String,
-                String,
-            ),
-        >(GET_ENCRYPTED_KEY_SQL)
-        .bind(key_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|_| CloudStorageError::EncryptedKeySyncFailed)?;
+        let row = sqlx::query_as::<_, EncryptedKeyRow>(GET_ENCRYPTED_KEY_SQL)
+            .bind(key_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|_| CloudStorageError::EncryptedKeySyncFailed)?;
 
-        Ok(row.map(
-            |(
-                key_id,
-                owner_type,
-                owner_id,
-                public_key_fingerprint,
-                encrypted_key_blob,
-                encryption_nonce,
-                encryption_algorithm,
-                key_purpose,
-                storage_status,
-            )| EncryptedKeyRecord {
-                key_id,
-                owner_type,
-                owner_id,
-                public_key_fingerprint,
-                key_purpose,
-                storage_status,
-                encrypted_key: EncryptedKeyBlob {
-                    encrypted_key_blob,
-                    encryption_nonce,
-                    encryption_algorithm,
-                },
-            },
-        ))
+        Ok(row.map(encrypted_key_record_from_row))
+    }
+
+    pub async fn get_encrypted_key_by_owner(
+        &self,
+        owner_type: &str,
+        owner_id: &str,
+    ) -> Result<Option<EncryptedKeyRecord>, CloudStorageError> {
+        let row = sqlx::query_as::<_, EncryptedKeyRow>(GET_ENCRYPTED_KEY_BY_OWNER_SQL)
+            .bind(owner_type)
+            .bind(owner_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|_| CloudStorageError::EncryptedKeySyncFailed)?;
+
+        Ok(row.map(encrypted_key_record_from_row))
     }
 
     pub async fn sync_demo_encrypted_key_blobs(
@@ -2049,6 +2063,11 @@ fn encrypted_key_sync_sql() -> &'static str {
 #[cfg(test)]
 fn encrypted_key_lookup_sql() -> &'static str {
     GET_ENCRYPTED_KEY_SQL
+}
+
+#[cfg(test)]
+fn encrypted_key_owner_lookup_sql() -> &'static str {
+    GET_ENCRYPTED_KEY_BY_OWNER_SQL
 }
 
 #[cfg(test)]
@@ -3124,6 +3143,15 @@ mod tests {
         assert!(sql.contains("owner_type"));
         assert!(sql.contains("owner_id"));
         assert!(sql.contains("public_key_fingerprint"));
+    }
+
+    #[test]
+    fn encrypted_key_owner_lookup_sql_uses_owner_type_and_owner_id() {
+        let sql = encrypted_key_owner_lookup_sql();
+
+        assert!(sql.contains("FROM encrypted_keys"));
+        assert!(sql.contains("WHERE owner_type = $1 AND owner_id = $2"));
+        assert!(sql.contains("LIMIT 1"));
     }
 
     #[test]

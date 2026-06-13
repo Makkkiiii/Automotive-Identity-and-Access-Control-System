@@ -448,6 +448,10 @@ AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metada
 - Provisioning sessions sync after secure session activation and finalization, key fob cloud statuses track provisioning progress with machine-readable values, and user-facing timestamps are displayed in Nepal time / NPT while database timestamps remain timezone-safe.
 - Phase 9.6.3 fixes first-click Verify Authentication readiness, syncs `vehicles.provisioning_status` through the workflow, creates selected key fob encrypted backup rows, and keeps encrypted key recovery local through `AIACS_MASTER_KEY` with fingerprint-match evidence only.
 - Cloud encrypted key storage keeps encrypted blobs and safe metadata only; plaintext private keys, session keys, shared secrets, HKDF output, AES keys, raw nonces, raw ciphertext, and database/master secrets are never displayed, logged, or uploaded.
+- Phase 9.6.4 adds selected key fob recovery artifacts under `recovery_artifacts/<fob_id>/`: local encrypted backup, cloud encrypted blob copy, safe encrypted-backup metadata, a report-safe recovery evidence JSON, and an explicitly sensitive decrypted recovered key file created only by the recovery action.
+- Credential Storage can test/decrypt the selected fob backup locally with `AIACS_MASTER_KEY`; Neon stores encrypted blobs only and cannot decrypt the backup independently.
+- Recovery evidence is report-safe because it uses stored/recovered public key fingerprints, local-vs-cloud encrypted backup comparison, and redacted secret fields. `decrypted_fob_key_recovered.json` may contain recovered private key material and must not be shared or committed.
+- Recovery artifacts are local-only and ignored by Git by default, including `recovery_artifacts/`, encrypted backup `.bin` files, decrypted recovered key files, and report artifact JSON files.
 - Demo/default records are not automatically selected in the GUI; they remain only as controlled local fallback/sample data where applicable.
 
 ---
