@@ -2394,17 +2394,17 @@ impl AIACSApp {
                 })
         };
         let progress_steps = if diagnostics_context_is_ready(&diagnostic_context.readiness) {
-            diagnostic_context
-                .progress_steps
-                .iter()
-                .fold(column![].spacing(5), |column, step| {
+            diagnostic_context.progress_steps.iter().enumerate().fold(
+                column![].spacing(4),
+                |column, (index, step)| {
                     column.push(
-                        text(step.clone())
+                        text(format_diagnostic_execution_step(index, step))
                             .size(11)
                             .font(Font::MONOSPACE)
                             .style(theme::Text::Color(SECONDARY_TEXT)),
                     )
-                })
+                },
+            )
         } else {
             column![
                 text("Diagnostics Not Ready")
@@ -2460,6 +2460,65 @@ impl AIACSApp {
             .spacing(7)
         };
         let diagnostics_ready = diagnostics_context_is_ready(&diagnostic_context.readiness);
+        let top_diagnostic_panel_height = Length::Fixed(310.0);
+        let trace_status = if diagnostics_ready {
+            self.selected_detail.clone()
+        } else {
+            format!(
+                "Diagnostics not ready: {}",
+                diagnostic_context.readiness_reason.clone()
+            )
+        };
+        let execution_trace_panel = container(
+            column![
+                text("Diagnostic Execution Trace")
+                    .size(14)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(ACCENT_BLUE)),
+                text("Status")
+                    .size(11)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(SECONDARY_TEXT)),
+                text(trace_status)
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(PRIMARY_TEXT)),
+                text("Execution Steps")
+                    .size(11)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(SECONDARY_TEXT)),
+                progress_steps,
+                self.view_summary_row(
+                    "certificate",
+                    "Evidence Directory",
+                    diagnostic_context.evidence_directory.clone()
+                ),
+            ]
+            .spacing(5),
+        )
+        .width(Length::FillPortion(1))
+        .height(top_diagnostic_panel_height)
+        .padding(10)
+        .style(container_style(PanelKind::Detail));
+        let latest_result_container = container(latest_result_panel)
+            .width(Length::FillPortion(1))
+            .height(top_diagnostic_panel_height)
+            .padding(10)
+            .style(container_style(PanelKind::Detail));
+        let results_history_panel = container(
+            column![
+                text("Diagnostic Results History")
+                    .size(14)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(ACCENT_PINK)),
+                scrollable(result_cards).height(Length::Fill),
+            ]
+            .spacing(8),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(10)
+        .style(container_style(PanelKind::Panel));
 
         container(
             column![
@@ -2549,53 +2608,10 @@ impl AIACSApp {
                     .spacing(10)
                     .width(Length::Fixed(560.0)),
                     column![
-                        container(
-                            column![
-                                text("What Is Happening")
-                                    .size(14)
-                                    .font(Font::MONOSPACE)
-                                    .style(theme::Text::Color(ACCENT_BLUE)),
-                                text(if diagnostics_ready {
-                                    self.selected_detail.clone()
-                                } else {
-                                    format!(
-                                        "Diagnostics not ready: {}",
-                                        diagnostic_context.readiness_reason
-                                    )
-                                })
-                                .size(12)
-                                .font(Font::MONOSPACE)
-                                .style(theme::Text::Color(PRIMARY_TEXT)),
-                                progress_steps,
-                                self.view_summary_row(
-                                    "certificate",
-                                    "Evidence Directory",
-                                    diagnostic_context.evidence_directory.clone()
-                                ),
-                            ]
-                            .spacing(7),
-                        )
-                        .width(Length::Fill)
-                        .padding(12)
-                        .style(container_style(PanelKind::Detail)),
-                        container(latest_result_panel)
-                            .width(Length::Fill)
-                            .padding(12)
-                            .style(container_style(PanelKind::Detail)),
-                        container(
-                            column![
-                                text("Diagnostic Results")
-                                    .size(14)
-                                    .font(Font::MONOSPACE)
-                                    .style(theme::Text::Color(ACCENT_PINK)),
-                                scrollable(result_cards).height(Length::Fill),
-                            ]
-                            .spacing(8),
-                        )
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .padding(10)
-                        .style(container_style(PanelKind::Panel)),
+                        row![execution_trace_panel, latest_result_container]
+                            .spacing(10)
+                            .width(Length::Fill),
+                        results_history_panel,
                     ]
                     .spacing(10)
                     .width(Length::Fill),
@@ -3885,6 +3901,14 @@ fn diagnostic_label(attack_key: &str) -> &'static str {
     }
 }
 
+fn format_diagnostic_execution_step(index: usize, step: &str) -> String {
+    let step_number = index + 1;
+    let redundant_prefix = format!("Step {}: ", step_number);
+    let step_text = step.strip_prefix(&redundant_prefix).unwrap_or(step);
+
+    format!("{}. {}", step_number, step_text)
+}
+
 fn perform_cloud_operation(
     mut controller: AppController,
     operation: CloudOperation,
@@ -4782,8 +4806,10 @@ mod tests {
         assert!(production_source.contains("PrepareDiagnostics"));
         assert!(production_source.contains("controller.prepare_diagnostics_context()"));
         assert!(production_source.contains("diagnostic_context_summary()"));
-        assert!(production_source.contains("What Is Happening"));
+        assert!(production_source.contains("Diagnostic Execution Trace"));
         assert!(production_source.contains("Latest Result"));
+        assert!(production_source.contains("Diagnostic Results History"));
+        assert!(!production_source.contains("What Is Happening"));
 
         for forbidden in [
             "AdversarialValidationEngine",
