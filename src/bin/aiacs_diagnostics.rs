@@ -1,5 +1,5 @@
 use aiacs::app_controller::AppController;
-use chrono::Local;
+use chrono::{FixedOffset, Utc};
 use iced::alignment;
 use iced::theme;
 use iced::widget::{button, column, container, row, scrollable, text};
@@ -417,14 +417,28 @@ fn log_tag_color(tag: &str) -> Color {
 }
 
 fn log_parts(entry: &str) -> (&str, &str, &str) {
-    let mut parts = entry.splitn(3, ' ');
-    let timestamp = parts.next().unwrap_or("");
+    let mut parts = entry.splitn(5, ' ');
+    let date = parts.next().unwrap_or("");
+    let time = parts.next().unwrap_or("");
+    let zone = parts.next().unwrap_or("");
     let tag = parts.next().unwrap_or("");
     let message = parts.next().unwrap_or("");
+    let timestamp = entry
+        .get(..date.len() + time.len() + zone.len() + 2)
+        .unwrap_or("");
 
     (timestamp, tag, message)
 }
 
 fn timestamped(tag: &str, message: &str) -> String {
-    format!("{} {} {}", Local::now().format("%H:%M:%S"), tag, message)
+    let nepal_offset = FixedOffset::east_opt(5 * 3600 + 45 * 60)
+        .expect("Nepal offset should be a valid fixed offset");
+    format!(
+        "{} {} {}",
+        Utc::now()
+            .with_timezone(&nepal_offset)
+            .format("%Y-%m-%d %H:%M:%S NPT"),
+        tag,
+        message
+    )
 }

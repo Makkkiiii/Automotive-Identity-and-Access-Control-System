@@ -367,6 +367,10 @@ Certificate validation is strict: only `Ok(true)` from CA validation is accepted
 
 Phase 10 adds an in-app **Diagnostics / Attack Validation** dashboard. The dashboard runs selected-context checks against the active customer, vehicle, key fob, certificate, signed proof, secure session, and encrypted key backup where applicable.
 
+Phase 10.1 hydrates the Diagnostics context from selected cloud records. Existing Neon certificate metadata, finalized provisioning sessions, and encrypted key backup metadata can be loaded for the selected customer, vehicle, and key fob, so diagnostics do not require repeating the full provisioning workflow in the same runtime session. The Diagnostics page also includes a progress panel, latest-result panel, local evidence paths, and safe diagnostic cloud metadata sync only.
+
+Phase 10.1.2 fixes `diagnostic_results` cloud sync for legacy Neon schemas by safely migrating selected-context fields, legacy compatibility fields, truthful `cloud_sync_status`, and Nepal-time display columns. Diagnostics rows now store selected customer, vehicle, key fob, certificate, and session metadata while keeping `TIMESTAMPTZ` as the canonical database time. GUI, logs, reports, and evidence use `YYYY-MM-DD HH:MM:SS NPT` display strings; secrets remain redacted and are not stored or displayed.
+
 Diagnostics can also be run through the separate binary:
 
 ```bash

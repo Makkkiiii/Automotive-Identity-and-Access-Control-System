@@ -3,7 +3,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use base64::{engine::general_purpose, Engine as _};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, FixedOffset, Utc};
 use rand::{rngs::OsRng, RngCore};
 use serde_json::Value;
 use sqlx::{postgres::PgPoolOptions, PgPool};
@@ -18,7 +18,7 @@ const DATABASE_URL_ENV: &str = "DATABASE_URL";
 const MASTER_KEY_ENV: &str = "AIACS_MASTER_KEY";
 const HEALTHY_MESSAGE: &str = "Cloud database connection healthy";
 const SCHEMA_INITIALIZED_MESSAGE: &str = "Cloud database schema initialized";
-const CURRENT_SCHEMA_VERSION: &str = "9.6.3";
+const CURRENT_SCHEMA_VERSION: &str = "10.1.2";
 const CUSTOMER_SYNCED_MESSAGE: &str = "Customer metadata synced";
 const VEHICLE_SYNCED_MESSAGE: &str = "Vehicle metadata synced";
 const KEY_FOB_SYNCED_MESSAGE: &str = "Key fob metadata synced";
@@ -90,6 +90,14 @@ pub const CA_KEY_PURPOSE: &str = "certificate_authority_signing";
 pub const KEY_FOB_KEY_PURPOSE: &str = "key_fob_authentication_signing";
 
 static ENV_FILES_LOADED: AtomicBool = AtomicBool::new(false);
+
+pub fn format_nepal_time_string(timestamp: DateTime<Utc>) -> String {
+    let offset = FixedOffset::east_opt(5 * 3600 + 45 * 60).expect("valid NPT offset");
+    timestamp
+        .with_timezone(&offset)
+        .format("%Y-%m-%d %H:%M:%S NPT")
+        .to_string()
+}
 
 const SCHEMA_VERSION_TABLE_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS aiacs_schema_migrations (
@@ -468,6 +476,10 @@ ADD COLUMN IF NOT EXISTS diagnostic_id TEXT;
 "#,
     r#"
 ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS attack_type TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
 ADD COLUMN IF NOT EXISTS attack_name TEXT;
 "#,
     r#"
@@ -480,11 +492,23 @@ ADD COLUMN IF NOT EXISTS actual_outcome TEXT;
 "#,
     r#"
 ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS defense_status TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
 ADD COLUMN IF NOT EXISTS result_status TEXT;
 "#,
     r#"
 ALTER TABLE diagnostic_results
 ADD COLUMN IF NOT EXISTS denial_reason TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS failure_point TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS explanation TEXT;
 "#,
     r#"
 ALTER TABLE diagnostic_results
@@ -524,7 +548,15 @@ ADD COLUMN IF NOT EXISTS baseline_result TEXT;
 "#,
     r#"
 ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS expected_result TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
 ADD COLUMN IF NOT EXISTS protected_result TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS actual_result TEXT;
 "#,
     r#"
 ALTER TABLE diagnostic_results
@@ -533,6 +565,10 @@ ADD COLUMN IF NOT EXISTS security_control_triggered TEXT;
     r#"
 ALTER TABLE diagnostic_results
 ADD COLUMN IF NOT EXISTS access_decision TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS diagnostic_status TEXT;
 "#,
     r#"
 ALTER TABLE diagnostic_results
@@ -545,6 +581,18 @@ ADD COLUMN IF NOT EXISTS evidence_summary TEXT;
     r#"
 ALTER TABLE diagnostic_results
 ADD COLUMN IF NOT EXISTS evidence_file_path TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS cloud_sync_status TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS created_at_nepal_time TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS updated_at_nepal_time TEXT;
 "#,
 ];
 
@@ -789,46 +837,66 @@ const UPSERT_DIAGNOSTIC_RESULT_SQL: &str = r#"
 INSERT INTO diagnostic_results (
     diagnostic_id,
     attack_name,
+    attack_type,
     customer_id,
     vehicle_id,
     fob_id,
     certificate_id,
     session_id,
+    expected_result,
     expected_outcome,
     baseline_result,
     protected_result,
+    actual_result,
     actual_outcome,
     security_control_triggered,
+    failure_point,
     access_decision,
+    diagnostic_status,
+    defense_status,
     result_status,
     pass_fail,
     denial_reason,
+    explanation,
     evidence_summary,
     evidence_file_path,
+    cloud_sync_status,
     executed_at,
     created_at,
-    updated_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW(), NOW())
+    updated_at,
+    created_at_nepal_time,
+    updated_at_nepal_time
+) VALUES ($1, $2, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, $11, $11, $12, $12, $13, $14, $14, $15, $15, $16, $17, $17, $18, $19, $20, $21, $22, $23, $24)
 ON CONFLICT (diagnostic_id) DO UPDATE SET
     attack_name = EXCLUDED.attack_name,
+    attack_type = EXCLUDED.attack_type,
     customer_id = EXCLUDED.customer_id,
     vehicle_id = EXCLUDED.vehicle_id,
     fob_id = EXCLUDED.fob_id,
     certificate_id = EXCLUDED.certificate_id,
     session_id = EXCLUDED.session_id,
+    expected_result = EXCLUDED.expected_result,
     expected_outcome = EXCLUDED.expected_outcome,
     baseline_result = EXCLUDED.baseline_result,
     protected_result = EXCLUDED.protected_result,
+    actual_result = EXCLUDED.actual_result,
     actual_outcome = EXCLUDED.actual_outcome,
     security_control_triggered = EXCLUDED.security_control_triggered,
+    failure_point = EXCLUDED.failure_point,
     access_decision = EXCLUDED.access_decision,
+    diagnostic_status = EXCLUDED.diagnostic_status,
+    defense_status = EXCLUDED.defense_status,
     result_status = EXCLUDED.result_status,
     pass_fail = EXCLUDED.pass_fail,
     denial_reason = EXCLUDED.denial_reason,
+    explanation = EXCLUDED.explanation,
     evidence_summary = EXCLUDED.evidence_summary,
     evidence_file_path = EXCLUDED.evidence_file_path,
+    cloud_sync_status = EXCLUDED.cloud_sync_status,
     executed_at = EXCLUDED.executed_at,
-    updated_at = NOW();
+    updated_at = EXCLUDED.updated_at,
+    created_at_nepal_time = EXCLUDED.created_at_nepal_time,
+    updated_at_nepal_time = EXCLUDED.updated_at_nepal_time;
 "#;
 
 const UPSERT_ENCRYPTED_KEY_SQL: &str = r#"
@@ -866,6 +934,36 @@ SELECT key_id, owner_type, owner_id, public_key_fingerprint, encrypted_key_blob,
 FROM encrypted_keys
 WHERE owner_type = $1 AND owner_id = $2
 ORDER BY created_at DESC, key_id
+LIMIT 1;
+"#;
+
+const GET_LATEST_PROVISIONING_SESSION_FOR_CONTEXT_SQL: &str = r#"
+SELECT
+    session_id,
+    customer_id,
+    vehicle_id,
+    fob_id,
+    certificate_id,
+    auth_status,
+    auth_result,
+    session_status,
+    access_decision,
+    session_algorithm,
+    session_method,
+    provisioning_status,
+    report_path,
+    started_at,
+    completed_at
+FROM provisioning_sessions
+WHERE customer_id = $1
+  AND vehicle_id = $2
+  AND fob_id = $3
+ORDER BY
+    CASE WHEN provisioning_status = 'finalized' THEN 0 ELSE 1 END,
+    CASE WHEN session_status = 'secure_session_established' THEN 0 ELSE 1 END,
+    updated_at DESC,
+    completed_at DESC NULLS LAST,
+    created_at DESC
 LIMIT 1;
 "#;
 
@@ -987,7 +1085,10 @@ pub struct DiagnosticResultRecord {
     pub denial_reason: String,
     pub evidence_summary: String,
     pub evidence_file_path: String,
+    pub cloud_sync_status: String,
     pub executed_at: DateTime<Utc>,
+    pub created_at_nepal_time: String,
+    pub updated_at_nepal_time: String,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -1034,6 +1135,24 @@ type EncryptedKeyRow = (
     String,
     String,
     String,
+);
+
+type ProvisioningSessionRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<DateTime<Utc>>,
+    Option<DateTime<Utc>>,
 );
 
 impl fmt::Debug for EncryptedKeyRecord {
@@ -1185,6 +1304,41 @@ fn encrypted_key_record_from_row(row: EncryptedKeyRow) -> EncryptedKeyRecord {
     }
 }
 
+fn provisioning_session_metadata_from_row(
+    row: ProvisioningSessionRow,
+) -> ProvisioningSessionMetadata {
+    let fob_id = row.3;
+    ProvisioningSessionMetadata {
+        session_id: row.0,
+        customer_id: row.1,
+        vehicle_id: row.2,
+        fob_id: fob_id.clone(),
+        certificate_id: row.4.unwrap_or_else(|| format!("CERT-{}", fob_id)),
+        auth_status: row
+            .5
+            .unwrap_or_else(|| DEFAULT_PROVISIONING_STATUS.to_string()),
+        auth_result: row
+            .6
+            .unwrap_or_else(|| DEFAULT_PROVISIONING_STATUS.to_string()),
+        session_status: row
+            .7
+            .unwrap_or_else(|| DEFAULT_PROVISIONING_STATUS.to_string()),
+        access_decision: row
+            .8
+            .unwrap_or_else(|| DEFAULT_PROVISIONING_STATUS.to_string()),
+        session_algorithm: row.9.unwrap_or_else(|| SESSION_ALGORITHM.to_string()),
+        session_method: row.10.unwrap_or_else(|| SESSION_ALGORITHM.to_string()),
+        provisioning_status: row
+            .11
+            .unwrap_or_else(|| DEFAULT_PROVISIONING_STATUS.to_string()),
+        report_path: row
+            .12
+            .unwrap_or_else(|| IN_APP_REPORT_ONLY_PATH.to_string()),
+        started_at: row.13,
+        completed_at: row.14,
+    }
+}
+
 pub fn demo_audit_log_records(created_at: DateTime<Utc>) -> Vec<AuditLogRecord> {
     [
         (
@@ -1265,6 +1419,7 @@ pub fn demo_audit_log_records(created_at: DateTime<Utc>) -> Vec<AuditLogRecord> 
 }
 
 pub fn demo_diagnostic_result_records(executed_at: DateTime<Utc>) -> Vec<DiagnosticResultRecord> {
+    let nepal_time = format_nepal_time_string(executed_at);
     [
         (DIAGNOSTIC_RESULT_IDS[0], "Replay Attack", "ReusedNonce"),
         (
@@ -1330,7 +1485,10 @@ pub fn demo_diagnostic_result_records(executed_at: DateTime<Utc>) -> Vec<Diagnos
             evidence_summary: "Demo diagnostic metadata only; raw attack material is redacted."
                 .to_string(),
             evidence_file_path: format!("diagnostic_results/{DEMO_FOB_ID}/{diagnostic_id}.json"),
+            cloud_sync_status: "pending".to_string(),
             executed_at,
+            created_at_nepal_time: nepal_time.clone(),
+            updated_at_nepal_time: nepal_time.clone(),
         },
     )
     .collect()
@@ -1809,6 +1967,22 @@ impl CloudStorageClient {
         Ok(PROVISIONING_SESSION_SYNCED_MESSAGE.to_string())
     }
 
+    pub async fn get_latest_provisioning_session_for_context(
+        &self,
+        customer_id: &str,
+        vehicle_id: &str,
+        fob_id: &str,
+    ) -> Result<Option<ProvisioningSessionMetadata>, CloudStorageError> {
+        sqlx::query_as::<_, ProvisioningSessionRow>(GET_LATEST_PROVISIONING_SESSION_FOR_CONTEXT_SQL)
+            .bind(customer_id)
+            .bind(vehicle_id)
+            .bind(fob_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map(|row| row.map(provisioning_session_metadata_from_row))
+            .map_err(|_| CloudStorageError::ProvisioningSessionSyncFailed)
+    }
+
     pub async fn sync_demo_provisioning_session(&self) -> Result<String, CloudStorageError> {
         let started_at = Utc::now();
         let completed_at = started_at;
@@ -1876,7 +2050,12 @@ impl CloudStorageClient {
             .bind(&record.denial_reason)
             .bind(&record.evidence_summary)
             .bind(&record.evidence_file_path)
+            .bind(&record.cloud_sync_status)
             .bind(record.executed_at)
+            .bind(record.executed_at)
+            .bind(record.executed_at)
+            .bind(&record.created_at_nepal_time)
+            .bind(&record.updated_at_nepal_time)
             .execute(&self.pool)
             .await
             .map_err(|_| CloudStorageError::DiagnosticResultSyncFailed)?;
@@ -2180,6 +2359,11 @@ fn encrypted_key_owner_lookup_sql() -> &'static str {
 }
 
 #[cfg(test)]
+fn latest_provisioning_session_lookup_sql() -> &'static str {
+    GET_LATEST_PROVISIONING_SESSION_FOR_CONTEXT_SQL
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
@@ -2369,14 +2553,36 @@ mod tests {
         assert!(schema.contains("ALTER COLUMN attack_type DROP NOT NULL"));
         for migration in [
             "ADD COLUMN IF NOT EXISTS diagnostic_id TEXT",
+            "ADD COLUMN IF NOT EXISTS attack_type TEXT",
             "ADD COLUMN IF NOT EXISTS attack_name TEXT",
+            "ADD COLUMN IF NOT EXISTS expected_result TEXT",
             "ADD COLUMN IF NOT EXISTS expected_outcome TEXT",
+            "ADD COLUMN IF NOT EXISTS baseline_result TEXT",
+            "ADD COLUMN IF NOT EXISTS protected_result TEXT",
+            "ADD COLUMN IF NOT EXISTS actual_result TEXT",
             "ADD COLUMN IF NOT EXISTS actual_outcome TEXT",
+            "ADD COLUMN IF NOT EXISTS defense_status TEXT",
             "ADD COLUMN IF NOT EXISTS result_status TEXT",
+            "ADD COLUMN IF NOT EXISTS diagnostic_status TEXT",
+            "ADD COLUMN IF NOT EXISTS pass_fail TEXT",
             "ADD COLUMN IF NOT EXISTS denial_reason TEXT",
+            "ADD COLUMN IF NOT EXISTS failure_point TEXT",
+            "ADD COLUMN IF NOT EXISTS explanation TEXT",
+            "ADD COLUMN IF NOT EXISTS customer_id TEXT",
+            "ADD COLUMN IF NOT EXISTS vehicle_id TEXT",
+            "ADD COLUMN IF NOT EXISTS fob_id TEXT",
+            "ADD COLUMN IF NOT EXISTS certificate_id TEXT",
+            "ADD COLUMN IF NOT EXISTS session_id TEXT",
+            "ADD COLUMN IF NOT EXISTS security_control_triggered TEXT",
+            "ADD COLUMN IF NOT EXISTS access_decision TEXT",
+            "ADD COLUMN IF NOT EXISTS evidence_summary TEXT",
+            "ADD COLUMN IF NOT EXISTS evidence_file_path TEXT",
+            "ADD COLUMN IF NOT EXISTS cloud_sync_status TEXT",
             "ADD COLUMN IF NOT EXISTS executed_at TIMESTAMPTZ",
             "ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
             "ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
+            "ADD COLUMN IF NOT EXISTS created_at_nepal_time TEXT",
+            "ADD COLUMN IF NOT EXISTS updated_at_nepal_time TEXT",
         ] {
             assert!(
                 schema.contains(migration),
@@ -2809,6 +3015,28 @@ mod tests {
         assert!(!sql.contains("encryption_nonce"));
     }
 
+    #[test]
+    fn latest_provisioning_session_lookup_uses_selected_context_and_safe_metadata() {
+        let sql = latest_provisioning_session_lookup_sql();
+
+        assert!(sql.contains("FROM provisioning_sessions"));
+        assert!(sql.contains("WHERE customer_id = $1"));
+        assert!(sql.contains("AND vehicle_id = $2"));
+        assert!(sql.contains("AND fob_id = $3"));
+        assert!(sql.contains("provisioning_status = 'finalized'"));
+        assert!(sql.contains("session_status = 'secure_session_established'"));
+        assert!(sql.contains("updated_at DESC"));
+        assert!(sql.contains("LIMIT 1"));
+
+        let lower = sql.to_lowercase();
+        for disallowed in forbidden_session_secret_terms() {
+            assert!(!lower.contains(disallowed));
+        }
+        assert!(!lower.contains("encrypted_key_blob"));
+        assert!(!lower.contains("encryption_nonce"));
+        assert!(!lower.contains("database_url"));
+    }
+
     fn forbidden_audit_secret_terms() -> [&'static str; 13] {
         [
             "session_key",
@@ -2957,6 +3185,9 @@ mod tests {
             assert_eq!(record.expected_outcome, "rejected");
             assert_eq!(record.actual_outcome, "rejected");
             assert_eq!(record.result_status, "passed");
+            assert_eq!(record.cloud_sync_status, "pending");
+            assert!(record.created_at_nepal_time.ends_with("NPT"));
+            assert!(record.updated_at_nepal_time.ends_with("NPT"));
             assert!(!record.denial_reason.is_empty());
             assert!(!record.diagnostic_id.contains("AIACS_MASTER_KEY"));
             assert!(!record.diagnostic_id.contains("DATABASE_URL"));
@@ -3001,12 +3232,39 @@ mod tests {
         assert!(sql.contains("ON CONFLICT (diagnostic_id) DO UPDATE"));
         assert!(sql.contains("diagnostic_id"));
         assert!(sql.contains("attack_name"));
+        assert!(sql.contains("attack_type"));
+        assert!(sql.contains("customer_id"));
+        assert!(sql.contains("vehicle_id"));
+        assert!(sql.contains("fob_id"));
+        assert!(sql.contains("certificate_id"));
+        assert!(sql.contains("session_id"));
+        assert!(sql.contains("expected_result"));
         assert!(sql.contains("expected_outcome"));
+        assert!(sql.contains("baseline_result"));
+        assert!(sql.contains("protected_result"));
+        assert!(sql.contains("actual_result"));
         assert!(sql.contains("actual_outcome"));
+        assert!(sql.contains("security_control_triggered"));
+        assert!(sql.contains("access_decision"));
+        assert!(sql.contains("diagnostic_status"));
+        assert!(sql.contains("defense_status"));
         assert!(sql.contains("result_status"));
+        assert!(sql.contains("pass_fail"));
         assert!(sql.contains("denial_reason"));
+        assert!(sql.contains("evidence_summary"));
+        assert!(sql.contains("evidence_file_path"));
+        assert!(sql.contains("cloud_sync_status"));
         assert!(sql.contains("executed_at"));
-        assert!(sql.contains("updated_at = NOW()"));
+        assert!(sql.contains("created_at_nepal_time"));
+        assert!(sql.contains("updated_at_nepal_time"));
+        assert!(sql.contains("attack_type = EXCLUDED.attack_type"));
+        assert!(sql.contains("expected_result = EXCLUDED.expected_result"));
+        assert!(sql.contains("expected_outcome = EXCLUDED.expected_outcome"));
+        assert!(sql.contains("actual_result = EXCLUDED.actual_result"));
+        assert!(sql.contains("actual_outcome = EXCLUDED.actual_outcome"));
+        assert!(sql.contains("defense_status = EXCLUDED.defense_status"));
+        assert!(sql.contains("cloud_sync_status = EXCLUDED.cloud_sync_status"));
+        assert!(sql.contains("updated_at = EXCLUDED.updated_at"));
     }
 
     #[test]

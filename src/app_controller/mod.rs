@@ -144,6 +144,52 @@ pub struct DiagnosticDashboardResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticContextSummary {
+    pub customer_status: String,
+    pub vehicle_status: String,
+    pub key_fob_status: String,
+    pub certificate_status: String,
+    pub certificate_id: String,
+    pub session_status: String,
+    pub session_id: String,
+    pub encrypted_backup_status: String,
+    pub fob_identity_status: String,
+    pub diagnostic_proof_status: String,
+    pub readiness: String,
+    pub readiness_reason: String,
+    pub evidence_directory: String,
+    pub progress_steps: Vec<String>,
+}
+
+impl Default for DiagnosticContextSummary {
+    fn default() -> Self {
+        Self {
+            customer_status: "missing".to_string(),
+            vehicle_status: "missing".to_string(),
+            key_fob_status: "missing".to_string(),
+            certificate_status: "missing".to_string(),
+            certificate_id: "N/A".to_string(),
+            session_status: "missing".to_string(),
+            session_id: "N/A".to_string(),
+            encrypted_backup_status: "missing".to_string(),
+            fob_identity_status: "missing".to_string(),
+            diagnostic_proof_status: "not_generated".to_string(),
+            readiness: "not_ready".to_string(),
+            readiness_reason: "missing_customer".to_string(),
+            evidence_directory: "diagnostic_results/N/A".to_string(),
+            progress_steps: vec![
+                "Step 1: Loading selected cloud context".to_string(),
+                "Step 2: Loading issued certificate".to_string(),
+                "Step 3: Preparing diagnostic proof".to_string(),
+                "Step 4: Running insecure baseline simulation".to_string(),
+                "Step 5: Running AIACS protected verification".to_string(),
+                "Step 6: Saving evidence file".to_string(),
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VisibleProvisioningContext {
     pub customer_selected: bool,
     pub vehicle_selected: bool,
@@ -319,6 +365,7 @@ pub struct AppController {
     verification_in_progress: bool,
     last_key_fob_recovery_evidence: Option<EncryptedKeyRecoveryEvidence>,
     last_diagnostic_results: Vec<DiagnosticDashboardResult>,
+    last_diagnostic_context: DiagnosticContextSummary,
     cloud_auto_sync_enabled: bool,
     active_customer: CustomerMetadata,
     active_vehicle: VehicleMetadata,
@@ -368,6 +415,7 @@ impl fmt::Debug for AppController {
                 "last_key_fob_recovery_evidence",
                 &self.last_key_fob_recovery_evidence,
             )
+            .field("last_diagnostic_context", &self.last_diagnostic_context)
             .field("cloud_auto_sync_enabled", &self.cloud_auto_sync_enabled)
             .field("active_customer", &self.active_customer)
             .field("active_vehicle", &self.active_vehicle)
@@ -421,6 +469,7 @@ impl AppController {
             verification_in_progress: false,
             last_key_fob_recovery_evidence: None,
             last_diagnostic_results: Vec::new(),
+            last_diagnostic_context: DiagnosticContextSummary::default(),
             cloud_auto_sync_enabled: false,
             active_customer: active_customer.clone(),
             active_vehicle: active_vehicle.clone(),
@@ -852,11 +901,30 @@ impl AppController {
         self.last_diagnostic_results.clone()
     }
 
+    pub fn diagnostic_context_summary(&self) -> DiagnosticContextSummary {
+        self.last_diagnostic_context.clone()
+    }
+
+    pub fn prepare_diagnostics_context(&mut self) -> Result<String, AppControllerError> {
+        let summary = self.hydrate_diagnostics_context(false)?;
+        let message = if summary.readiness == "ready" {
+            "Diagnostics context ready".to_string()
+        } else {
+            format!(
+                "Diagnostics context not ready: {}",
+                summary.readiness_reason
+            )
+        };
+        self.last_diagnostic_context = summary;
+        Ok(message)
+    }
+
     pub fn run_diagnostic_attack(
         &mut self,
         attack_key: &str,
     ) -> Result<DiagnosticDashboardResult, AppControllerError> {
         let definition = diagnostic_definition(attack_key)?;
+        self.prepare_diagnostic_runtime_state(definition)?;
         self.ensure_diagnostic_readiness(definition)?;
         let result = self.execute_diagnostic_definition(definition)?;
         self.last_diagnostic_results.push(result.clone());
@@ -900,22 +968,7 @@ impl AppController {
     }
 
     pub fn diagnostics_readiness_summary(&self) -> String {
-        let context = self.get_visible_provisioning_context();
-        if !context.customer_selected {
-            "missing_customer".to_string()
-        } else if !context.vehicle_selected {
-            "missing_vehicle".to_string()
-        } else if !context.key_fob_selected {
-            "missing_key_fob".to_string()
-        } else if self.current_certificate().is_none() {
-            "missing_certificate".to_string()
-        } else if self.active_auth_proof.is_none() {
-            "missing_signed_payload".to_string()
-        } else if self.session.is_none() {
-            "missing_session".to_string()
-        } else {
-            "ready".to_string()
-        }
+        self.last_diagnostic_context.readiness_reason.clone()
     }
 
     pub fn get_status_summary(&self) -> String {
@@ -1184,7 +1237,7 @@ impl AppController {
             "Private Key: [REDACTED]".to_string(),
             "Storage Mode: Local prototype key file plus encrypted cloud metadata where enabled"
                 .to_string(),
-            "Production Note: secure element / OS key store / encrypted key storage recommended"
+            "Production Note: Secure element / OS key store / Encrypted key storage recommended"
                 .to_string(),
         ]
     }
@@ -3453,12 +3506,249 @@ impl AppController {
         self.ensure_visible_key_fob_selected()
     }
 
+    fn hydrate_diagnostics_context(
+        &mut self,
+        prepare_runtime_state: bool,
+    ) -> Result<DiagnosticContextSummary, AppControllerError> {
+        let context = self.get_visible_provisioning_context();
+        let mut summary = DiagnosticContextSummary {
+            customer_status: if context.customer_selected {
+                "loaded".to_string()
+            } else {
+                "missing".to_string()
+            },
+            vehicle_status: if context.vehicle_selected {
+                "loaded".to_string()
+            } else {
+                "missing".to_string()
+            },
+            key_fob_status: if context.key_fob_selected {
+                "loaded".to_string()
+            } else {
+                "missing".to_string()
+            },
+            certificate_id: context.certificate_id.clone(),
+            session_id: context.session_id.clone(),
+            evidence_directory: format!(
+                "{}/{}",
+                DIAGNOSTIC_RESULTS_DIR,
+                safe_path_component(&context.fob_id)
+            ),
+            ..DiagnosticContextSummary::default()
+        };
+
+        if !context.customer_selected {
+            summary.readiness_reason = "missing_customer".to_string();
+            return Ok(summary);
+        }
+        if !context.vehicle_selected {
+            summary.readiness_reason = "missing_vehicle".to_string();
+            return Ok(summary);
+        }
+        if !context.key_fob_selected {
+            summary.readiness_reason = "missing_key_fob".to_string();
+            return Ok(summary);
+        }
+
+        summary.fob_identity_status = match self.ensure_active_key_fob_crypto_identity() {
+            Ok(_) => "local_key_available".to_string(),
+            Err(_) => "missing".to_string(),
+        };
+
+        summary.certificate_status = if self.current_certificate_belongs_to_active_fob() {
+            "loaded_from_memory".to_string()
+        } else {
+            match self.load_active_certificate_from_cloud() {
+                Ok(_) => "loaded_from_cloud".to_string(),
+                Err(_) => "missing".to_string(),
+            }
+        };
+        summary.certificate_id = self
+            .active_certificate_metadata
+            .as_ref()
+            .map(|metadata| metadata.certificate_id.clone())
+            .unwrap_or_else(|| context.certificate_id.clone());
+
+        summary.session_status = if self
+            .session
+            .as_ref()
+            .map(|s| s.established)
+            .unwrap_or(false)
+        {
+            "loaded_from_memory".to_string()
+        } else {
+            match self.load_latest_session_for_selected_context() {
+                Ok(Some(session)) => {
+                    self.apply_loaded_provisioning_session_metadata(session);
+                    "loaded_from_cloud".to_string()
+                }
+                Ok(None) => "missing".to_string(),
+                Err(_) => "missing".to_string(),
+            }
+        };
+        summary.session_id = self.active_session_id.clone();
+
+        summary.encrypted_backup_status =
+            match self.load_encrypted_backup_metadata_for_selected_fob() {
+                Ok(Some(_)) => "available".to_string(),
+                Ok(None) => "missing".to_string(),
+                Err(error) if is_cloud_not_configured(&error.to_string()) => {
+                    "not_configured".to_string()
+                }
+                Err(_) => "missing".to_string(),
+            };
+
+        if prepare_runtime_state {
+            self.prepare_diagnostic_certificate_and_proof()?;
+            summary.certificate_status = if self
+                .active_certificate_metadata
+                .as_ref()
+                .map(|metadata| metadata.fob_id == self.active_key_fob.fob_id)
+                .unwrap_or(false)
+            {
+                summary.certificate_status
+            } else {
+                "loaded_from_memory".to_string()
+            };
+        }
+
+        summary.diagnostic_proof_status = if self.active_auth_proof.is_some() {
+            "generated".to_string()
+        } else {
+            "not_generated".to_string()
+        };
+
+        if summary.certificate_status == "missing" {
+            summary.readiness_reason = "missing_certificate".to_string();
+        } else if summary.fob_identity_status == "missing" {
+            summary.readiness_reason = "missing_fob_identity".to_string();
+        } else {
+            summary.readiness = "ready".to_string();
+            summary.readiness_reason = "diagnostic_context_ready".to_string();
+        }
+
+        Ok(summary)
+    }
+
+    fn prepare_diagnostic_runtime_state(
+        &mut self,
+        definition: DiagnosticDefinition,
+    ) -> Result<(), AppControllerError> {
+        let mut summary = self.hydrate_diagnostics_context(false)?;
+        if summary.readiness != "ready" {
+            self.last_diagnostic_context = summary.clone();
+            return Err(AppControllerError::Backend(summary.readiness_reason));
+        }
+
+        if definition.requires_certificate || definition.requires_signed_payload {
+            self.prepare_diagnostic_certificate_and_proof()?;
+            summary.certificate_status = "loaded_from_memory".to_string();
+            summary.diagnostic_proof_status = "generated".to_string();
+        }
+
+        if definition.requires_session && self.session.is_none() {
+            self.prepare_diagnostic_certificate_and_proof()?;
+            self.run_legitimate_authentication_demo()?;
+            self.establish_secure_session_demo()?;
+            summary.session_status = "loaded_from_memory".to_string();
+            summary.session_id = self.active_session_id.clone();
+        }
+
+        if definition.requires_encrypted_backup {
+            let master_key = parse_master_key_from_env()
+                .map_err(|_| AppControllerError::Backend("missing_master_key".to_string()))?;
+            if self
+                .load_encrypted_backup_metadata_for_selected_fob()?
+                .is_none()
+            {
+                self.key_fob_encrypted_key_record(&master_key)
+                    .map_err(|_| {
+                        AppControllerError::Backend("missing_encrypted_backup".to_string())
+                    })?;
+            }
+            summary.encrypted_backup_status = "available".to_string();
+        }
+
+        summary.readiness = "ready".to_string();
+        summary.readiness_reason = "diagnostic_context_ready".to_string();
+        self.last_diagnostic_context = summary;
+        Ok(())
+    }
+
+    fn prepare_diagnostic_certificate_and_proof(&mut self) -> Result<(), AppControllerError> {
+        self.ensure_visible_provisioning_context_selected()?;
+        self.ensure_active_key_fob_crypto_identity()?;
+        if self.current_certificate().is_none() || !self.current_certificate_belongs_to_active_fob()
+        {
+            self.issue_keyfob_certificate()?;
+        }
+        if self.active_challenge.is_none() {
+            self.generate_authentication_challenge()?;
+        }
+        if self.active_auth_proof.is_none() {
+            self.sign_canonical_auth_payload()?;
+        }
+        Ok(())
+    }
+
+    fn load_latest_session_for_selected_context(
+        &mut self,
+    ) -> Result<Option<ProvisioningSessionMetadata>, AppControllerError> {
+        let context = self.get_visible_provisioning_context();
+        if !context.customer_selected || !context.vehicle_selected || !context.key_fob_selected {
+            return Ok(None);
+        }
+        let client = self.ensure_schema_initialized()?;
+        self.run_cloud(async {
+            client
+                .get_latest_provisioning_session_for_context(
+                    &context.customer_id,
+                    &context.vehicle_id,
+                    &context.fob_id,
+                )
+                .await
+        })
+        .map_err(Self::map_cloud_error)
+    }
+
+    fn load_encrypted_backup_metadata_for_selected_fob(
+        &mut self,
+    ) -> Result<Option<EncryptedKeyRecord>, AppControllerError> {
+        let fob_id = self
+            .selected_key_fob
+            .as_ref()
+            .map(|record| record.fob_id.clone())
+            .ok_or_else(|| AppControllerError::Backend("missing_key_fob".to_string()))?;
+        let client = self.ensure_schema_initialized()?;
+        self.run_cloud(async { client.get_encrypted_key_by_owner("key_fob", &fob_id).await })
+            .map_err(Self::map_cloud_error)
+    }
+
+    fn apply_loaded_provisioning_session_metadata(
+        &mut self,
+        metadata: ProvisioningSessionMetadata,
+    ) {
+        self.active_session_id = metadata.session_id;
+        self.set_active_vehicle_status(&metadata.provisioning_status);
+        self.set_active_key_fob_status(
+            Some(ISSUED_CERTIFICATE_STATUS),
+            Some(&metadata.provisioning_status),
+        );
+        if metadata.auth_status == AUTHENTICATED_STATUS {
+            self.last_auth_result = Some(AuthResult::Success);
+            self.last_access_decision = Some(AccessDecision::GrantAccess);
+        }
+    }
+
     fn ensure_diagnostic_readiness(
         &self,
         definition: DiagnosticDefinition,
     ) -> Result<(), AppControllerError> {
         self.ensure_visible_provisioning_context_selected()?;
-        if definition.requires_certificate && self.current_certificate().is_none() {
+        if definition.requires_certificate
+            && self.current_certificate().is_none()
+            && self.active_certificate_metadata.is_none()
+        {
             return Err(AppControllerError::Backend(
                 "missing_certificate".to_string(),
             ));
@@ -3595,6 +3885,7 @@ impl AppController {
             "fob_id": context.fob_id,
             "certificate_id": input.certificate_id,
             "session_id": input.session_id,
+            "expected_result": definition.expected_result,
             "baseline_result": definition.baseline_result,
             "protected_result": input.protected_result,
             "actual_result": input.actual_result,
@@ -3645,7 +3936,8 @@ impl AppController {
         if !self.cloud_auto_sync_enabled {
             return "disabled".to_string();
         }
-        let record = DiagnosticResultRecord {
+        let executed_at = Utc::now();
+        let mut record = DiagnosticResultRecord {
             diagnostic_id: result.diagnostic_id.clone(),
             attack_name: result.attack_name.clone(),
             customer_id: result.customer_id.clone(),
@@ -3664,19 +3956,29 @@ impl AppController {
             denial_reason: result.security_control_triggered.clone(),
             evidence_summary: result.evidence_summary.clone(),
             evidence_file_path: result.evidence_file_path.clone(),
-            executed_at: Utc::now(),
+            cloud_sync_status: "pending".to_string(),
+            executed_at,
+            created_at_nepal_time: result.created_at_nepal_time.clone(),
+            updated_at_nepal_time: format_nepal_time(executed_at),
         };
         let client = match self.ensure_schema_initialized() {
             Ok(client) => client,
             Err(error) => {
+                let status = if is_cloud_not_configured(&error.to_string()) {
+                    "not_configured"
+                } else {
+                    "failed"
+                };
                 let _ =
-                    self.save_log_entry("[DB]", format!("Diagnostic cloud sync failed: {error}"));
-                return "failed".to_string();
+                    self.save_log_entry("[DB]", format!("Diagnostic cloud sync {status}: {error}"));
+                return status.to_string();
             }
         };
+        record.cloud_sync_status = "synced".to_string();
         match self.run_cloud(async { client.upsert_diagnostic_result(&record).await }) {
             Ok(_) => "synced".to_string(),
             Err(error) => {
+                record.cloud_sync_status = "failed".to_string();
                 let _ = self.save_log_entry(
                     "[DB]",
                     format!(
@@ -4523,7 +4825,7 @@ impl AppController {
         self.append_protocol_trace("[KEY STORAGE]", "Storage mode: Local prototype key storage")?;
         self.append_protocol_trace(
             "[KEY STORAGE]",
-            "Production note: secure element or encrypted key store recommended",
+            "Production note: Secure element or Encrypted key store recommended",
         )
     }
 
@@ -4582,8 +4884,14 @@ impl AppController {
             .open(path)
             .map_err(|e| AppControllerError::Backend(e.to_string()))?;
         let safe_message = message.replace(['\r', '\n'], " | ");
-        writeln!(file, "{} {} {}", Utc::now().to_rfc3339(), tag, safe_message)
-            .map_err(|e| AppControllerError::Backend(e.to_string()))
+        writeln!(
+            file,
+            "{} {} {}",
+            format_nepal_time(Utc::now()),
+            tag,
+            safe_message
+        )
+        .map_err(|e| AppControllerError::Backend(e.to_string()))
     }
 
     fn gui_log_path(&self) -> PathBuf {
@@ -7893,10 +8201,13 @@ mod tests {
         assert_eq!(result.protected_result, "attack_blocked_access_denied");
         assert_eq!(result.security_control_triggered, "nonce_reuse_detection");
         assert_eq!(result.pass_fail, "pass");
+        assert_eq!(result.cloud_sync_status, "disabled");
         assert!(!result.customer_id.contains(DEMO_CUSTOMER_ID));
 
         let evidence =
             fs::read_to_string(&result.evidence_file_path).expect("evidence file should exist");
+        assert!(evidence.contains("created_at_nepal_time"));
+        assert!(evidence.contains("NPT"));
         assert!(evidence.contains("\"raw_payload\": \"[REDACTED]\""));
         assert!(evidence.contains("\"raw_signature\": \"[REDACTED]\""));
         assert!(evidence.contains("\"raw_nonce\": \"[REDACTED]\""));
@@ -7917,6 +8228,36 @@ mod tests {
     }
 
     #[test]
+    fn test_diagnostic_local_result_remains_visible_when_cloud_sync_disabled() {
+        let mut controller = provision_selected_context_for_diagnostics("PHASE10DISABLED");
+        controller.cloud_auto_sync_enabled = false;
+
+        let result = controller
+            .run_diagnostic_attack("forged_signature")
+            .expect("local diagnostic should still run");
+
+        assert_eq!(result.attack_name, "forged_signature");
+        assert_eq!(result.cloud_sync_status, "disabled");
+        assert_eq!(controller.diagnostic_dashboard_results().len(), 1);
+        assert!(PathBuf::from(&result.evidence_file_path).exists());
+        let _ = fs::remove_dir_all(
+            PathBuf::from(DIAGNOSTIC_RESULTS_DIR).join("FOB-CRYPTO-PHASE10DISABLED"),
+        );
+    }
+
+    #[test]
+    fn test_run_all_diagnostics_uses_individual_sync_path() {
+        let source = include_str!("mod.rs");
+        let function_start = source
+            .find("pub fn run_all_diagnostics")
+            .expect("run_all_diagnostics should exist");
+        let function_source = &source[function_start..];
+
+        assert!(function_source.contains("self.run_diagnostic_attack(key)?"));
+        assert!(function_source.contains("self.save_all_diagnostics_summary"));
+    }
+
+    #[test]
     fn test_phase10_missing_context_returns_safe_diagnostic_readiness_error() {
         let mut controller = AppController::new();
         let error = controller
@@ -7924,10 +8265,7 @@ mod tests {
             .expect_err("missing selected context should block diagnostics")
             .to_string();
 
-        assert_eq!(
-            error,
-            "Select customer, vehicle, and key fob before provisioning."
-        );
+        assert_eq!(error, "missing_customer");
         assert!(!error.contains("private"));
         assert!(!error.contains("DATABASE_URL"));
     }
@@ -7971,6 +8309,63 @@ mod tests {
         } else {
             std::env::remove_var("AIACS_MASTER_KEY");
         }
+    }
+
+    #[test]
+    fn test_phase10_1_prepare_diagnostics_context_reports_precise_selected_status() {
+        let mut controller = provision_selected_context_for_diagnostics("PHASE101CTX");
+        let message = controller
+            .prepare_diagnostics_context()
+            .expect("diagnostics context should prepare");
+        let summary = controller.diagnostic_context_summary();
+
+        assert_eq!(message, "Diagnostics context ready");
+        assert_eq!(summary.customer_status, "loaded");
+        assert_eq!(summary.vehicle_status, "loaded");
+        assert_eq!(summary.key_fob_status, "loaded");
+        assert_eq!(summary.certificate_status, "loaded_from_memory");
+        assert_eq!(summary.session_status, "loaded_from_memory");
+        assert_eq!(summary.fob_identity_status, "local_key_available");
+        assert_eq!(summary.diagnostic_proof_status, "generated");
+        assert_eq!(summary.readiness, "ready");
+        assert_eq!(summary.readiness_reason, "diagnostic_context_ready");
+        assert!(!summary.customer_status.contains(DEMO_CUSTOMER_ID));
+        assert!(summary
+            .evidence_directory
+            .contains("FOB-CRYPTO-PHASE101CTX"));
+    }
+
+    #[test]
+    fn test_phase10_1_prepare_diagnostics_context_blocks_missing_selected_context_safely() {
+        let mut controller = AppController::new();
+        let message = controller
+            .prepare_diagnostics_context()
+            .expect("missing context should be represented safely");
+        let summary = controller.diagnostic_context_summary();
+
+        assert_eq!(message, "Diagnostics context not ready: missing_customer");
+        assert_eq!(summary.readiness, "not_ready");
+        assert_eq!(summary.readiness_reason, "missing_customer");
+        assert_eq!(summary.customer_status, "missing");
+        assert!(!message.contains("DATABASE_URL"));
+        assert!(!message.contains("AIACS_MASTER_KEY"));
+    }
+
+    #[test]
+    fn test_phase10_1_run_diagnostic_prepares_runtime_proof_from_selected_identity() {
+        let mut controller = provision_selected_context_for_diagnostics("PHASE101PROOF");
+        controller.active_challenge = None;
+        controller.active_auth_proof = None;
+        let result = controller
+            .run_diagnostic_attack("replay_attack")
+            .expect("diagnostic should generate temporary proof and run");
+        let summary = controller.diagnostic_context_summary();
+
+        assert_eq!(result.fob_id, "FOB-CRYPTO-PHASE101PROOF");
+        assert_eq!(summary.diagnostic_proof_status, "generated");
+        assert!(controller.active_auth_proof.is_some());
+        assert!(controller.active_challenge.is_some());
+        assert!(!result.customer_id.contains(DEMO_CUSTOMER_ID));
     }
 
     #[test]
