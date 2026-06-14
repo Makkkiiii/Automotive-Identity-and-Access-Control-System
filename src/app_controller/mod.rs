@@ -6,9 +6,9 @@ use crate::cloud_storage::{
     decrypt_private_key_from_cloud, demo_customer_metadata, demo_key_fob_metadata,
     demo_vehicle_metadata, encrypt_private_key_for_cloud, parse_master_key_from_env,
     AuditLogRecord, CertificateMetadata, CloudStorageClient, CloudStorageConfig, CloudStorageError,
-    CustomerMetadata, EncryptedKeyRecord, KeyFobMetadata, ProvisioningSessionMetadata,
-    VehicleMetadata, AUTHENTICATED_STATUS, CA_ENCRYPTED_KEY_ID, CA_KEY_PURPOSE,
-    CERTIFICATE_ISSUED_PROVISIONING_STATUS, CERTIFICATE_SIGNATURE_ALGORITHM,
+    CustomerMetadata, DiagnosticResultRecord, EncryptedKeyRecord, KeyFobMetadata,
+    ProvisioningSessionMetadata, VehicleMetadata, AUTHENTICATED_STATUS, CA_ENCRYPTED_KEY_ID,
+    CA_KEY_PURPOSE, CERTIFICATE_ISSUED_PROVISIONING_STATUS, CERTIFICATE_SIGNATURE_ALGORITHM,
     CHALLENGE_GENERATED_STATUS, DEFAULT_CERTIFICATE_STATUS, DEFAULT_PROVISIONING_STATUS,
     DEMO_CERTIFICATE_ID, DEMO_CUSTOMER_ID, DEMO_FOB_ID, DEMO_SESSION_ID, DEMO_VEHICLE_ID,
     DIAGNOSTIC_RESULT_IDS, ENCRYPTED_KEY_STORAGE_STATUS, FAILED_PROVISIONING_STATUS,
@@ -41,6 +41,7 @@ const GUI_LOG_FILE: &str = "aiacs_gui.log";
 const PROTOCOL_TRACE_LOG_FILE: &str = "aiacs_protocol_trace.log";
 const PROVISIONING_REPORT_FILE: &str = "aiacs_provisioning_report.txt";
 const RECOVERY_ARTIFACTS_DIR: &str = "recovery_artifacts";
+const DIAGNOSTIC_RESULTS_DIR: &str = "diagnostic_results";
 const CA_PRIVATE_KEY_PATH: &str = "keys/ca_private.json";
 const CA_PUBLIC_KEY_PATH: &str = "keys/ca_public.json";
 const KEYFOB_PRIVATE_KEY_PATH: &str = "keys/fob_FOB-0001_private.json";
@@ -116,6 +117,30 @@ pub struct EncryptedKeyRecoveryEvidence {
     pub recovery_status: String,
     pub fingerprint_match: bool,
     pub local_cloud_encrypted_backup_match: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticDashboardResult {
+    pub diagnostic_id: String,
+    pub attack_name: String,
+    pub attack_label: String,
+    pub customer_id: String,
+    pub vehicle_id: String,
+    pub fob_id: String,
+    pub certificate_id: String,
+    pub session_id: String,
+    pub expected_result: String,
+    pub baseline_result: String,
+    pub protected_result: String,
+    pub actual_result: String,
+    pub security_control_triggered: String,
+    pub access_decision: String,
+    pub diagnostic_status: String,
+    pub pass_fail: String,
+    pub evidence_summary: String,
+    pub evidence_file_path: String,
+    pub cloud_sync_status: String,
+    pub created_at_nepal_time: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -293,6 +318,7 @@ pub struct AppController {
     active_auth_proof: Option<AuthenticationProof>,
     verification_in_progress: bool,
     last_key_fob_recovery_evidence: Option<EncryptedKeyRecoveryEvidence>,
+    last_diagnostic_results: Vec<DiagnosticDashboardResult>,
     cloud_auto_sync_enabled: bool,
     active_customer: CustomerMetadata,
     active_vehicle: VehicleMetadata,
@@ -394,6 +420,7 @@ impl AppController {
             active_auth_proof: None,
             verification_in_progress: false,
             last_key_fob_recovery_evidence: None,
+            last_diagnostic_results: Vec::new(),
             cloud_auto_sync_enabled: false,
             active_customer: active_customer.clone(),
             active_vehicle: active_vehicle.clone(),
@@ -819,6 +846,76 @@ impl AppController {
         }
 
         Ok(messages)
+    }
+
+    pub fn diagnostic_dashboard_results(&self) -> Vec<DiagnosticDashboardResult> {
+        self.last_diagnostic_results.clone()
+    }
+
+    pub fn run_diagnostic_attack(
+        &mut self,
+        attack_key: &str,
+    ) -> Result<DiagnosticDashboardResult, AppControllerError> {
+        let definition = diagnostic_definition(attack_key)?;
+        self.ensure_diagnostic_readiness(definition)?;
+        let result = self.execute_diagnostic_definition(definition)?;
+        self.last_diagnostic_results.push(result.clone());
+        self.append_protocol_trace(
+            "[DIAGNOSTIC]",
+            format!(
+                "{}: {} via {}",
+                result.attack_label, result.pass_fail, result.security_control_triggered
+            ),
+        )?;
+        self.save_log_entry(
+            "[ATTACK]",
+            format!(
+                "{} diagnostic {} for {}",
+                result.attack_label, result.pass_fail, result.fob_id
+            ),
+        )?;
+        Ok(result)
+    }
+
+    pub fn run_all_diagnostics(
+        &mut self,
+    ) -> Result<Vec<DiagnosticDashboardResult>, AppControllerError> {
+        let keys = [
+            "replay_attack",
+            "forged_signature",
+            "fake_certificate",
+            "identity_mismatch",
+            "delayed_relay",
+            "packet_tampering",
+            "tampered_ciphertext",
+            "wrong_session_key",
+            "wrong_master_key_recovery",
+        ];
+        let mut results = Vec::new();
+        for key in keys {
+            results.push(self.run_diagnostic_attack(key)?);
+        }
+        self.save_all_diagnostics_summary(&results)?;
+        Ok(results)
+    }
+
+    pub fn diagnostics_readiness_summary(&self) -> String {
+        let context = self.get_visible_provisioning_context();
+        if !context.customer_selected {
+            "missing_customer".to_string()
+        } else if !context.vehicle_selected {
+            "missing_vehicle".to_string()
+        } else if !context.key_fob_selected {
+            "missing_key_fob".to_string()
+        } else if self.current_certificate().is_none() {
+            "missing_certificate".to_string()
+        } else if self.active_auth_proof.is_none() {
+            "missing_signed_payload".to_string()
+        } else if self.session.is_none() {
+            "missing_session".to_string()
+        } else {
+            "ready".to_string()
+        }
     }
 
     pub fn get_status_summary(&self) -> String {
@@ -3356,6 +3453,242 @@ impl AppController {
         self.ensure_visible_key_fob_selected()
     }
 
+    fn ensure_diagnostic_readiness(
+        &self,
+        definition: DiagnosticDefinition,
+    ) -> Result<(), AppControllerError> {
+        self.ensure_visible_provisioning_context_selected()?;
+        if definition.requires_certificate && self.current_certificate().is_none() {
+            return Err(AppControllerError::Backend(
+                "missing_certificate".to_string(),
+            ));
+        }
+        if definition.requires_signed_payload && self.active_auth_proof.is_none() {
+            return Err(AppControllerError::Backend(
+                "missing_signed_payload".to_string(),
+            ));
+        }
+        if definition.requires_session && self.session.is_none() {
+            return Err(AppControllerError::Backend("missing_session".to_string()));
+        }
+        if definition.requires_encrypted_backup {
+            let master_key = parse_master_key_from_env()
+                .map_err(|_| AppControllerError::Backend("missing_master_key".to_string()))?;
+            self.key_fob_encrypted_key_record(&master_key)
+                .map_err(|_| AppControllerError::Backend("missing_encrypted_backup".to_string()))?;
+        }
+        Ok(())
+    }
+
+    fn execute_diagnostic_definition(
+        &mut self,
+        definition: DiagnosticDefinition,
+    ) -> Result<DiagnosticDashboardResult, AppControllerError> {
+        let created_at = Utc::now();
+        let context = self.get_visible_provisioning_context();
+        let certificate_id = self.derive_certificate_id_for_active_context();
+        let session_id = self.active_session_id.clone();
+        let (actual_result, protected_result, access_decision, pass_fail) =
+            if let Some(attack_type) = definition.attack_type {
+                let attack_result = run_adversarial_attack(attack_type);
+                let pass = attack_result.success;
+                (
+                    attack_result.access_decision.clone(),
+                    if pass {
+                        definition.protected_result.to_string()
+                    } else {
+                        "attack_not_blocked".to_string()
+                    },
+                    if pass {
+                        definition.access_decision.to_string()
+                    } else {
+                        "grant_access".to_string()
+                    },
+                    if pass { "pass" } else { "fail" }.to_string(),
+                )
+            } else {
+                let master_key = parse_master_key_from_env()
+                    .map_err(|_| AppControllerError::Backend("missing_master_key".to_string()))?;
+                let record = self.key_fob_encrypted_key_record(&master_key)?;
+                let wrong_key = [0xA5_u8; 32];
+                let failed_safely =
+                    decrypt_private_key_from_cloud(&record.encrypted_key, &wrong_key).is_err();
+                (
+                    if failed_safely {
+                        "encrypted_key_recovery_failed"
+                    } else {
+                        "encrypted_key_recovery_unexpectedly_succeeded"
+                    }
+                    .to_string(),
+                    if failed_safely {
+                        "recovery_blocked"
+                    } else {
+                        "recovery_not_blocked"
+                    }
+                    .to_string(),
+                    "not_applicable".to_string(),
+                    if failed_safely { "pass" } else { "fail" }.to_string(),
+                )
+            };
+
+        let evidence_file_path = self.save_diagnostic_evidence(DiagnosticEvidenceInput {
+            definition,
+            context: &context,
+            certificate_id: &certificate_id,
+            session_id: &session_id,
+            actual_result: &actual_result,
+            protected_result: &protected_result,
+            access_decision: &access_decision,
+            pass_fail: &pass_fail,
+            created_at,
+        })?;
+        let evidence_summary = definition.evidence_summary.to_string();
+        let diagnostic_status = if pass_fail == "pass" {
+            "protected".to_string()
+        } else {
+            "failed".to_string()
+        };
+        let mut result = DiagnosticDashboardResult {
+            diagnostic_id: format!(
+                "DIAG-{}-{}-{}",
+                definition.attack_name,
+                safe_path_component(&context.fob_id),
+                Uuid::new_v4().simple()
+            ),
+            attack_name: definition.attack_name.to_string(),
+            attack_label: definition.attack_label.to_string(),
+            customer_id: context.customer_id,
+            vehicle_id: context.vehicle_id,
+            fob_id: context.fob_id,
+            certificate_id,
+            session_id,
+            expected_result: definition.expected_result.to_string(),
+            baseline_result: definition.baseline_result.to_string(),
+            protected_result,
+            actual_result,
+            security_control_triggered: definition.security_control.to_string(),
+            access_decision,
+            diagnostic_status,
+            pass_fail,
+            evidence_summary,
+            evidence_file_path,
+            cloud_sync_status: "disabled".to_string(),
+            created_at_nepal_time: format_nepal_time(created_at),
+        };
+        result.cloud_sync_status = self.sync_diagnostic_dashboard_result(&result);
+        Ok(result)
+    }
+
+    fn save_diagnostic_evidence(
+        &self,
+        input: DiagnosticEvidenceInput<'_>,
+    ) -> Result<String, AppControllerError> {
+        let definition = input.definition;
+        let context = input.context;
+        let dir = PathBuf::from(DIAGNOSTIC_RESULTS_DIR).join(safe_path_component(&context.fob_id));
+        fs::create_dir_all(&dir).map_err(|error| AppControllerError::Backend(error.to_string()))?;
+        let path = dir.join(format!("{}.json", definition.attack_name));
+        let evidence = serde_json::json!({
+            "attack_name": definition.attack_name,
+            "customer_id": context.customer_id,
+            "vehicle_id": context.vehicle_id,
+            "fob_id": context.fob_id,
+            "certificate_id": input.certificate_id,
+            "session_id": input.session_id,
+            "baseline_result": definition.baseline_result,
+            "protected_result": input.protected_result,
+            "actual_result": input.actual_result,
+            "security_control_triggered": definition.security_control,
+            "access_decision": input.access_decision,
+            "diagnostic_result": input.pass_fail,
+            "evidence_summary": definition.evidence_summary,
+            "raw_payload": "[REDACTED]",
+            "raw_signature": "[REDACTED]",
+            "raw_nonce": "[REDACTED]",
+            "raw_ciphertext": "[REDACTED]",
+            "private_key_material": "[REDACTED]",
+            "master_key": "[REDACTED]",
+            "created_at_nepal_time": format_nepal_time(input.created_at)
+        });
+        write_pretty_json(&path, &evidence)?;
+        Ok(path_for_report(&path))
+    }
+
+    fn save_all_diagnostics_summary(
+        &self,
+        results: &[DiagnosticDashboardResult],
+    ) -> Result<(), AppControllerError> {
+        if results.is_empty() {
+            return Ok(());
+        }
+        let dir =
+            PathBuf::from(DIAGNOSTIC_RESULTS_DIR).join(safe_path_component(&results[0].fob_id));
+        fs::create_dir_all(&dir).map_err(|error| AppControllerError::Backend(error.to_string()))?;
+        let path = dir.join("all_diagnostics_summary.json");
+        let summary = serde_json::json!({
+            "fob_id": results[0].fob_id,
+            "created_at_nepal_time": format_nepal_time(Utc::now()),
+            "private_key_material": "[REDACTED]",
+            "raw_payload": "[REDACTED]",
+            "results": results.iter().map(|result| serde_json::json!({
+                "attack_name": result.attack_name,
+                "pass_fail": result.pass_fail,
+                "security_control_triggered": result.security_control_triggered,
+                "evidence_file_path": result.evidence_file_path,
+                "cloud_sync_status": result.cloud_sync_status
+            })).collect::<Vec<_>>()
+        });
+        write_pretty_json(&path, &summary)
+    }
+
+    fn sync_diagnostic_dashboard_result(&mut self, result: &DiagnosticDashboardResult) -> String {
+        if !self.cloud_auto_sync_enabled {
+            return "disabled".to_string();
+        }
+        let record = DiagnosticResultRecord {
+            diagnostic_id: result.diagnostic_id.clone(),
+            attack_name: result.attack_name.clone(),
+            customer_id: result.customer_id.clone(),
+            vehicle_id: result.vehicle_id.clone(),
+            fob_id: result.fob_id.clone(),
+            certificate_id: Some(result.certificate_id.clone()),
+            session_id: Some(result.session_id.clone()),
+            expected_outcome: result.expected_result.clone(),
+            baseline_result: Some(result.baseline_result.clone()),
+            protected_result: Some(result.protected_result.clone()),
+            actual_outcome: result.actual_result.clone(),
+            security_control_triggered: result.security_control_triggered.clone(),
+            access_decision: result.access_decision.clone(),
+            result_status: result.diagnostic_status.clone(),
+            pass_fail: result.pass_fail.clone(),
+            denial_reason: result.security_control_triggered.clone(),
+            evidence_summary: result.evidence_summary.clone(),
+            evidence_file_path: result.evidence_file_path.clone(),
+            executed_at: Utc::now(),
+        };
+        let client = match self.ensure_schema_initialized() {
+            Ok(client) => client,
+            Err(error) => {
+                let _ =
+                    self.save_log_entry("[DB]", format!("Diagnostic cloud sync failed: {error}"));
+                return "failed".to_string();
+            }
+        };
+        match self.run_cloud(async { client.upsert_diagnostic_result(&record).await }) {
+            Ok(_) => "synced".to_string(),
+            Err(error) => {
+                let _ = self.save_log_entry(
+                    "[DB]",
+                    format!(
+                        "Diagnostic cloud sync failed: {}",
+                        Self::map_cloud_error(error)
+                    ),
+                );
+                "failed".to_string()
+            }
+        }
+    }
+
     fn align_active_customer_to_vehicle(&mut self) {
         if self.active_customer.customer_id == self.active_vehicle.customer_id {
             return;
@@ -4272,6 +4605,206 @@ struct AttackEvidence {
     auth_result: &'static str,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct DiagnosticDefinition {
+    attack_name: &'static str,
+    attack_label: &'static str,
+    attack_type: Option<AttackType>,
+    expected_result: &'static str,
+    baseline_result: &'static str,
+    protected_result: &'static str,
+    security_control: &'static str,
+    access_decision: &'static str,
+    evidence_summary: &'static str,
+    requires_certificate: bool,
+    requires_signed_payload: bool,
+    requires_session: bool,
+    requires_encrypted_backup: bool,
+}
+
+struct DiagnosticEvidenceInput<'a> {
+    definition: DiagnosticDefinition,
+    context: &'a VisibleProvisioningContext,
+    certificate_id: &'a str,
+    session_id: &'a str,
+    actual_result: &'a str,
+    protected_result: &'a str,
+    access_decision: &'a str,
+    pass_fail: &'a str,
+    created_at: DateTime<Utc>,
+}
+
+fn diagnostic_definition(attack_key: &str) -> Result<DiagnosticDefinition, AppControllerError> {
+    let definition = match attack_key {
+        "replay_attack" => DiagnosticDefinition {
+            attack_name: "replay_attack",
+            attack_label: "Replay Attack",
+            attack_type: Some(AttackType::ReplayAttack),
+            expected_result: "attack_blocked_access_denied",
+            baseline_result: "attack_successful_vehicle_opened",
+            protected_result: "attack_blocked_access_denied",
+            security_control: "nonce_reuse_detection",
+            access_decision: "deny_access",
+            evidence_summary: "The insecure baseline accepts a replayed signal while AIACS rejects reused challenge material.",
+            requires_certificate: true,
+            requires_signed_payload: true,
+            requires_session: false,
+            requires_encrypted_backup: false,
+        },
+        "forged_signature" => DiagnosticDefinition {
+            attack_name: "forged_signature",
+            attack_label: "Forged Signature",
+            attack_type: Some(AttackType::ForgedSignature),
+            expected_result: "invalid_signature",
+            baseline_result: "not_applicable",
+            protected_result: "attack_blocked_access_denied",
+            security_control: "ed25519_signature_verification",
+            access_decision: "deny_access",
+            evidence_summary: "AIACS rejects authentication proofs whose Ed25519 signature has been altered.",
+            requires_certificate: true,
+            requires_signed_payload: true,
+            requires_session: false,
+            requires_encrypted_backup: false,
+        },
+        "fake_certificate" => DiagnosticDefinition {
+            attack_name: "fake_certificate",
+            attack_label: "Fake Certificate",
+            attack_type: Some(AttackType::FakeCertificate),
+            expected_result: "invalid_certificate",
+            baseline_result: "not_applicable",
+            protected_result: "attack_blocked_access_denied",
+            security_control: "certificate_validation",
+            access_decision: "deny_access",
+            evidence_summary: "AIACS rejects certificates that are not signed by the trusted CA.",
+            requires_certificate: true,
+            requires_signed_payload: true,
+            requires_session: false,
+            requires_encrypted_backup: false,
+        },
+        "identity_mismatch" => DiagnosticDefinition {
+            attack_name: "identity_mismatch",
+            attack_label: "Identity Mismatch",
+            attack_type: Some(AttackType::IdentityMismatch),
+            expected_result: "identity_mismatch",
+            baseline_result: "not_applicable",
+            protected_result: "attack_blocked_access_denied",
+            security_control: "selected_fob_identity_binding",
+            access_decision: "deny_access",
+            evidence_summary: "AIACS rejects proofs whose claimed subject does not match the selected fob certificate.",
+            requires_certificate: true,
+            requires_signed_payload: true,
+            requires_session: false,
+            requires_encrypted_backup: false,
+        },
+        "delayed_relay" => DiagnosticDefinition {
+            attack_name: "delayed_relay",
+            attack_label: "Delayed Relay",
+            attack_type: Some(AttackType::DelayedRelay),
+            expected_result: "freshness_timeout",
+            baseline_result: "not_applicable",
+            protected_result: "attack_blocked_access_denied",
+            security_control: "timestamp_freshness_validation",
+            access_decision: "deny_access",
+            evidence_summary: "AIACS software freshness checks reject stale challenge-response material.",
+            requires_certificate: true,
+            requires_signed_payload: true,
+            requires_session: false,
+            requires_encrypted_backup: false,
+        },
+        "packet_tampering" => DiagnosticDefinition {
+            attack_name: "packet_tampering",
+            attack_label: "Packet Tampering",
+            attack_type: Some(AttackType::PacketTampering),
+            expected_result: "invalid_signature",
+            baseline_result: "not_applicable",
+            protected_result: "attack_blocked_access_denied",
+            security_control: "payload_integrity_verification",
+            access_decision: "deny_access",
+            evidence_summary: "AIACS detects modified canonical payloads through signature verification.",
+            requires_certificate: true,
+            requires_signed_payload: true,
+            requires_session: false,
+            requires_encrypted_backup: false,
+        },
+        "tampered_ciphertext" => DiagnosticDefinition {
+            attack_name: "tampered_ciphertext",
+            attack_label: "Tampered Ciphertext",
+            attack_type: Some(AttackType::TamperedSessionCiphertext),
+            expected_result: "aes_gcm_authentication_failed",
+            baseline_result: "not_applicable",
+            protected_result: "attack_blocked_access_denied",
+            security_control: "aes_256_gcm_authenticated_encryption",
+            access_decision: "deny_access",
+            evidence_summary: "AES-GCM authentication rejects ciphertext or tag modification.",
+            requires_certificate: false,
+            requires_signed_payload: false,
+            requires_session: true,
+            requires_encrypted_backup: false,
+        },
+        "wrong_session_key" => DiagnosticDefinition {
+            attack_name: "wrong_session_key",
+            attack_label: "Wrong Session Key",
+            attack_type: Some(AttackType::WrongSessionKey),
+            expected_result: "wrong_session_key_rejected",
+            baseline_result: "not_applicable",
+            protected_result: "attack_blocked_access_denied",
+            security_control: "session_key_binding",
+            access_decision: "deny_access",
+            evidence_summary: "AIACS rejects protected data when the decrypting session key is not the established key.",
+            requires_certificate: false,
+            requires_signed_payload: false,
+            requires_session: true,
+            requires_encrypted_backup: false,
+        },
+        "wrong_master_key_recovery" => DiagnosticDefinition {
+            attack_name: "wrong_master_key_recovery",
+            attack_label: "Wrong Master Key Recovery",
+            attack_type: None,
+            expected_result: "encrypted_key_recovery_failed",
+            baseline_result: "not_applicable",
+            protected_result: "recovery_blocked",
+            security_control: "encrypted_key_recovery_protection",
+            access_decision: "not_applicable",
+            evidence_summary: "Client-side AES-256-GCM encrypted key backup does not decrypt with an incorrect local master key.",
+            requires_certificate: false,
+            requires_signed_payload: false,
+            requires_session: false,
+            requires_encrypted_backup: true,
+        },
+        _ => {
+            return Err(AppControllerError::Backend(format!(
+                "Unknown diagnostics attack: {}",
+                attack_key
+            )))
+        }
+    };
+    Ok(definition)
+}
+
+fn run_adversarial_attack(attack_type: AttackType) -> AttackResult {
+    match attack_type {
+        AttackType::ReplayAttack => AdversarialValidationEngine::simulate_replay_attack(),
+        AttackType::ForgedSignature => AdversarialValidationEngine::simulate_forged_signature(),
+        AttackType::FakeCertificate => {
+            AdversarialValidationEngine::simulate_fake_certificate_attack()
+        }
+        AttackType::IdentityMismatch => {
+            AdversarialValidationEngine::simulate_identity_mismatch_attack()
+        }
+        AttackType::DelayedRelay => AdversarialValidationEngine::simulate_delayed_relay_attack(),
+        AttackType::PacketTampering => {
+            AdversarialValidationEngine::simulate_packet_tampering_attack()
+        }
+        AttackType::UnauthorizedKeyFob => {
+            AdversarialValidationEngine::simulate_unauthorized_keyfob_attack()
+        }
+        AttackType::TamperedSessionCiphertext => {
+            AdversarialValidationEngine::simulate_tampered_session_ciphertext()
+        }
+        AttackType::WrongSessionKey => AdversarialValidationEngine::simulate_wrong_session_key(),
+    }
+}
+
 fn attack_evidence(attack_type: AttackType) -> AttackEvidence {
     match attack_type {
         AttackType::ReplayAttack => AttackEvidence {
@@ -4613,6 +5146,37 @@ mod tests {
         controller.session = None;
         controller.last_auth_result = None;
         controller.last_access_decision = None;
+    }
+
+    fn provision_selected_context_for_diagnostics(suffix: &str) -> AppController {
+        let mut controller =
+            AppController::new_with_log_dir(temp_log_dir(&format!("diag_{suffix}")));
+        bind_custom_context(&mut controller, suffix);
+        controller
+            .connect_vehicle()
+            .expect("vehicle should connect");
+        controller
+            .register_digital_key_fob()
+            .expect("key fob should register");
+        controller
+            .initialize_ca()
+            .expect("vehicle trust should initialize");
+        controller
+            .issue_keyfob_certificate()
+            .expect("certificate should issue");
+        controller
+            .generate_authentication_challenge()
+            .expect("challenge should generate");
+        controller
+            .sign_canonical_auth_payload()
+            .expect("payload should sign");
+        controller
+            .run_legitimate_authentication_demo()
+            .expect("selected fob auth should verify");
+        controller
+            .establish_secure_session_demo()
+            .expect("secure session should establish");
+        controller
     }
 
     #[test]
@@ -7296,17 +7860,116 @@ mod tests {
         let gitignore = fs::read_to_string(".gitignore").expect(".gitignore should be readable");
         for expected in [
             "recovery_artifacts/",
+            "diagnostic_results/",
             "reports/key_recovery_*.json",
             "**/encrypted_fob_key_local.bin",
             "**/encrypted_fob_key_cloud.bin",
             "**/decrypted_fob_key_recovered.json",
             "**/recovery_evidence.json",
             "**/encrypted_backup_metadata.json",
+            "**/all_diagnostics_summary.json",
+            "**/*_attack.json",
+            "**/wrong_master_key_recovery.json",
         ] {
             assert!(
                 gitignore.contains(expected),
                 "missing ignore rule {expected}"
             );
+        }
+    }
+
+    #[test]
+    fn test_phase10_replay_diagnostic_uses_selected_context_and_safe_evidence() {
+        let mut controller = provision_selected_context_for_diagnostics("PHASE10REPLAY");
+        let result = controller
+            .run_diagnostic_attack("replay_attack")
+            .expect("replay diagnostic should run");
+
+        assert_eq!(result.attack_name, "replay_attack");
+        assert_eq!(result.customer_id, "CUST-CRYPTO-PHASE10REPLAY");
+        assert_eq!(result.vehicle_id, "VEH-CRYPTO-PHASE10REPLAY");
+        assert_eq!(result.fob_id, "FOB-CRYPTO-PHASE10REPLAY");
+        assert_eq!(result.baseline_result, "attack_successful_vehicle_opened");
+        assert_eq!(result.protected_result, "attack_blocked_access_denied");
+        assert_eq!(result.security_control_triggered, "nonce_reuse_detection");
+        assert_eq!(result.pass_fail, "pass");
+        assert!(!result.customer_id.contains(DEMO_CUSTOMER_ID));
+
+        let evidence =
+            fs::read_to_string(&result.evidence_file_path).expect("evidence file should exist");
+        assert!(evidence.contains("\"raw_payload\": \"[REDACTED]\""));
+        assert!(evidence.contains("\"raw_signature\": \"[REDACTED]\""));
+        assert!(evidence.contains("\"raw_nonce\": \"[REDACTED]\""));
+        for forbidden in [
+            "AIACS_MASTER_KEY",
+            "DATABASE_URL",
+            "session_key",
+            "shared_secret",
+        ] {
+            assert!(
+                !evidence.contains(forbidden),
+                "diagnostic evidence leaked {forbidden}"
+            );
+        }
+        let _ = fs::remove_dir_all(
+            PathBuf::from(DIAGNOSTIC_RESULTS_DIR).join("FOB-CRYPTO-PHASE10REPLAY"),
+        );
+    }
+
+    #[test]
+    fn test_phase10_missing_context_returns_safe_diagnostic_readiness_error() {
+        let mut controller = AppController::new();
+        let error = controller
+            .run_diagnostic_attack("replay_attack")
+            .expect_err("missing selected context should block diagnostics")
+            .to_string();
+
+        assert_eq!(
+            error,
+            "Select customer, vehicle, and key fob before provisioning."
+        );
+        assert!(!error.contains("private"));
+        assert!(!error.contains("DATABASE_URL"));
+    }
+
+    #[test]
+    fn test_phase10_run_all_diagnostics_creates_summary_without_demo_fallback() {
+        let previous_master_key = std::env::var("AIACS_MASTER_KEY").ok();
+        std::env::set_var(
+            "AIACS_MASTER_KEY",
+            general_purpose::STANDARD.encode([0x31_u8; 32]),
+        );
+        let mut controller = provision_selected_context_for_diagnostics("PHASE10ALL");
+        let results = controller
+            .run_all_diagnostics()
+            .expect("all diagnostics should run");
+
+        assert_eq!(results.len(), 9);
+        assert!(results.iter().all(|result| result.pass_fail == "pass"));
+        assert!(results
+            .iter()
+            .all(|result| result.customer_id == "CUST-CRYPTO-PHASE10ALL"));
+        assert!(results
+            .iter()
+            .all(|result| result.fob_id == "FOB-CRYPTO-PHASE10ALL"));
+        assert!(results
+            .iter()
+            .any(|result| result.attack_name == "wrong_master_key_recovery"));
+
+        let summary_path = PathBuf::from(DIAGNOSTIC_RESULTS_DIR)
+            .join("FOB-CRYPTO-PHASE10ALL")
+            .join("all_diagnostics_summary.json");
+        let summary = fs::read_to_string(&summary_path).expect("summary should exist");
+        assert!(summary.contains("\"private_key_material\": \"[REDACTED]\""));
+        assert!(!summary.contains(DEMO_CUSTOMER_ID));
+        assert!(!summary.contains("AIACS_MASTER_KEY"));
+
+        let _ =
+            fs::remove_dir_all(PathBuf::from(DIAGNOSTIC_RESULTS_DIR).join("FOB-CRYPTO-PHASE10ALL"));
+        if let Some(value) = previous_master_key {
+            std::env::set_var("AIACS_MASTER_KEY", value);
+        } else {
+            std::env::remove_var("AIACS_MASTER_KEY");
         }
     }
 

@@ -498,6 +498,54 @@ ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
 ALTER TABLE diagnostic_results
 ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
 "#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS customer_id TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS vehicle_id TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS fob_id TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS certificate_id TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS session_id TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS baseline_result TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS protected_result TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS security_control_triggered TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS access_decision TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS pass_fail TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS evidence_summary TEXT;
+"#,
+    r#"
+ALTER TABLE diagnostic_results
+ADD COLUMN IF NOT EXISTS evidence_file_path TEXT;
+"#,
 ];
 
 const UPSERT_CUSTOMER_SQL: &str = r#"
@@ -741,20 +789,44 @@ const UPSERT_DIAGNOSTIC_RESULT_SQL: &str = r#"
 INSERT INTO diagnostic_results (
     diagnostic_id,
     attack_name,
+    customer_id,
+    vehicle_id,
+    fob_id,
+    certificate_id,
+    session_id,
     expected_outcome,
+    baseline_result,
+    protected_result,
     actual_outcome,
+    security_control_triggered,
+    access_decision,
     result_status,
+    pass_fail,
     denial_reason,
+    evidence_summary,
+    evidence_file_path,
     executed_at,
     created_at,
     updated_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW(), NOW())
 ON CONFLICT (diagnostic_id) DO UPDATE SET
     attack_name = EXCLUDED.attack_name,
+    customer_id = EXCLUDED.customer_id,
+    vehicle_id = EXCLUDED.vehicle_id,
+    fob_id = EXCLUDED.fob_id,
+    certificate_id = EXCLUDED.certificate_id,
+    session_id = EXCLUDED.session_id,
     expected_outcome = EXCLUDED.expected_outcome,
+    baseline_result = EXCLUDED.baseline_result,
+    protected_result = EXCLUDED.protected_result,
     actual_outcome = EXCLUDED.actual_outcome,
+    security_control_triggered = EXCLUDED.security_control_triggered,
+    access_decision = EXCLUDED.access_decision,
     result_status = EXCLUDED.result_status,
+    pass_fail = EXCLUDED.pass_fail,
     denial_reason = EXCLUDED.denial_reason,
+    evidence_summary = EXCLUDED.evidence_summary,
+    evidence_file_path = EXCLUDED.evidence_file_path,
     executed_at = EXCLUDED.executed_at,
     updated_at = NOW();
 "#;
@@ -899,10 +971,22 @@ pub struct AuditLogRecord {
 pub struct DiagnosticResultRecord {
     pub diagnostic_id: String,
     pub attack_name: String,
+    pub customer_id: String,
+    pub vehicle_id: String,
+    pub fob_id: String,
+    pub certificate_id: Option<String>,
+    pub session_id: Option<String>,
     pub expected_outcome: String,
+    pub baseline_result: Option<String>,
+    pub protected_result: Option<String>,
     pub actual_outcome: String,
+    pub security_control_triggered: String,
+    pub access_decision: String,
     pub result_status: String,
+    pub pass_fail: String,
     pub denial_reason: String,
+    pub evidence_summary: String,
+    pub evidence_file_path: String,
     pub executed_at: DateTime<Utc>,
 }
 
@@ -1229,10 +1313,23 @@ pub fn demo_diagnostic_result_records(executed_at: DateTime<Utc>) -> Vec<Diagnos
         |(diagnostic_id, attack_name, denial_reason)| DiagnosticResultRecord {
             diagnostic_id: diagnostic_id.to_string(),
             attack_name: attack_name.to_string(),
+            customer_id: DEMO_CUSTOMER_ID.to_string(),
+            vehicle_id: DEMO_VEHICLE_ID.to_string(),
+            fob_id: DEMO_FOB_ID.to_string(),
+            certificate_id: Some(DEMO_CERTIFICATE_ID.to_string()),
+            session_id: Some(DEMO_SESSION_ID.to_string()),
             expected_outcome: "rejected".to_string(),
+            baseline_result: None,
+            protected_result: Some("attack_blocked_access_denied".to_string()),
             actual_outcome: "rejected".to_string(),
+            security_control_triggered: denial_reason.to_string(),
+            access_decision: "deny_access".to_string(),
             result_status: "passed".to_string(),
+            pass_fail: "pass".to_string(),
             denial_reason: denial_reason.to_string(),
+            evidence_summary: "Demo diagnostic metadata only; raw attack material is redacted."
+                .to_string(),
+            evidence_file_path: format!("diagnostic_results/{DEMO_FOB_ID}/{diagnostic_id}.json"),
             executed_at,
         },
     )
@@ -1763,10 +1860,22 @@ impl CloudStorageClient {
         sqlx::query(UPSERT_DIAGNOSTIC_RESULT_SQL)
             .bind(&record.diagnostic_id)
             .bind(&record.attack_name)
+            .bind(&record.customer_id)
+            .bind(&record.vehicle_id)
+            .bind(&record.fob_id)
+            .bind(&record.certificate_id)
+            .bind(&record.session_id)
             .bind(&record.expected_outcome)
+            .bind(&record.baseline_result)
+            .bind(&record.protected_result)
             .bind(&record.actual_outcome)
+            .bind(&record.security_control_triggered)
+            .bind(&record.access_decision)
             .bind(&record.result_status)
+            .bind(&record.pass_fail)
             .bind(&record.denial_reason)
+            .bind(&record.evidence_summary)
+            .bind(&record.evidence_file_path)
             .bind(record.executed_at)
             .execute(&self.pool)
             .await

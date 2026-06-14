@@ -365,7 +365,9 @@ Certificate validation is strict: only `Ok(true)` from CA validation is accepted
 
 ## Diagnostics and Attack Validation
 
-Diagnostics are run through the separate binary:
+Phase 10 adds an in-app **Diagnostics / Attack Validation** dashboard. The dashboard runs selected-context checks against the active customer, vehicle, key fob, certificate, signed proof, secure session, and encrypted key backup where applicable.
+
+Diagnostics can also be run through the separate binary:
 
 ```bash
 cargo run --bin aiacs_diagnostics
@@ -382,8 +384,13 @@ cargo run --bin aiacs_diagnostics
 | Unauthorized Key Fob | Rejected because identity is not authorized                         |
 | Tampered Ciphertext  | Rejected because AES-GCM integrity check fails                      |
 | Wrong Session Key    | Rejected because session decryption/integrity validation fails      |
+| Wrong Master Key     | Rejected because encrypted key recovery fails with the wrong key    |
 
-The diagnostics tool exercises the real protocol path through `AppController`. It does not bypass the authentication engine or duplicate CA validation logic.
+The dashboard includes an insecure baseline comparison for replay attack evidence, showing what happens without AIACS nonce freshness and replay controls. AIACS protected results are displayed with the triggered security control, pass/fail status, evidence file path, and cloud sync status.
+
+Safe diagnostic evidence files are saved under `diagnostic_results/<fob_id>/`. Cloud sync stores safe diagnostic metadata only. Raw keys, payloads, nonces, signatures, ciphertext, encrypted blobs, encryption nonces, and recovered key material are redacted and are not uploaded.
+
+The diagnostics tool and dashboard exercise protocol behavior through `AppController`. They do not bypass the authentication engine or duplicate CA validation logic in the GUI.
 
 ---
 

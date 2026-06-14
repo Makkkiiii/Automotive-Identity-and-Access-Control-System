@@ -177,8 +177,9 @@ enum CloudOperation {
     ProvisioningVerifyAuthentication,
     ProvisioningActivateSession,
     ProvisioningFinalize,
-    ProvisioningDiagnostics,
     CredentialRecoveryTest,
+    RunDiagnostic,
+    RunAllDiagnostics,
 }
 
 #[derive(Debug, Clone)]
@@ -262,7 +263,8 @@ enum Message {
     SignCanonicalPayload,
     VerifyAuthentication,
     ActivateSecureChannel,
-    LaunchDiagnosticsTool,
+    RunDiagnostic(String),
+    RunAllDiagnostics,
     CloudOperationFinished(Box<CloudOperationResult>),
     ClearLog,
     ExportLogs,
@@ -656,10 +658,43 @@ impl Application for AIACSApp {
                 self.begin_cloud_operation("Activating secure session...");
                 return self.run_cloud_operation(CloudOperation::ProvisioningActivateSession);
             }
-            Message::LaunchDiagnosticsTool => {
-                self.cloud_sync_diagnostic_status = "Syncing diagnostic results...".to_string();
-                self.begin_cloud_operation("Launching diagnostics tool...");
-                return self.run_cloud_operation(CloudOperation::ProvisioningDiagnostics);
+            Message::RunDiagnostic(attack_key) => {
+                let label = diagnostic_label(&attack_key);
+                self.cloud_sync_diagnostic_status = format!("Running {}...", label);
+                self.begin_cloud_operation("Running diagnostic attack validation...");
+                return self.run_cloud_operation_with(move |mut controller| {
+                    let result = controller
+                        .run_diagnostic_attack(&attack_key)
+                        .map(|diagnostic| {
+                            format!(
+                                "{} diagnostic {}: {}",
+                                diagnostic.attack_label,
+                                diagnostic.pass_fail.to_uppercase(),
+                                diagnostic.evidence_file_path
+                            )
+                        })
+                        .map_err(|error| error.to_string());
+                    CloudOperationResult {
+                        operation: CloudOperation::RunDiagnostic,
+                        controller,
+                        result,
+                    }
+                });
+            }
+            Message::RunAllDiagnostics => {
+                self.cloud_sync_diagnostic_status = "Running all diagnostics...".to_string();
+                self.begin_cloud_operation("Running all diagnostic attack validations...");
+                return self.run_cloud_operation_with(move |mut controller| {
+                    let result = controller
+                        .run_all_diagnostics()
+                        .map(|results| format!("All diagnostics completed: {}", results.len()))
+                        .map_err(|error| error.to_string());
+                    CloudOperationResult {
+                        operation: CloudOperation::RunAllDiagnostics,
+                        controller,
+                        result,
+                    }
+                });
             }
             Message::CloudOperationFinished(result) => {
                 return self.finish_cloud_operation(*result);
@@ -954,8 +989,10 @@ impl AIACSApp {
                 let cloud_status = cloud_status_from_provisioning_result(&message);
                 self.cloud_sync_audit_status = cloud_status;
             }
-            CloudOperation::ProvisioningDiagnostics => {
-                self.record_provisioning_cloud_result("Diagnostic Results", "[INFO]", message);
+            CloudOperation::RunDiagnostic | CloudOperation::RunAllDiagnostics => {
+                self.cloud_sync_diagnostic_status = "Diagnostics completed".to_string();
+                self.selected_detail = message.clone();
+                self.push_log("[ATTACK]", message);
             }
             CloudOperation::CredentialRecoveryTest => {
                 self.cloud_sync_encrypted_key_status = "Recovery tested".to_string();
@@ -1082,12 +1119,10 @@ impl AIACSApp {
                     error,
                 );
             }
-            CloudOperation::ProvisioningDiagnostics => {
-                self.record_provisioning_cloud_error(
-                    "Diagnostic Results",
-                    "Diagnostics launch",
-                    error,
-                );
+            CloudOperation::RunDiagnostic | CloudOperation::RunAllDiagnostics => {
+                self.cloud_sync_diagnostic_status = "Diagnostics failed".to_string();
+                self.selected_detail = format!("Diagnostic failed: {}", error);
+                self.push_log("[ERROR]", self.selected_detail.clone());
             }
             CloudOperation::CredentialRecoveryTest => {
                 self.cloud_sync_encrypted_key_status = "Recovery failed".to_string();
@@ -2176,27 +2211,6 @@ impl AIACSApp {
         .into()
     }
 
-    fn core_detail_box(&self) -> Element<'_, Message> {
-        container(
-            column![
-                text("Core Result / Details")
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(ACCENT_BLUE)),
-                self.detail_row("Last Result", self.selected_detail.as_str()),
-                self.detail_row("Auth Method", "Ed25519 + PKI"),
-                self.detail_row("Session Method", "X25519 + HKDF + AES-GCM"),
-                self.detail_row("Certificate Trust", self.certificate_trust_label()),
-                self.detail_row("Access Decision", &self.status.access_decision),
-            ]
-            .spacing(6),
-        )
-        .width(Length::Fill)
-        .padding(10)
-        .style(container_style(PanelKind::Detail))
-        .into()
-    }
-
     fn view_provisioning_context_panel(&self) -> Element<'_, Message> {
         let context = self.controller.get_visible_provisioning_context();
         let crypto_identity = self.controller.get_active_key_fob_crypto_identity();
@@ -2334,34 +2348,157 @@ impl AIACSApp {
     }
 
     fn view_diagnostics_tab(&self) -> Element<'_, Message> {
+        let context = self.controller.get_visible_provisioning_context();
+        let readiness = self.controller.diagnostics_readiness_summary();
+        let results = self.controller.diagnostic_dashboard_results();
+        let result_cards = if results.is_empty() {
+            column![
+                text("No diagnostics have been run for the selected context.")
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(SECONDARY_TEXT))
+            ]
+            .spacing(8)
+        } else {
+            results
+                .into_iter()
+                .fold(column![].spacing(8), |column, result| {
+                    column.push(self.diagnostic_result_card(result))
+                })
+        };
+
         container(
             column![
-                text("Diagnostics / Security Validation")
-                    .size(20)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(ACCENT_PINK)),
-                text("Diagnostics runs separately from normal provisioning.")
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(SECONDARY_TEXT)),
-                text("Attack scenarios are kept in the dedicated diagnostics tool and are not shown in the main dealer console.")
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .style(theme::Text::Color(PRIMARY_TEXT)),
-                container(self.nav_button(
-                    "warning-shield",
-                    "Launch Diagnostics Tool",
-                    Message::LaunchDiagnosticsTool,
-                ))
-                .width(Length::Fixed(280.0)),
-                self.core_detail_box(),
+                row![
+                    column![
+                        text("Diagnostics / Attack Validation")
+                            .size(20)
+                            .font(Font::MONOSPACE)
+                            .style(theme::Text::Color(ACCENT_PINK)),
+                        text("Selected-context attack validation for technician security testing.")
+                            .size(12)
+                            .font(Font::MONOSPACE)
+                            .style(theme::Text::Color(SECONDARY_TEXT)),
+                    ]
+                    .spacing(4)
+                    .width(Length::Fill),
+                    status_badge(if readiness == "ready" {
+                        "Ready"
+                    } else {
+                        "Not Ready"
+                    }),
+                ]
+                .align_items(Alignment::Center),
+                container(
+                    column![
+                        text("Selected Context")
+                            .size(14)
+                            .font(Font::MONOSPACE)
+                            .style(theme::Text::Color(ACCENT_BLUE)),
+                        self.view_summary_row("auth", "Customer", context.customer_id),
+                        self.view_summary_row("vehicle", "Vehicle", context.vehicle_id),
+                        self.view_summary_row("key", "Key Fob", context.fob_id),
+                        self.view_summary_row("certificate", "Certificate", context.certificate_id),
+                        self.view_summary_row("lock", "Session", context.session_id),
+                        self.view_summary_row("shield", "Readiness", readiness),
+                    ]
+                    .spacing(7),
+                )
+                .width(Length::Fill)
+                .padding(10)
+                .style(container_style(PanelKind::Detail)),
+                self.diagnostic_button_panel(),
+                container(scrollable(result_cards).height(Length::Fill))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .padding(10)
+                    .style(container_style(PanelKind::Panel)),
             ]
-            .spacing(12),
+            .spacing(10),
         )
         .width(Length::Fill)
         .height(Length::Fill)
         .padding(16)
         .style(container_style(PanelKind::Panel))
+        .into()
+    }
+
+    fn diagnostic_button_panel(&self) -> Element<'_, Message> {
+        let buttons = column![
+            row![
+                diagnostic_button("Run Replay Attack Test", "replay_attack"),
+                diagnostic_button("Run Forged Signature Test", "forged_signature"),
+                diagnostic_button("Run Fake Certificate Test", "fake_certificate"),
+            ]
+            .spacing(8),
+            row![
+                diagnostic_button("Run Identity Mismatch Test", "identity_mismatch"),
+                diagnostic_button("Run Delayed Relay Test", "delayed_relay"),
+                diagnostic_button("Run Packet Tampering Test", "packet_tampering"),
+            ]
+            .spacing(8),
+            row![
+                diagnostic_button("Run Tampered Ciphertext Test", "tampered_ciphertext"),
+                diagnostic_button("Run Wrong Session Key Test", "wrong_session_key"),
+                diagnostic_button(
+                    "Run Wrong Master Key Recovery Test",
+                    "wrong_master_key_recovery"
+                ),
+            ]
+            .spacing(8),
+            row![button(
+                row![
+                    icon("warning-shield", 16),
+                    text("Run All Diagnostics").size(11).font(Font::MONOSPACE)
+                ]
+                .spacing(7)
+                .align_items(Alignment::Center),
+            )
+            .width(Length::Fixed(300.0))
+            .padding([8, 12])
+            .style(button_style(ButtonKind::Nav))
+            .on_press(Message::RunAllDiagnostics)]
+            .spacing(8),
+        ]
+        .spacing(8);
+
+        container(buttons)
+            .width(Length::Fill)
+            .padding(10)
+            .style(container_style(PanelKind::Elevated))
+            .into()
+    }
+
+    fn diagnostic_result_card(
+        &self,
+        result: aiacs::app_controller::DiagnosticDashboardResult,
+    ) -> Element<'static, Message> {
+        container(
+            column![
+                row![
+                    text(result.attack_label)
+                        .size(14)
+                        .font(Font::MONOSPACE)
+                        .style(theme::Text::Color(ACCENT_PINK))
+                        .width(Length::Fill),
+                    status_badge(if result.pass_fail == "pass" {
+                        "PASS"
+                    } else {
+                        "FAIL"
+                    }),
+                ],
+                self.view_summary_row("terminal", "Baseline", result.baseline_result),
+                self.view_summary_row("shield", "AIACS Protected", result.protected_result),
+                self.view_summary_row("auth", "Control", result.security_control_triggered),
+                self.view_summary_row("decision", "Access Decision", result.access_decision),
+                self.view_summary_row("certificate", "Evidence", result.evidence_file_path),
+                self.view_summary_row("terminal", "Cloud Sync", result.cloud_sync_status),
+            ]
+            .spacing(7),
+        )
+        .width(Length::Fill)
+        .padding(10)
+        .style(container_style(PanelKind::Detail))
         .into()
     }
 
@@ -2763,24 +2900,6 @@ impl AIACSApp {
             .into()
     }
 
-    fn detail_row<'a>(&self, label: &'a str, value: &'a str) -> Element<'a, Message> {
-        row![
-            text(label)
-                .size(11)
-                .font(Font::MONOSPACE)
-                .style(theme::Text::Color(MUTED_TEXT))
-                .width(Length::Fixed(132.0)),
-            text(value)
-                .size(11)
-                .font(Font::MONOSPACE)
-                .style(theme::Text::Color(status_color(value)))
-                .width(Length::Fill),
-        ]
-        .spacing(8)
-        .width(Length::Fill)
-        .into()
-    }
-
     fn artifact_detail_row(
         &self,
         label: impl Into<String>,
@@ -3128,18 +3247,6 @@ impl AIACSApp {
         }
     }
 
-    fn certificate_trust_label(&self) -> &str {
-        if self.status.certificate_status == "Issued" {
-            "CA-signed certificate issued"
-        } else if self.status.trust_status == "Initialized" {
-            "Trust root initialized"
-        } else if self.status.certificate_status == "Error" || self.status.trust_status == "Error" {
-            "Certificate trust error"
-        } else {
-            "Pending"
-        }
-    }
-
     fn access_decision_artifact_status(&self) -> &str {
         match self.status.access_decision.as_str() {
             "Access Granted" => "Granted",
@@ -3170,15 +3277,6 @@ impl AIACSApp {
                 label: "Pending",
             }
         }
-    }
-
-    fn nav_button<'a>(
-        &self,
-        icon_name: &'static str,
-        label: &'a str,
-        message: Message,
-    ) -> Element<'a, Message> {
-        styled_button(icon_name, label, message, ButtonKind::Nav)
     }
 
     fn record_provisioning_cloud_result(
@@ -3440,26 +3538,6 @@ fn button_style(kind: ButtonKind) -> theme::Button {
     theme::Button::custom(ButtonStyle { kind })
 }
 
-fn styled_button<'a>(
-    icon_name: &'static str,
-    label: &'a str,
-    message: Message,
-    kind: ButtonKind,
-) -> Element<'a, Message> {
-    button(
-        row![
-            icon(icon_name, 18),
-            text(label).size(12).font(Font::MONOSPACE)
-        ]
-        .spacing(8),
-    )
-    .width(Length::Fill)
-    .padding([7, 9])
-    .style(button_style(kind))
-    .on_press(message)
-    .into()
-}
-
 fn tab_button<'a>(
     icon_name: &'static str,
     label: &'a str,
@@ -3546,6 +3624,22 @@ fn wide_compact_button<'a>(
     .into()
 }
 
+fn diagnostic_button(label: &'static str, attack_key: &'static str) -> Element<'static, Message> {
+    button(
+        row![
+            icon("warning-shield", 16),
+            text(label).size(11).font(Font::MONOSPACE)
+        ]
+        .spacing(7)
+        .align_items(Alignment::Center),
+    )
+    .width(Length::Fixed(300.0))
+    .padding([8, 12])
+    .style(button_style(ButtonKind::Nav))
+    .on_press(Message::RunDiagnostic(attack_key.to_string()))
+    .into()
+}
+
 fn disabled_compact_button<'a>(
     icon_name: &'static str,
     label: &'a str,
@@ -3566,6 +3660,21 @@ fn disabled_compact_button<'a>(
     .padding([7, 9])
     .style(button_style(kind))
     .into()
+}
+
+fn diagnostic_label(attack_key: &str) -> &'static str {
+    match attack_key {
+        "replay_attack" => "Replay Attack",
+        "forged_signature" => "Forged Signature",
+        "fake_certificate" => "Fake Certificate",
+        "identity_mismatch" => "Identity Mismatch",
+        "delayed_relay" => "Delayed Relay",
+        "packet_tampering" => "Packet Tampering",
+        "tampered_ciphertext" => "Tampered Ciphertext",
+        "wrong_session_key" => "Wrong Session Key",
+        "wrong_master_key_recovery" => "Wrong Master Key Recovery",
+        _ => "Diagnostic",
+    }
 }
 
 fn perform_cloud_operation(
@@ -3591,6 +3700,9 @@ fn perform_cloud_operation(
         CloudOperation::SelectCustomer
         | CloudOperation::SelectVehicle
         | CloudOperation::SelectKeyFob => unreachable!("select operations carry selected ids"),
+        CloudOperation::RunDiagnostic | CloudOperation::RunAllDiagnostics => {
+            unreachable!("diagnostic operations carry selected attack context")
+        }
         CloudOperation::LoadVehicles => {
             if let Some(customer) = controller.selected_customer_record() {
                 controller.load_vehicle_records_for_customer(&customer.customer_id)
@@ -3634,9 +3746,6 @@ fn perform_cloud_operation(
             .map(|result| result.to_string()),
         CloudOperation::ProvisioningFinalize => controller
             .finalize_provisioning_with_cloud_sync()
-            .map(|result| result.to_string()),
-        CloudOperation::ProvisioningDiagnostics => controller
-            .run_diagnostics_with_cloud_sync()
             .map(|result| result.to_string()),
         CloudOperation::CredentialRecoveryTest => controller
             .recover_key_fob_encrypted_key_backup()
