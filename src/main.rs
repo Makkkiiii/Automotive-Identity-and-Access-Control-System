@@ -2393,7 +2393,7 @@ impl AIACSApp {
                     column.push(self.diagnostic_result_card(result))
                 })
         };
-        let progress_steps =
+        let progress_steps = if diagnostics_context_is_ready(&diagnostic_context.readiness) {
             diagnostic_context
                 .progress_steps
                 .iter()
@@ -2404,7 +2404,25 @@ impl AIACSApp {
                             .font(Font::MONOSPACE)
                             .style(theme::Text::Color(SECONDARY_TEXT)),
                     )
-                });
+                })
+        } else {
+            column![
+                text("Diagnostics Not Ready")
+                    .size(13)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(DANGER_RED)),
+                text("Select a customer, vehicle, and key fob before running attack validation.")
+                    .size(11)
+                    .font(Font::MONOSPACE)
+                    .style(theme::Text::Color(SECONDARY_TEXT)),
+                self.view_summary_row(
+                    "warning-shield",
+                    "Current Missing Requirement",
+                    diagnostic_context.readiness_reason.clone(),
+                ),
+            ]
+            .spacing(6)
+        };
         let latest_result_panel = if let Some(result) = latest_result {
             column![
                 text("Latest Result")
@@ -2441,7 +2459,7 @@ impl AIACSApp {
             ]
             .spacing(7)
         };
-        let diagnostics_ready = diagnostic_context.readiness == "ready";
+        let diagnostics_ready = diagnostics_context_is_ready(&diagnostic_context.readiness);
 
         container(
             column![
@@ -2466,127 +2484,124 @@ impl AIACSApp {
                 ]
                 .align_items(Alignment::Center),
                 row![
-                    container(
-                        column![
-                            text("Selected Context")
-                                .size(14)
-                                .font(Font::MONOSPACE)
-                                .style(theme::Text::Color(ACCENT_BLUE)),
-                            self.view_summary_row(
-                                "auth",
-                                "Customer",
-                                format!(
-                                    "{} ({})",
-                                    context.owner_name, diagnostic_context.customer_status
-                                )
-                            ),
-                            self.view_summary_row(
-                                "vehicle",
-                                "Vehicle",
-                                format!(
-                                    "{} ({})",
-                                    context.vehicle_id, diagnostic_context.vehicle_status
-                                )
-                            ),
-                            self.view_summary_row(
-                                "key",
-                                "Key Fob",
-                                format!(
-                                    "{} ({})",
-                                    context.fob_id, diagnostic_context.key_fob_status
-                                )
-                            ),
-                            self.view_summary_row(
-                                "certificate",
-                                "Certificate",
-                                format!(
-                                    "{} ({})",
-                                    diagnostic_context.certificate_id,
-                                    diagnostic_context.certificate_status
-                                )
-                            ),
-                            self.view_summary_row(
-                                "lock",
-                                "Session",
-                                format!(
-                                    "{} ({})",
-                                    diagnostic_context.session_id,
-                                    diagnostic_context.session_status
-                                )
-                            ),
-                            self.view_summary_row(
-                                "shield",
-                                "Encrypted Backup",
-                                diagnostic_context.encrypted_backup_status.clone()
-                            ),
-                            self.view_summary_row(
-                                "auth",
-                                "Fob Identity",
-                                diagnostic_context.fob_identity_status.clone()
-                            ),
-                            self.view_summary_row(
-                                "terminal",
-                                "Diagnostic Proof",
-                                diagnostic_context.diagnostic_proof_status.clone()
-                            ),
-                            self.view_summary_row(
-                                "decision",
-                                "Readiness",
-                                diagnostic_context.readiness_reason.clone()
-                            ),
-                        ]
-                        .spacing(7),
-                    )
-                    .width(Length::FillPortion(2))
-                    .padding(12)
-                    .style(container_style(PanelKind::Detail)),
-                    container(
-                        column![
-                            text("What Is Happening")
-                                .size(14)
-                                .font(Font::MONOSPACE)
-                                .style(theme::Text::Color(ACCENT_BLUE)),
-                            text(self.selected_detail.clone())
+                    column![
+                        container(
+                            column![
+                                text("Selected Context")
+                                    .size(14)
+                                    .font(Font::MONOSPACE)
+                                    .style(theme::Text::Color(ACCENT_BLUE)),
+                                self.view_summary_row(
+                                    "auth",
+                                    "Customer",
+                                    format!(
+                                        "{} ({})",
+                                        context.owner_name, diagnostic_context.customer_status
+                                    )
+                                ),
+                                self.view_summary_row(
+                                    "vehicle",
+                                    "Vehicle",
+                                    format!(
+                                        "{} ({})",
+                                        context.vehicle_id, diagnostic_context.vehicle_status
+                                    )
+                                ),
+                                self.view_summary_row(
+                                    "key",
+                                    "Key Fob",
+                                    format!(
+                                        "{} ({})",
+                                        context.fob_id, diagnostic_context.key_fob_status
+                                    )
+                                ),
+                                self.view_summary_row(
+                                    "certificate",
+                                    "Certificate",
+                                    format!(
+                                        "{} ({})",
+                                        diagnostic_context.certificate_id,
+                                        diagnostic_context.certificate_status
+                                    )
+                                ),
+                                self.view_summary_row(
+                                    "lock",
+                                    "Session",
+                                    format!(
+                                        "{} ({})",
+                                        diagnostic_context.session_id,
+                                        diagnostic_context.session_status
+                                    )
+                                ),
+                                self.view_summary_row(
+                                    "decision",
+                                    "Readiness",
+                                    diagnostic_context.readiness_reason.clone()
+                                ),
+                            ]
+                            .spacing(7),
+                        )
+                        .width(Length::Fill)
+                        .padding(12)
+                        .style(container_style(PanelKind::Detail)),
+                        self.diagnostic_button_panel(diagnostics_ready),
+                    ]
+                    .spacing(10)
+                    .width(Length::Fixed(560.0)),
+                    column![
+                        container(
+                            column![
+                                text("What Is Happening")
+                                    .size(14)
+                                    .font(Font::MONOSPACE)
+                                    .style(theme::Text::Color(ACCENT_BLUE)),
+                                text(if diagnostics_ready {
+                                    self.selected_detail.clone()
+                                } else {
+                                    format!(
+                                        "Diagnostics not ready: {}",
+                                        diagnostic_context.readiness_reason
+                                    )
+                                })
                                 .size(12)
                                 .font(Font::MONOSPACE)
                                 .style(theme::Text::Color(PRIMARY_TEXT)),
-                            progress_steps,
-                            self.view_summary_row(
-                                "certificate",
-                                "Evidence Directory",
-                                diagnostic_context.evidence_directory.clone()
-                            ),
-                        ]
-                        .spacing(7),
-                    )
-                    .width(Length::FillPortion(2))
-                    .padding(12)
-                    .style(container_style(PanelKind::Detail)),
-                ]
-                .spacing(10),
-                row![
-                    self.diagnostic_button_panel(diagnostics_ready),
-                    container(latest_result_panel)
-                        .width(Length::FillPortion(2))
+                                progress_steps,
+                                self.view_summary_row(
+                                    "certificate",
+                                    "Evidence Directory",
+                                    diagnostic_context.evidence_directory.clone()
+                                ),
+                            ]
+                            .spacing(7),
+                        )
+                        .width(Length::Fill)
                         .padding(12)
                         .style(container_style(PanelKind::Detail)),
+                        container(latest_result_panel)
+                            .width(Length::Fill)
+                            .padding(12)
+                            .style(container_style(PanelKind::Detail)),
+                        container(
+                            column![
+                                text("Diagnostic Results")
+                                    .size(14)
+                                    .font(Font::MONOSPACE)
+                                    .style(theme::Text::Color(ACCENT_PINK)),
+                                scrollable(result_cards).height(Length::Fill),
+                            ]
+                            .spacing(8),
+                        )
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .padding(10)
+                        .style(container_style(PanelKind::Panel)),
+                    ]
+                    .spacing(10)
+                    .width(Length::Fill),
                 ]
                 .spacing(10)
-                .height(Length::Shrink),
-                container(
-                    column![
-                        text("Diagnostic Results")
-                            .size(14)
-                            .font(Font::MONOSPACE)
-                            .style(theme::Text::Color(ACCENT_PINK)),
-                        scrollable(result_cards).height(Length::Fill),
-                    ]
-                    .spacing(8),
-                )
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .padding(10)
-                .style(container_style(PanelKind::Panel)),
+                .height(Length::Fill),
             ]
             .spacing(10),
         )
@@ -2602,11 +2617,14 @@ impl AIACSApp {
             row![
                 diagnostic_button("Replay Attack", "replay_attack", enabled),
                 diagnostic_button("Forged Signature", "forged_signature", enabled),
-                diagnostic_button("Fake Certificate", "fake_certificate", enabled),
             ]
             .spacing(6),
             row![
+                diagnostic_button("Fake Certificate", "fake_certificate", enabled),
                 diagnostic_button("Identity Mismatch", "identity_mismatch", enabled),
+            ]
+            .spacing(6),
+            row![
                 diagnostic_button("Delayed Relay", "delayed_relay", enabled),
                 diagnostic_button("Packet Tampering", "packet_tampering", enabled),
             ]
@@ -2614,33 +2632,35 @@ impl AIACSApp {
             row![
                 diagnostic_button("Tampered Ciphertext", "tampered_ciphertext", enabled),
                 diagnostic_button("Wrong Session Key", "wrong_session_key", enabled),
-                diagnostic_button("Wrong Master Key", "wrong_master_key_recovery", enabled),
             ]
             .spacing(6),
-            row![{
-                let mut run_all = button(
-                    row![
-                        icon("warning-shield", 16),
-                        text("Run All Diagnostics").size(11).font(Font::MONOSPACE)
-                    ]
-                    .spacing(7)
-                    .align_items(Alignment::Center),
-                )
-                .width(Length::Fixed(260.0))
-                .height(Length::Fixed(44.0))
-                .padding([6, 10])
-                .style(button_style(ButtonKind::Nav));
-                if enabled {
-                    run_all = run_all.on_press(Message::RunAllDiagnostics);
-                }
-                run_all
-            }]
+            row![
+                diagnostic_button("Wrong Master Key", "wrong_master_key_recovery", enabled),
+                {
+                    let mut run_all = button(
+                        row![
+                            icon("warning-shield", 16),
+                            text("Run All Diagnostics").size(11).font(Font::MONOSPACE)
+                        ]
+                        .spacing(7)
+                        .align_items(Alignment::Center),
+                    )
+                    .width(Length::Fixed(260.0))
+                    .height(Length::Fixed(44.0))
+                    .padding([6, 10])
+                    .style(button_style(ButtonKind::Nav));
+                    if enabled {
+                        run_all = run_all.on_press(Message::RunAllDiagnostics);
+                    }
+                    run_all
+                },
+            ]
             .spacing(6),
         ]
         .spacing(6);
 
         container(buttons)
-            .width(Length::FillPortion(3))
+            .width(Length::Fill)
             .padding(10)
             .style(container_style(PanelKind::Elevated))
             .into()
@@ -3818,7 +3838,7 @@ fn diagnostic_button(
         .spacing(7)
         .align_items(Alignment::Center),
     )
-    .width(Length::Fixed(220.0))
+    .width(Length::Fixed(260.0))
     .height(Length::Fixed(44.0))
     .padding([6, 10])
     .style(button_style(ButtonKind::Nav));
@@ -4188,6 +4208,10 @@ fn timestamped(tag: &str, message: &str) -> String {
         tag,
         message
     )
+}
+
+fn diagnostics_context_is_ready(readiness: &str) -> bool {
+    readiness == "ready"
 }
 
 #[cfg(test)]
@@ -4771,6 +4795,40 @@ mod tests {
         ] {
             assert!(!production_source.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn diagnostics_buttons_are_disabled_until_context_is_ready() {
+        let source = include_str!("main.rs");
+        let production_source = source
+            .split("mod tests")
+            .next()
+            .expect("main source should contain production code before tests");
+
+        assert!(production_source.contains("diagnostics_context_is_ready"));
+        assert!(production_source.contains("diagnostic_button_panel(diagnostics_ready)"));
+        assert!(production_source.contains("if enabled"));
+        assert!(production_source.contains("diagnostic = diagnostic.on_press"));
+        assert!(production_source.contains("run_all = run_all.on_press"));
+        assert!(production_source.contains("Diagnostics Not Ready"));
+        assert!(production_source
+            .contains("Select a customer, vehicle, and key fob before running attack validation."));
+    }
+
+    #[test]
+    fn diagnostics_controls_align_under_selected_context_layout() {
+        let source = include_str!("main.rs");
+        let production_source = source
+            .split("mod tests")
+            .next()
+            .expect("main source should contain production code before tests");
+
+        assert!(production_source.contains("self.diagnostic_button_panel(diagnostics_ready)"));
+        assert!(production_source.contains(".width(Length::Fixed(560.0))"));
+        assert!(production_source.contains(".width(Length::Fixed(260.0))"));
+        assert!(production_source.contains("Replay Attack"));
+        assert!(production_source.contains("Wrong Master Key"));
+        assert!(!production_source.contains("Run Wrong Master Key Recovery Test"));
     }
 
     #[test]

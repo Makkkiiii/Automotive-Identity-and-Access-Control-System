@@ -3395,6 +3395,7 @@ impl AppController {
             self.clear_selected_vehicle_and_fob();
         }
         self.refresh_session_id_for_active_context();
+        self.reset_diagnostics_for_context_change();
     }
 
     fn select_vehicle_context(&mut self, vehicle: VehicleMetadata, source: &str) {
@@ -3420,6 +3421,7 @@ impl AppController {
             self.clear_selected_key_fob();
         }
         self.refresh_session_id_for_active_context();
+        self.reset_diagnostics_for_context_change();
     }
 
     fn select_key_fob_context(&mut self, key_fob: KeyFobMetadata, source: &str) {
@@ -3448,11 +3450,13 @@ impl AppController {
             self.selected_customer = Some(self.active_customer.clone());
         }
         self.refresh_session_id_for_active_context();
+        self.reset_diagnostics_for_context_change();
     }
 
     fn clear_selected_vehicle_and_fob(&mut self) {
         self.selected_vehicle = None;
         self.clear_selected_key_fob();
+        self.reset_diagnostics_for_context_change();
     }
 
     fn clear_selected_key_fob(&mut self) {
@@ -3468,6 +3472,48 @@ impl AppController {
         self.last_auth_result = None;
         self.last_access_decision = None;
         self.provisioning_report_exported = false;
+        self.reset_diagnostics_for_context_change();
+    }
+
+    fn reset_diagnostics_for_context_change(&mut self) {
+        self.last_diagnostic_results.clear();
+        let context = self.get_visible_provisioning_context();
+        let mut summary = DiagnosticContextSummary {
+            customer_status: if context.customer_selected {
+                "loaded".to_string()
+            } else {
+                "missing".to_string()
+            },
+            vehicle_status: if context.vehicle_selected {
+                "loaded".to_string()
+            } else {
+                "missing".to_string()
+            },
+            key_fob_status: if context.key_fob_selected {
+                "loaded".to_string()
+            } else {
+                "missing".to_string()
+            },
+            certificate_id: context.certificate_id,
+            session_id: context.session_id,
+            evidence_directory: format!(
+                "{}/{}",
+                DIAGNOSTIC_RESULTS_DIR,
+                safe_path_component(&context.fob_id)
+            ),
+            ..DiagnosticContextSummary::default()
+        };
+        summary.readiness_reason = if !context.customer_selected {
+            "missing_customer"
+        } else if !context.vehicle_selected {
+            "missing_vehicle"
+        } else if !context.key_fob_selected {
+            "missing_key_fob"
+        } else {
+            "missing_certificate"
+        }
+        .to_string();
+        self.last_diagnostic_context = summary;
     }
 
     fn ensure_visible_customer_selected(&self) -> Result<(), AppControllerError> {
@@ -3934,8 +3980,10 @@ impl AppController {
 
     fn sync_diagnostic_dashboard_result(&mut self, result: &DiagnosticDashboardResult) -> String {
         if !self.cloud_auto_sync_enabled {
+            let _ = self.save_log_entry("[DB]", "diagnostic_sync_disabled");
             return "disabled".to_string();
         }
+        let _ = self.save_log_entry("[DB]", "diagnostic_sync_started");
         let executed_at = Utc::now();
         let mut record = DiagnosticResultRecord {
             diagnostic_id: result.diagnostic_id.clone(),
@@ -3969,22 +4017,27 @@ impl AppController {
                 } else {
                     "failed"
                 };
-                let _ =
-                    self.save_log_entry("[DB]", format!("Diagnostic cloud sync {status}: {error}"));
+                let _ = self.save_log_entry(
+                    "[DB]",
+                    format!(
+                        "diagnostic_sync_{status}: {}",
+                        redact_sensitive_terms(&error.to_string())
+                    ),
+                );
                 return status.to_string();
             }
         };
         record.cloud_sync_status = "synced".to_string();
         match self.run_cloud(async { client.upsert_diagnostic_result(&record).await }) {
-            Ok(_) => "synced".to_string(),
+            Ok(_) => {
+                let _ = self.save_log_entry("[DB]", "diagnostic_sync_success");
+                "synced".to_string()
+            }
             Err(error) => {
                 record.cloud_sync_status = "failed".to_string();
                 let _ = self.save_log_entry(
                     "[DB]",
-                    format!(
-                        "Diagnostic cloud sync failed: {}",
-                        Self::map_cloud_error(error)
-                    ),
+                    format!("diagnostic_sync_failed: {}", Self::map_cloud_error(error)),
                 );
                 "failed".to_string()
             }
@@ -8242,6 +8295,32 @@ mod tests {
         assert!(PathBuf::from(&result.evidence_file_path).exists());
         let _ = fs::remove_dir_all(
             PathBuf::from(DIAGNOSTIC_RESULTS_DIR).join("FOB-CRYPTO-PHASE10DISABLED"),
+        );
+    }
+
+    #[test]
+    fn test_diagnostic_results_clear_when_selected_context_changes() {
+        let mut controller = provision_selected_context_for_diagnostics("PHASE10CLEAR");
+        controller
+            .run_diagnostic_attack("replay_attack")
+            .expect("diagnostic should run before context change");
+        assert_eq!(controller.diagnostic_dashboard_results().len(), 1);
+
+        let customer = CustomerMetadata {
+            customer_id: "CUST-CRYPTO-CLEAR-B".to_string(),
+            owner_name: "Clear Context B".to_string(),
+            email: Some("clear-b@example.com".to_string()),
+            phone: None,
+        };
+        controller.select_customer_context(customer, "CloudSelected");
+
+        assert!(controller.diagnostic_dashboard_results().is_empty());
+        assert_eq!(
+            controller.diagnostic_context_summary().readiness_reason,
+            "missing_vehicle"
+        );
+        let _ = fs::remove_dir_all(
+            PathBuf::from(DIAGNOSTIC_RESULTS_DIR).join("FOB-CRYPTO-PHASE10CLEAR"),
         );
     }
 

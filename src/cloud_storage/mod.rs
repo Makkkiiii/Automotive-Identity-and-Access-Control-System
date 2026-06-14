@@ -899,6 +899,14 @@ ON CONFLICT (diagnostic_id) DO UPDATE SET
     updated_at_nepal_time = EXCLUDED.updated_at_nepal_time;
 "#;
 
+const VERIFY_DIAGNOSTIC_RESULT_EXISTS_SQL: &str = r#"
+SELECT EXISTS(
+    SELECT 1
+    FROM diagnostic_results
+    WHERE diagnostic_id = $1
+);
+"#;
+
 const UPSERT_ENCRYPTED_KEY_SQL: &str = r#"
 INSERT INTO encrypted_keys (
     key_id,
@@ -2031,7 +2039,7 @@ impl CloudStorageClient {
         &self,
         record: &DiagnosticResultRecord,
     ) -> Result<String, CloudStorageError> {
-        sqlx::query(UPSERT_DIAGNOSTIC_RESULT_SQL)
+        let result = sqlx::query(UPSERT_DIAGNOSTIC_RESULT_SQL)
             .bind(&record.diagnostic_id)
             .bind(&record.attack_name)
             .bind(&record.customer_id)
@@ -2059,6 +2067,18 @@ impl CloudStorageClient {
             .execute(&self.pool)
             .await
             .map_err(|_| CloudStorageError::DiagnosticResultSyncFailed)?;
+        if result.rows_affected() == 0 {
+            return Err(CloudStorageError::DiagnosticResultSyncFailed);
+        }
+
+        let exists: bool = sqlx::query_scalar(VERIFY_DIAGNOSTIC_RESULT_EXISTS_SQL)
+            .bind(&record.diagnostic_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|_| CloudStorageError::DiagnosticResultSyncFailed)?;
+        if !exists {
+            return Err(CloudStorageError::DiagnosticResultSyncFailed);
+        }
 
         Ok(DIAGNOSTIC_RESULTS_SYNCED_MESSAGE.to_string())
     }
@@ -2341,6 +2361,11 @@ fn audit_log_sync_sql() -> &'static str {
 #[cfg(test)]
 fn diagnostic_result_sync_sql() -> &'static str {
     UPSERT_DIAGNOSTIC_RESULT_SQL
+}
+
+#[cfg(test)]
+fn diagnostic_result_verify_sql() -> &'static str {
+    VERIFY_DIAGNOSTIC_RESULT_EXISTS_SQL
 }
 
 #[cfg(test)]
@@ -3265,6 +3290,19 @@ mod tests {
         assert!(sql.contains("defense_status = EXCLUDED.defense_status"));
         assert!(sql.contains("cloud_sync_status = EXCLUDED.cloud_sync_status"));
         assert!(sql.contains("updated_at = EXCLUDED.updated_at"));
+    }
+
+    #[test]
+    fn diagnostic_result_sync_verifies_inserted_row_exists() {
+        let upsert_sql = diagnostic_result_sync_sql();
+        let verify_sql = diagnostic_result_verify_sql();
+
+        assert!(upsert_sql.contains("cloud_sync_status"));
+        assert!(verify_sql.contains("SELECT EXISTS"));
+        assert!(verify_sql.contains("FROM diagnostic_results"));
+        assert!(verify_sql.contains("WHERE diagnostic_id = $1"));
+        assert!(!verify_sql.to_lowercase().contains("database_url"));
+        assert!(!verify_sql.to_lowercase().contains("private_key"));
     }
 
     #[test]
