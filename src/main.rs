@@ -2420,20 +2420,16 @@ impl AIACSApp {
                     .font(Font::MONOSPACE)
                     .style(theme::Text::Color(ACCENT_BLUE)),
                 self.view_summary_row("warning-shield", "Attack", result.attack_label.clone()),
-                self.view_summary_row(
-                    "terminal",
-                    "Insecure Baseline Simulation",
-                    diagnostic_display_value(&result.baseline_result)
-                ),
-                self.view_summary_row(
-                    "shield",
-                    "AIACS Protected Validation",
-                    diagnostic_display_value(&result.protected_result)
-                ),
+                self.view_summary_row("terminal", "Outcome", diagnostic_outcome_value(&result)),
                 self.view_summary_row(
                     "auth",
-                    "Security Control Triggered",
+                    "Security Control",
                     diagnostic_display_value(&result.security_control_triggered)
+                ),
+                self.view_summary_row(
+                    "decision",
+                    "Access Decision",
+                    result.access_decision.clone()
                 ),
                 self.view_summary_row("decision", "Final Result", result.pass_fail.to_uppercase()),
                 self.view_summary_row("certificate", "Security Meaning", security_meaning),
@@ -2465,7 +2461,7 @@ impl AIACSApp {
                     .size(14)
                     .font(Font::MONOSPACE)
                     .style(theme::Text::Color(ACCENT_BLUE)),
-                text("Run a diagnostic to see baseline, protected result, control, evidence path, and cloud sync status.")
+                text("Run a diagnostic to see outcome, control, evidence path, and cloud sync status.")
                     .size(12)
                     .font(Font::MONOSPACE)
                     .style(theme::Text::Color(SECONDARY_TEXT)),
@@ -2731,7 +2727,7 @@ impl AIACSApp {
         container(
             column![
                 row![
-                    text(result.attack_label)
+                    text(result.attack_label.clone())
                         .size(14)
                         .font(Font::MONOSPACE)
                         .style(theme::Text::Color(ACCENT_PINK))
@@ -2742,16 +2738,7 @@ impl AIACSApp {
                         "FAIL"
                     }),
                 ],
-                self.view_summary_row(
-                    "terminal",
-                    "Baseline",
-                    diagnostic_display_value(&result.baseline_result)
-                ),
-                self.view_summary_row(
-                    "shield",
-                    "AIACS Protected",
-                    diagnostic_display_value(&result.protected_result)
-                ),
+                self.view_summary_row("terminal", "Outcome", diagnostic_outcome_value(&result)),
                 self.view_summary_row(
                     "auth",
                     "Control",
@@ -4076,12 +4063,9 @@ fn format_diagnostic_execution_step(index: usize, step: &str) -> String {
 
 fn diagnostic_display_value(value: &str) -> String {
     match value {
-        "attack_successful_vehicle_opened" => {
-            "Vulnerable - replayed signal accepted and vehicle opened.".to_string()
-        }
-        "attack_blocked_access_denied" => {
-            "Protected - replay attack blocked and access denied.".to_string()
-        }
+        "attack_successful_vehicle_opened" => "Vulnerable — replay signal accepted".to_string(),
+        "vulnerable_replay_signal_accepted" => "Vulnerable — replay signal accepted".to_string(),
+        "attack_blocked_access_denied" => "Protected — attack blocked".to_string(),
         "nonce_reuse_detection" => "Nonce Reuse Detection".to_string(),
         "certificate_required" => "Certificate Required".to_string(),
         "certificate_required_or_nonce_reuse_detection" => {
@@ -4099,10 +4083,17 @@ fn diagnostic_display_value(value: &str) -> String {
         "session_key_binding" => "Session Key Binding".to_string(),
         "encrypted_key_recovery_protection" => "Encrypted Key Recovery Protection".to_string(),
         "not_applicable" => "Not applicable for this diagnostic.".to_string(),
-        "Insecure clone exposed plaintext signal; AIACS protected clone was encrypted and denied" => {
-            "Insecure clone exposed plaintext signal; AIACS protected clone was encrypted and denied.".to_string()
-        }
         other => format_status_label(other),
+    }
+}
+
+fn diagnostic_outcome_value(result: &aiacs::app_controller::DiagnosticDashboardResult) -> String {
+    if result.attack_name == "no_aiacs_signal_clone_attack" {
+        diagnostic_display_value(&result.actual_result)
+    } else if result.protected_result != "not_applicable" {
+        diagnostic_display_value(&result.protected_result)
+    } else {
+        diagnostic_display_value(&result.actual_result)
     }
 }
 
@@ -4110,9 +4101,9 @@ fn diagnostic_security_meaning(
     result: &aiacs::app_controller::DiagnosticDashboardResult,
 ) -> String {
     if result.attack_name == "replay_attack" && result.pass_fail == "pass" {
-        "Without AIACS protections, the replayed signal can open the vehicle. With AIACS enabled, the same replay attempt is rejected.".to_string()
+        "Attack is rejected.".to_string()
     } else if result.attack_name == "no_aiacs_signal_clone_attack" && result.pass_fail == "pass" {
-        "Without AIACS, the signal is exposed and reusable. With AIACS, the captured signal is protected and cannot be reused to open the vehicle.".to_string()
+        "Attack Successful — Signal Cloned".to_string()
     } else if result.pass_fail == "pass" {
         "AIACS security controls blocked the diagnostic attack scenario.".to_string()
     } else {
@@ -4130,7 +4121,7 @@ fn diagnostic_evidence_folder(result: &aiacs::app_controller::DiagnosticDashboar
 
 fn diagnostic_files_created(result: &aiacs::app_controller::DiagnosticDashboardResult) -> String {
     if result.attack_name == "no_aiacs_signal_clone_attack" {
-        "insecure_cloned_signal.json, protected_cloned_signal.enc, protected_clone_metadata.json, attacker_clone_evidence.json".to_string()
+        "insecure_cloned_signal.json, attacker_clone_evidence.json".to_string()
     } else {
         "protected_cloned_signal.enc, protected_clone_metadata.json, attacker_clone_evidence.json"
             .to_string()
@@ -5169,11 +5160,15 @@ mod tests {
     fn diagnostics_display_formats_replay_comparison_for_humans() {
         assert_eq!(
             diagnostic_display_value("attack_successful_vehicle_opened"),
-            "Vulnerable - replayed signal accepted and vehicle opened."
+            "Vulnerable — replay signal accepted"
         );
         assert_eq!(
             diagnostic_display_value("attack_blocked_access_denied"),
-            "Protected - replay attack blocked and access denied."
+            "Protected — attack blocked"
+        );
+        assert_eq!(
+            diagnostic_display_value("vulnerable_replay_signal_accepted"),
+            "Vulnerable — replay signal accepted"
         );
         assert_eq!(
             diagnostic_display_value("nonce_reuse_detection"),
@@ -5190,12 +5185,6 @@ mod tests {
         assert_eq!(
             diagnostic_display_value("not_applicable"),
             "Not applicable for this diagnostic."
-        );
-        assert_eq!(
-            diagnostic_display_value(
-                "Insecure clone exposed plaintext signal; AIACS protected clone was encrypted and denied"
-            ),
-            "Insecure clone exposed plaintext signal; AIACS protected clone was encrypted and denied."
         );
     }
 

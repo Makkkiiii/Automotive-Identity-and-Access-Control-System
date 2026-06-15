@@ -4180,10 +4180,12 @@ impl AppController {
             );
 
         Ok(SelectedReplayComparison {
-            baseline_result: "attack_successful_vehicle_opened".to_string(),
-            baseline_access_decision: "grant_access".to_string(),
-            baseline_status: "vulnerable".to_string(),
-            baseline_explanation: "The insecure baseline accepted the replayed signal because replay protection and freshness validation were not enforced.".to_string(),
+            baseline_result: "not_applicable".to_string(),
+            baseline_access_decision: "not_applicable".to_string(),
+            baseline_status: "not_applicable".to_string(),
+            baseline_explanation:
+                "Insecure baseline comparison is not applicable for this protected diagnostic."
+                    .to_string(),
             protected_result: if pass {
                 "attack_blocked_access_denied"
             } else {
@@ -4220,21 +4222,6 @@ impl AppController {
                 .as_ref()
                 .map(|metadata| metadata.fob_id == self.active_key_fob.fob_id)
                 .unwrap_or(false);
-        let security_control = if has_certificate {
-            "nonce_reuse_detection"
-        } else {
-            "certificate_required"
-        };
-        let actual_result = if has_certificate {
-            "Access denied: Reused nonce"
-        } else {
-            "Access denied: Missing certificate"
-        };
-        let protected_observation = if has_certificate {
-            "The captured AIACS-protected signal is bound to a fresh challenge and cannot be reused successfully."
-        } else {
-            "AIACS requires a CA-issued certificate before key fob access can be trusted."
-        };
 
         let artifact_dir =
             protected_attacker_artifact_dir(&context.fob_id, "no_aiacs_signal_clone_attack");
@@ -4247,9 +4234,15 @@ impl AppController {
         let obsolete_protected_json_path = artifact_dir.join("protected_cloned_signal.json");
         let evidence_path = artifact_dir.join("attacker_clone_evidence.json");
         let created_at_nepal_time = format_nepal_time(created_at);
-        if obsolete_protected_json_path.exists() {
-            fs::remove_file(&obsolete_protected_json_path)
-                .map_err(|error| AppControllerError::Backend(error.to_string()))?;
+        for stale_path in [
+            &protected_path,
+            &protected_metadata_path,
+            &obsolete_protected_json_path,
+        ] {
+            if stale_path.exists() {
+                fs::remove_file(stale_path)
+                    .map_err(|error| AppControllerError::Backend(error.to_string()))?;
+            }
         }
 
         let insecure_signal = serde_json::json!({
@@ -4274,42 +4267,7 @@ impl AppController {
             "created_at_nepal_time": created_at_nepal_time
         });
 
-        let protected_capture = simulated_protected_clone_capture(
-            "no_aiacs_signal_clone_attack",
-            &context.fob_id,
-            &context.vehicle_id,
-            certificate_id,
-            session_id,
-            security_control,
-            &created_at_nepal_time,
-        )?;
-        let ciphertext_fingerprint = fingerprint(&protected_capture);
-        let protected_metadata = serde_json::json!({
-            "warning": "AIACS PROTECTED CAPTURE - PAYLOAD STORED AS ENCRYPTED BINARY ARTIFACT",
-            "mode": "aiacs_protected",
-            "attack_name": "no_aiacs_signal_clone_attack",
-            "customer_id": context.customer_id,
-            "vehicle_id": context.vehicle_id,
-            "fob_id": context.fob_id,
-            "certificate_id": certificate_id,
-            "session_id": session_id,
-            "protected_clone_file": path_for_report(&protected_path),
-            "encryption_algorithm": "AES-256-GCM",
-            "identity_algorithm": "Ed25519",
-            "key_agreement": "X25519 + HKDF-SHA256",
-            "ciphertext_fingerprint": ciphertext_fingerprint,
-            "attacker_observation": "The attacker can capture metadata but cannot recover private keys, session keys, valid fresh challenges, or reusable authentication material.",
-            "aiacs_access_decision": "deny_access",
-            "protected_result": "attack_blocked_access_denied",
-            "actual_result": actual_result,
-            "security_control_triggered": security_control,
-            "created_at_nepal_time": created_at_nepal_time
-        });
-
         let insecure_path_for_report = path_for_report(&insecure_path);
-        let protected_path_for_report = path_for_report(&protected_path);
-        let protected_metadata_path_for_report = path_for_report(&protected_metadata_path);
-        let evidence_path_for_report = path_for_report(&evidence_path);
         let evidence = serde_json::json!({
             "attack_name": "no_aiacs_signal_clone_attack",
             "customer_id": context.customer_id,
@@ -4317,29 +4275,25 @@ impl AppController {
             "fob_id": context.fob_id,
             "certificate_id": certificate_id,
             "session_id": session_id,
+            "mode": "no_aiacs_baseline_only",
             "insecure_baseline": {
                 "cloned_signal_file": insecure_path_for_report,
                 "attacker_visibility": "plaintext_signal_visible",
                 "baseline_result": "attack_successful_vehicle_opened",
-                "access_decision": "grant_access"
+                "baseline_status": "vulnerable",
+                "access_decision": "grant_access",
+                "vehicle_result": "vehicle_opened"
             },
-            "aiacs_protected": {
-                "encrypted_clone_file": protected_path_for_report,
-                "metadata_file": protected_metadata_path_for_report,
-                "attacker_visibility": "encrypted_payload_only",
-                "protected_result": "attack_blocked_access_denied",
-                "access_decision": "deny_access",
-                "security_control_triggered": security_control
-            },
+            "protected_result": "not_applicable",
+            "security_control_triggered": "not_applicable",
+            "access_decision": "grant_access",
+            "diagnostic_status": "vulnerable",
             "pass_fail": "pass",
-            "security_meaning": "Without AIACS protections, a cloned plaintext/static signal can be reused to open the vehicle. With AIACS enabled, the captured material is protected and the replayed/cloned attempt is rejected.",
+            "security_meaning": "Without AIACS protections, a cloned plaintext/static signal can be reused to open the vehicle.",
             "created_at_nepal_time": created_at_nepal_time
         });
 
         write_pretty_json(&insecure_path, &insecure_signal)?;
-        fs::write(&protected_path, protected_capture)
-            .map_err(|error| AppControllerError::Backend(error.to_string()))?;
-        write_pretty_json(&protected_metadata_path, &protected_metadata)?;
         write_pretty_json(&evidence_path, &evidence)?;
 
         Ok((
@@ -4348,16 +4302,21 @@ impl AppController {
                 baseline_access_decision: "grant_access".to_string(),
                 baseline_status: "vulnerable".to_string(),
                 baseline_explanation: "The insecure vehicle accepted the cloned plaintext fob signal because AIACS protections were not enforced.".to_string(),
-                protected_result: "attack_blocked_access_denied".to_string(),
-                protected_status: "protected".to_string(),
-                protected_explanation: protected_observation.to_string(),
-                actual_result: "Insecure clone exposed plaintext signal; AIACS protected clone was encrypted and denied".to_string(),
-                security_control_triggered: security_control.to_string(),
-                access_decision: "deny_access".to_string(),
-                diagnostic_status: "protected".to_string(),
+                protected_result: "not_applicable".to_string(),
+                protected_status: "not_applicable".to_string(),
+                protected_explanation: if has_certificate {
+                    "Run a protected diagnostic such as Replay Attack to generate encrypted AIACS capture evidence."
+                } else {
+                    "AIACS protection has not been provisioned for this selected fob."
+                }
+                .to_string(),
+                actual_result: "vulnerable_replay_signal_accepted".to_string(),
+                security_control_triggered: "not_applicable".to_string(),
+                access_decision: "grant_access".to_string(),
+                diagnostic_status: "vulnerable".to_string(),
                 pass_fail: "pass".to_string(),
             },
-            evidence_path_for_report,
+            insecure_path_for_report,
         ))
     }
 
@@ -5581,12 +5540,13 @@ fn diagnostic_definition(attack_key: &str) -> Result<DiagnosticDefinition, AppCo
             attack_name: "no_aiacs_signal_clone_attack",
             attack_label: "No-AIACS Signal Clone Attack",
             attack_type: None,
-            expected_result: "attack_blocked_access_denied",
+            expected_result: "attack_successful_vehicle_opened",
             baseline_result: "attack_successful_vehicle_opened",
-            protected_result: "attack_blocked_access_denied",
-            security_control: "certificate_required_or_nonce_reuse_detection",
-            access_decision: "deny_access",
-            evidence_summary: "The insecure baseline exposes a cloneable plaintext signal while AIACS protects captured material and denies cloned access.",
+            protected_result: "not_applicable",
+            security_control: "not_applicable",
+            access_decision: "grant_access",
+            evidence_summary:
+                "The insecure baseline exposes a cloneable plaintext signal and grants access.",
             requires_certificate: false,
             requires_signed_payload: false,
             requires_session: false,
@@ -5943,8 +5903,7 @@ fn no_aiacs_signal_clone_steps() -> &'static [&'static str] {
         "Step 1: Load selected customer, vehicle, and key fob",
         "Step 2: Simulate plaintext static unlock signal capture",
         "Step 3: Clone insecure signal in no-AIACS baseline",
-        "Step 4: Evaluate AIACS protected validation result",
-        "Step 5: Save attacker artifact evidence files",
+        "Step 4: Save plaintext clone evidence files",
     ]
 }
 
@@ -8985,7 +8944,7 @@ mod tests {
         assert_eq!(result.customer_id, "CUST-CRYPTO-PHASE10REPLAY");
         assert_eq!(result.vehicle_id, "VEH-CRYPTO-PHASE10REPLAY");
         assert_eq!(result.fob_id, "FOB-CRYPTO-PHASE10REPLAY");
-        assert_eq!(result.baseline_result, "attack_successful_vehicle_opened");
+        assert_eq!(result.baseline_result, "not_applicable");
         assert_eq!(result.protected_result, "attack_blocked_access_denied");
         assert_eq!(result.actual_result, "Access denied: Reused nonce");
         assert_eq!(result.security_control_triggered, "nonce_reuse_detection");
@@ -9058,7 +9017,7 @@ mod tests {
         assert_eq!(result.customer_id, "CUST-CRYPTO-REPLAYREAL");
         assert_eq!(result.vehicle_id, "VEH-CRYPTO-REPLAYREAL");
         assert_eq!(result.fob_id, "FOB-CRYPTO-REPLAYREAL");
-        assert_eq!(result.baseline_result, "attack_successful_vehicle_opened");
+        assert_eq!(result.baseline_result, "not_applicable");
         assert_eq!(result.protected_result, "attack_blocked_access_denied");
         assert_eq!(result.actual_result, "Access denied: Reused nonce");
         assert_eq!(result.security_control_triggered, "nonce_reuse_detection");
@@ -9077,6 +9036,20 @@ mod tests {
         let mut controller =
             AppController::new_with_log_dir(temp_log_dir("no_aiacs_clone_no_cert"));
         bind_custom_context(&mut controller, "NOAIACS");
+        let artifact_dir = PathBuf::from(ATTACKER_ARTIFACTS_DIR)
+            .join("FOB-CRYPTO-NOAIACS")
+            .join("no_aiacs_signal_clone_attack");
+        fs::create_dir_all(&artifact_dir).expect("stale artifact dir should be created");
+        fs::write(
+            artifact_dir.join("protected_cloned_signal.enc"),
+            b"stale protected bytes",
+        )
+        .expect("stale protected capture should be created");
+        fs::write(
+            artifact_dir.join("protected_clone_metadata.json"),
+            b"{\"stale\":true}",
+        )
+        .expect("stale protected metadata should be created");
 
         assert!(controller.current_certificate().is_none());
         let result = controller
@@ -9090,21 +9063,16 @@ mod tests {
         assert_eq!(result.certificate_id, "not_issued");
         assert_eq!(result.session_id, "not_established");
         assert_eq!(result.baseline_result, "attack_successful_vehicle_opened");
-        assert_eq!(result.protected_result, "attack_blocked_access_denied");
-        assert_eq!(
-            result.actual_result,
-            "Insecure clone exposed plaintext signal; AIACS protected clone was encrypted and denied"
-        );
-        assert_eq!(result.security_control_triggered, "certificate_required");
-        assert_eq!(result.access_decision, "deny_access");
+        assert_eq!(result.protected_result, "not_applicable");
+        assert_eq!(result.actual_result, "vulnerable_replay_signal_accepted");
+        assert_eq!(result.security_control_triggered, "not_applicable");
+        assert_eq!(result.access_decision, "grant_access");
+        assert_eq!(result.diagnostic_status, "vulnerable");
         assert_eq!(result.pass_fail, "pass");
         assert!(result
             .evidence_file_path
-            .ends_with("attacker_artifacts/FOB-CRYPTO-NOAIACS/no_aiacs_signal_clone_attack/attacker_clone_evidence.json"));
+            .ends_with("attacker_artifacts/FOB-CRYPTO-NOAIACS/no_aiacs_signal_clone_attack/insecure_cloned_signal.json"));
 
-        let artifact_dir = PathBuf::from(ATTACKER_ARTIFACTS_DIR)
-            .join("FOB-CRYPTO-NOAIACS")
-            .join("no_aiacs_signal_clone_attack");
         let insecure_path = artifact_dir.join("insecure_cloned_signal.json");
         let protected_path = artifact_dir.join("protected_cloned_signal.enc");
         let protected_metadata_path = artifact_dir.join("protected_clone_metadata.json");
@@ -9112,8 +9080,8 @@ mod tests {
         let evidence_path = artifact_dir.join("attacker_clone_evidence.json");
 
         assert!(insecure_path.exists());
-        assert!(protected_path.exists());
-        assert!(protected_metadata_path.exists());
+        assert!(!protected_path.exists());
+        assert!(!protected_metadata_path.exists());
         assert!(!old_protected_json_path.exists());
         assert!(evidence_path.exists());
 
@@ -9124,47 +9092,15 @@ mod tests {
         assert!(insecure.contains("grant_access"));
         assert!(insecure.contains("attack_successful_vehicle_opened"));
 
-        let protected = fs::read(&protected_path).expect("protected signal should exist");
-        assert!(!protected.is_empty());
-        let protected_text = String::from_utf8_lossy(&protected);
-        assert!(!protected_text.contains("AIACS-PROTECTED-CLONE-V1"));
-        assert!(!protected_text.contains("ciphertext="));
-        assert!(!protected_text.contains("algorithm="));
-        assert!(!protected_text.trim_start().starts_with('{'));
-        for forbidden_plaintext in [
-            "FOB-CRYPTO-NOAIACS",
-            "VEH-CRYPTO-NOAIACS",
-            "fob_id",
-            "vehicle_id",
-            "unlock_vehicle",
-            "static_authorization_value",
-            "private_key",
-            "session_key",
-            "AIACS_MASTER_KEY",
-        ] {
-            assert!(
-                !protected_text.contains(forbidden_plaintext),
-                "protected encrypted artifact leaked {forbidden_plaintext}"
-            );
-        }
-
-        let metadata =
-            fs::read_to_string(&protected_metadata_path).expect("protected metadata should exist");
-        assert!(metadata.contains("FOB-CRYPTO-NOAIACS"));
-        assert!(metadata.contains("protected_cloned_signal.enc"));
-        assert!(metadata.contains("ciphertext_fingerprint"));
-        assert!(metadata.contains("certificate_required"));
-        assert!(!metadata.contains("raw_payload"));
-        assert!(!metadata.contains("session_key"));
-        assert!(!metadata.contains("private_key"));
-
         let evidence = fs::read_to_string(&evidence_path).expect("evidence should exist");
         assert!(evidence.contains("\"insecure_baseline\""));
-        assert!(evidence.contains("\"aiacs_protected\""));
+        assert!(!evidence.contains("\"aiacs_protected\""));
         assert!(evidence.contains("plaintext_signal_visible"));
-        assert!(evidence.contains("encrypted_payload_only"));
-        assert!(evidence.contains("protected_cloned_signal.enc"));
-        assert!(evidence.contains("protected_clone_metadata.json"));
+        assert!(evidence.contains("\"diagnostic_status\": \"vulnerable\""));
+        assert!(evidence.contains("\"access_decision\": \"grant_access\""));
+        assert!(!evidence.contains("encrypted_payload_only"));
+        assert!(!evidence.contains("protected_cloned_signal.enc"));
+        assert!(!evidence.contains("protected_clone_metadata.json"));
         assert!(evidence.contains("FOB-CRYPTO-NOAIACS"));
         assert!(!evidence.contains("FOB-TEST-001"));
         assert!(!evidence.contains("VEH-TEST-001"));

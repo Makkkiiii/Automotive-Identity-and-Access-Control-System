@@ -1,0 +1,19 @@
+{
+  "aiacs_protected": {
+    "access_decision": "deny_access",
+    "attacker_visibility": "encrypted_payload_only",
+    "encrypted_clone_file": "attacker_artifacts/FOB-87C41D3A/replay_attack/protected_cloned_signal.enc",
+    "metadata_file": "attacker_artifacts/FOB-87C41D3A/replay_attack/protected_clone_metadata.json",
+    "protected_result": "attack_blocked_access_denied",
+    "security_control_triggered": "nonce_reuse_detection"
+  },
+  "attack_name": "replay_attack",
+  "certificate_id": "CERT-FOB-87C41D3A",
+  "created_at_nepal_time": "2026-06-15 10:02:04 NPT",
+  "customer_id": "CUST-61AB2AE9",
+  "fob_id": "FOB-87C41D3A",
+  "pass_fail": "pass",
+  "security_meaning": "The attacker can capture protected encrypted material, but the cloned signal cannot be reused to open the vehicle because AIACS validates certificate binding, freshness, replay protection, and session integrity.",
+  "session_id": "SESSION-241C49C4",
+  "vehicle_id": "VEH-1BB2B719"
+}

@@ -1,0 +1,21 @@
+{
+  "actual_result": "Access denied: Reused nonce",
+  "aiacs_access_decision": "deny_access",
+  "attack_name": "replay_attack",
+  "attacker_observation": "The attacker captured protected encrypted material but cannot read or reuse the signal successfully.",
+  "certificate_id": "CERT-FOB-87C41D3A",
+  "ciphertext_fingerprint": "SHA256:9DD80481EF94ABFB",
+  "created_at_nepal_time": "2026-06-15 10:02:04 NPT",
+  "customer_id": "CUST-61AB2AE9",
+  "encryption_algorithm": "AES-256-GCM",
+  "fob_id": "FOB-87C41D3A",
+  "identity_algorithm": "Ed25519",
+  "key_agreement": "X25519 + HKDF-SHA256",
+  "mode": "aiacs_protected",
+  "protected_clone_file": "attacker_artifacts/FOB-87C41D3A/replay_attack/protected_cloned_signal.enc",
+  "protected_result": "attack_blocked_access_denied",
+  "security_control_triggered": "nonce_reuse_detection",
+  "session_id": "SESSION-241C49C4",
+  "vehicle_id": "VEH-1BB2B719",
+  "warning": "AIACS PROTECTED CAPTURE - PAYLOAD STORED AS ENCRYPTED BINARY ARTIFACT"
+}
