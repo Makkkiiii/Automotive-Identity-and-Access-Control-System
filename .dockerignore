@@ -1,0 +1,14 @@
+target/
+.git/
+.gitignore
+.env
+.env.*
+*.env
+keys/
+recovery_artifacts/
+report_exports/
+diagnostic_results/
+attacker_artifacts/
+*.log
+*.tmp
+.DS_Store

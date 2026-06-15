@@ -77,12 +77,12 @@ The main desktop application is the **Vehicle Access Provisioning Console**. Sec
 12. [Neon PostgreSQL Setup](#neon-postgresql-setup)
 13. [Installation](#installation)
 14. [Running the Application](#running-the-application)
-15. [Testing and Validation](#testing-and-validation)
-16. [Runtime Generated Files](#runtime-generated-files)
-17. [Provisioning Audit Report](#provisioning-audit-report)
-18. [Screenshots](#screenshots)
-19. [Security Design Notes](#security-design-notes)
-20. [Development Status](#development-status)
+15. [Docker Support](#docker-support)
+16. [Testing and Validation](#testing-and-validation)
+17. [Runtime Generated Files](#runtime-generated-files)
+18. [Provisioning Audit Report](#provisioning-audit-report)
+19. [Screenshots](#screenshots)
+20. [Security Design Notes](#security-design-notes)
 21. [Academic Scope and Limitations](#academic-scope-and-limitations)
 22. [License](#license)
 
@@ -569,6 +569,49 @@ Run the release binary on Linux/macOS:
 9. Launch diagnostics separately when testing adversarial validation.
 
 Selected cloud metadata records are now bound to the cryptographic provisioning flow: a selected/custom key fob uses its own Ed25519 keypair, receives a CA-issued certificate for that fob ID, signs the vehicle challenge as that fob, and syncs only safe certificate/session/audit metadata. Plaintext private keys and session secrets are not uploaded.
+
+---
+
+## Docker Support
+
+Docker support is provided for reproducible build, test, clippy, diagnostics execution, and dependency consistency. The native host binary is still recommended for the full Iced desktop GUI demo. GUI execution inside Docker is optional and depends on host display forwarding, especially on Linux X11/Wayland.
+
+Secrets are not baked into the image. Provide `DATABASE_URL` and `AIACS_MASTER_KEY` at runtime only, and persist generated artifacts with volume mounts when needed.
+
+Build the image:
+
+```bash
+docker build -t aiacs:final .
+```
+
+Run diagnostics/headless:
+
+```bash
+docker run --rm \
+  -e DATABASE_URL="your_neon_database_url" \
+  -e AIACS_MASTER_KEY="your_local_master_key" \
+  -v "$PWD/attacker_artifacts:/app/attacker_artifacts" \
+  -v "$PWD/diagnostic_results:/app/diagnostic_results" \
+  -v "$PWD/recovery_artifacts:/app/recovery_artifacts" \
+  aiacs:final
+```
+
+Run the GUI on Linux X11, optional:
+
+```bash
+xhost +local:docker
+docker run --rm -it \
+  -e DISPLAY=$DISPLAY \
+  -e DATABASE_URL="your_neon_database_url" \
+  -e AIACS_MASTER_KEY="your_local_master_key" \
+  -v /tmp/.X11-unix:/tmp/.X11-unix \
+  -v "$PWD/attacker_artifacts:/app/attacker_artifacts" \
+  -v "$PWD/diagnostic_results:/app/diagnostic_results" \
+  -v "$PWD/recovery_artifacts:/app/recovery_artifacts" \
+  aiacs:final aiacs
+```
+
+On Windows, GUI execution through Docker may require WSLg or an external X server. For submission, Docker is best used to validate reproducible build/test/diagnostics support, while the GUI demo is best performed natively.
 
 ---
 
