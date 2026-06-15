@@ -180,7 +180,6 @@ enum CloudOperation {
     CredentialRecoveryTest,
     PrepareDiagnostics,
     RunDiagnostic,
-    RunAllDiagnostics,
 }
 
 #[derive(Debug, Clone)]
@@ -265,7 +264,6 @@ enum Message {
     VerifyAuthentication,
     ActivateSecureChannel,
     RunDiagnostic(String),
-    RunAllDiagnostics,
     CloudOperationFinished(Box<CloudOperationResult>),
     ClearLog,
     ExportLogs,
@@ -697,21 +695,6 @@ impl Application for AIACSApp {
                     }
                 });
             }
-            Message::RunAllDiagnostics => {
-                self.cloud_sync_diagnostic_status = "Running all diagnostics...".to_string();
-                self.begin_cloud_operation("Running all diagnostic attack validations...");
-                return self.run_cloud_operation_with(move |mut controller| {
-                    let result = controller
-                        .run_all_diagnostics()
-                        .map(|results| format!("All diagnostics completed: {}", results.len()))
-                        .map_err(|error| error.to_string());
-                    CloudOperationResult {
-                        operation: CloudOperation::RunAllDiagnostics,
-                        controller,
-                        result,
-                    }
-                });
-            }
             Message::CloudOperationFinished(result) => {
                 return self.finish_cloud_operation(*result);
             }
@@ -1005,7 +988,7 @@ impl AIACSApp {
                 let cloud_status = cloud_status_from_provisioning_result(&message);
                 self.cloud_sync_audit_status = cloud_status;
             }
-            CloudOperation::RunDiagnostic | CloudOperation::RunAllDiagnostics => {
+            CloudOperation::RunDiagnostic => {
                 self.cloud_sync_diagnostic_status = "Diagnostics completed".to_string();
                 self.selected_detail = message.clone();
                 self.push_log("[ATTACK]", message);
@@ -1140,7 +1123,7 @@ impl AIACSApp {
                     error,
                 );
             }
-            CloudOperation::RunDiagnostic | CloudOperation::RunAllDiagnostics => {
+            CloudOperation::RunDiagnostic => {
                 self.cloud_sync_diagnostic_status = "Diagnostics failed".to_string();
                 self.selected_detail = format!("Diagnostic failed: {}", error);
                 self.push_log("[ERROR]", self.selected_detail.clone());
@@ -2424,21 +2407,45 @@ impl AIACSApp {
             .spacing(6)
         };
         let latest_result_panel = if let Some(result) = latest_result {
+            let security_meaning = diagnostic_security_meaning(&result);
             column![
                 text("Latest Result")
                     .size(14)
                     .font(Font::MONOSPACE)
                     .style(theme::Text::Color(ACCENT_BLUE)),
-                self.view_summary_row("warning-shield", "Attack", result.attack_label),
-                self.view_summary_row("terminal", "Baseline Result", result.baseline_result),
-                self.view_summary_row("shield", "AIACS Protected", result.protected_result),
+                self.view_summary_row("warning-shield", "Attack", result.attack_label.clone()),
+                self.view_summary_row(
+                    "terminal",
+                    "Insecure Baseline Simulation",
+                    diagnostic_display_value(&result.baseline_result)
+                ),
+                self.view_summary_row(
+                    "shield",
+                    "AIACS Protected Validation",
+                    diagnostic_display_value(&result.protected_result)
+                ),
                 self.view_summary_row(
                     "auth",
-                    "Security Control",
-                    result.security_control_triggered
+                    "Security Control Triggered",
+                    diagnostic_display_value(&result.security_control_triggered)
                 ),
-                self.view_summary_row("decision", "Result", result.pass_fail.to_uppercase()),
-                self.view_summary_row("certificate", "Evidence File", result.evidence_file_path),
+                self.view_summary_row("decision", "Final Result", result.pass_fail.to_uppercase()),
+                self.view_summary_row("certificate", "Security Meaning", security_meaning),
+                self.view_summary_row(
+                    "terminal",
+                    "Evidence Folder",
+                    diagnostic_evidence_folder(&result)
+                ),
+                self.view_summary_row(
+                    "certificate",
+                    "Files Created",
+                    diagnostic_files_created(&result)
+                ),
+                self.view_summary_row(
+                    "certificate",
+                    "Evidence File",
+                    result.evidence_file_path.clone()
+                ),
                 self.view_summary_row(
                     "terminal",
                     "Cloud Sync",
@@ -2460,6 +2467,8 @@ impl AIACSApp {
             .spacing(7)
         };
         let diagnostics_ready = diagnostics_context_is_ready(&diagnostic_context.readiness);
+        let selected_context_ready =
+            context.customer_selected && context.vehicle_selected && context.key_fob_selected;
         let top_diagnostic_panel_height = Length::Fixed(310.0);
         let trace_status = if diagnostics_ready {
             self.selected_detail.clone()
@@ -2603,7 +2612,7 @@ impl AIACSApp {
                         .width(Length::Fill)
                         .padding(12)
                         .style(container_style(PanelKind::Detail)),
-                        self.diagnostic_button_panel(diagnostics_ready),
+                        self.diagnostic_button_panel(diagnostics_ready, selected_context_ready),
                     ]
                     .spacing(10)
                     .width(Length::Fixed(560.0)),
@@ -2628,48 +2637,75 @@ impl AIACSApp {
         .into()
     }
 
-    fn diagnostic_button_panel(&self, enabled: bool) -> Element<'_, Message> {
+    fn diagnostic_button_panel(
+        &self,
+        enabled: bool,
+        selected_context_ready: bool,
+    ) -> Element<'_, Message> {
         let buttons = column![
             row![
-                diagnostic_button("Replay Attack", "replay_attack", enabled),
-                diagnostic_button("Forged Signature", "forged_signature", enabled),
+                diagnostic_button(
+                    "No-AIACS Clone",
+                    "no_aiacs_signal_clone_attack",
+                    selected_context_ready,
+                    ButtonKind::DiagnosticPrimary
+                ),
+                diagnostic_button("Replay Attack", "replay_attack", enabled, ButtonKind::Nav),
             ]
             .spacing(6),
             row![
-                diagnostic_button("Fake Certificate", "fake_certificate", enabled),
-                diagnostic_button("Identity Mismatch", "identity_mismatch", enabled),
+                diagnostic_button(
+                    "Forged Signature",
+                    "forged_signature",
+                    enabled,
+                    ButtonKind::Nav
+                ),
+                diagnostic_button(
+                    "Fake Certificate",
+                    "fake_certificate",
+                    enabled,
+                    ButtonKind::Nav
+                ),
             ]
             .spacing(6),
             row![
-                diagnostic_button("Delayed Relay", "delayed_relay", enabled),
-                diagnostic_button("Packet Tampering", "packet_tampering", enabled),
+                diagnostic_button(
+                    "Identity Mismatch",
+                    "identity_mismatch",
+                    enabled,
+                    ButtonKind::Nav
+                ),
+                diagnostic_button("Delayed Relay", "delayed_relay", enabled, ButtonKind::Nav),
             ]
             .spacing(6),
             row![
-                diagnostic_button("Tampered Ciphertext", "tampered_ciphertext", enabled),
-                diagnostic_button("Wrong Session Key", "wrong_session_key", enabled),
+                diagnostic_button(
+                    "Packet Tampering",
+                    "packet_tampering",
+                    enabled,
+                    ButtonKind::Nav
+                ),
+                diagnostic_button(
+                    "Tampered Ciphertext",
+                    "tampered_ciphertext",
+                    enabled,
+                    ButtonKind::Nav
+                ),
             ]
             .spacing(6),
             row![
-                diagnostic_button("Wrong Master Key", "wrong_master_key_recovery", enabled),
-                {
-                    let mut run_all = button(
-                        row![
-                            icon("warning-shield", 16),
-                            text("Run All Diagnostics").size(11).font(Font::MONOSPACE)
-                        ]
-                        .spacing(7)
-                        .align_items(Alignment::Center),
-                    )
-                    .width(Length::Fixed(260.0))
-                    .height(Length::Fixed(44.0))
-                    .padding([6, 10])
-                    .style(button_style(ButtonKind::Nav));
-                    if enabled {
-                        run_all = run_all.on_press(Message::RunAllDiagnostics);
-                    }
-                    run_all
-                },
+                diagnostic_button(
+                    "Wrong Session Key",
+                    "wrong_session_key",
+                    enabled,
+                    ButtonKind::Nav
+                ),
+                diagnostic_button(
+                    "Wrong Master Key",
+                    "wrong_master_key_recovery",
+                    enabled,
+                    ButtonKind::Nav
+                ),
             ]
             .spacing(6),
         ]
@@ -2700,9 +2736,21 @@ impl AIACSApp {
                         "FAIL"
                     }),
                 ],
-                self.view_summary_row("terminal", "Baseline", result.baseline_result),
-                self.view_summary_row("shield", "AIACS Protected", result.protected_result),
-                self.view_summary_row("auth", "Control", result.security_control_triggered),
+                self.view_summary_row(
+                    "terminal",
+                    "Baseline",
+                    diagnostic_display_value(&result.baseline_result)
+                ),
+                self.view_summary_row(
+                    "shield",
+                    "AIACS Protected",
+                    diagnostic_display_value(&result.protected_result)
+                ),
+                self.view_summary_row(
+                    "auth",
+                    "Control",
+                    diagnostic_display_value(&result.security_control_triggered)
+                ),
                 self.view_summary_row("decision", "Access Decision", result.access_decision),
                 self.view_summary_row("certificate", "Evidence", result.evidence_file_path),
                 self.view_summary_row(
@@ -3642,6 +3690,7 @@ impl iced::widget::container::StyleSheet for PanelStyle {
 enum ButtonKind {
     StepAction,
     Nav,
+    DiagnosticPrimary,
     Tab(bool),
     Artifact(bool),
 }
@@ -3658,6 +3707,7 @@ impl iced::widget::button::StyleSheet for ButtonStyle {
         let (text_color, border_color) = match self.kind {
             ButtonKind::StepAction => (PRIMARY_TEXT, ACCENT_PINK),
             ButtonKind::Nav => (ACCENT_BLUE, ACCENT_BLUE),
+            ButtonKind::DiagnosticPrimary => (PRIMARY_TEXT, ACCENT_PINK),
             ButtonKind::Tab(selected) => {
                 if selected {
                     (ACCENT_PINK, ACCENT_PINK)
@@ -3673,13 +3723,21 @@ impl iced::widget::button::StyleSheet for ButtonStyle {
                 }
             }
         };
+        let background = match self.kind {
+            ButtonKind::DiagnosticPrimary => Color::from_rgb(0.22, 0.14, 0.19),
+            _ => BUTTON_BG,
+        };
 
         iced::widget::button::Appearance {
-            background: Some(Background::Color(BUTTON_BG)),
+            background: Some(Background::Color(background)),
             text_color,
             border: Border {
                 color: border_color,
-                width: 1.0,
+                width: if matches!(self.kind, ButtonKind::DiagnosticPrimary) {
+                    1.4
+                } else {
+                    1.0
+                },
                 radius: 5.0.into(),
             },
             ..Default::default()
@@ -3845,6 +3903,7 @@ fn diagnostic_button(
     label: &'static str,
     attack_key: &'static str,
     enabled: bool,
+    kind: ButtonKind,
 ) -> Element<'static, Message> {
     let mut diagnostic = button(
         row![
@@ -3857,7 +3916,7 @@ fn diagnostic_button(
     .width(Length::Fixed(260.0))
     .height(Length::Fixed(44.0))
     .padding([6, 10])
-    .style(button_style(ButtonKind::Nav));
+    .style(button_style(kind));
     if enabled {
         diagnostic = diagnostic.on_press(Message::RunDiagnostic(attack_key.to_string()));
     }
@@ -3909,6 +3968,72 @@ fn format_diagnostic_execution_step(index: usize, step: &str) -> String {
     format!("{}. {}", step_number, step_text)
 }
 
+fn diagnostic_display_value(value: &str) -> String {
+    match value {
+        "attack_successful_vehicle_opened" => {
+            "Vulnerable - replayed signal accepted and vehicle opened.".to_string()
+        }
+        "attack_blocked_access_denied" => {
+            "Protected - replay attack blocked and access denied.".to_string()
+        }
+        "nonce_reuse_detection" => "Nonce Reuse Detection".to_string(),
+        "certificate_required" => "Certificate Required".to_string(),
+        "certificate_required_or_nonce_reuse_detection" => {
+            "Certificate Required / Nonce Reuse Detection".to_string()
+        }
+        "freshness_validation" => "Freshness Validation".to_string(),
+        "ed25519_signature_verification" => "Ed25519 Signature Verification".to_string(),
+        "certificate_validation" => "Certificate Validation".to_string(),
+        "selected_fob_identity_binding" => "Selected Fob Identity Binding".to_string(),
+        "timestamp_freshness_validation" => "Timestamp Freshness Validation".to_string(),
+        "payload_integrity_verification" => "Payload Integrity Verification".to_string(),
+        "aes_256_gcm_authenticated_encryption" => {
+            "AES-256-GCM Authenticated Encryption".to_string()
+        }
+        "session_key_binding" => "Session Key Binding".to_string(),
+        "encrypted_key_recovery_protection" => "Encrypted Key Recovery Protection".to_string(),
+        "not_applicable" => "Not applicable for this diagnostic.".to_string(),
+        "Insecure clone exposed plaintext signal; AIACS protected clone was encrypted and denied" => {
+            "Insecure clone exposed plaintext signal; AIACS protected clone was encrypted and denied.".to_string()
+        }
+        other => format_status_label(other),
+    }
+}
+
+fn diagnostic_security_meaning(
+    result: &aiacs::app_controller::DiagnosticDashboardResult,
+) -> String {
+    if result.attack_name == "replay_attack" && result.pass_fail == "pass" {
+        "Without AIACS protections, the replayed signal can open the vehicle. With AIACS enabled, the same replay attempt is rejected.".to_string()
+    } else if result.attack_name == "no_aiacs_signal_clone_attack" && result.pass_fail == "pass" {
+        "Without AIACS, the signal is exposed and reusable. With AIACS, the captured signal is protected and cannot be reused to open the vehicle.".to_string()
+    } else if result.pass_fail == "pass" {
+        "AIACS security controls blocked the diagnostic attack scenario.".to_string()
+    } else {
+        "Review diagnostic evidence before trusting this scenario.".to_string()
+    }
+}
+
+fn diagnostic_evidence_folder(result: &aiacs::app_controller::DiagnosticDashboardResult) -> String {
+    if result.attack_name == "no_aiacs_signal_clone_attack" {
+        format!("attacker_artifacts/{}/", result.fob_id)
+    } else {
+        result
+            .evidence_file_path
+            .rsplit_once('/')
+            .map(|(folder, _)| folder.to_string())
+            .unwrap_or_else(|| "diagnostic_results".to_string())
+    }
+}
+
+fn diagnostic_files_created(result: &aiacs::app_controller::DiagnosticDashboardResult) -> String {
+    if result.attack_name == "no_aiacs_signal_clone_attack" {
+        "insecure_cloned_signal.json, protected_cloned_signal.enc, protected_clone_metadata.json, attacker_clone_evidence.json".to_string()
+    } else {
+        "diagnostic evidence JSON".to_string()
+    }
+}
+
 fn perform_cloud_operation(
     mut controller: AppController,
     operation: CloudOperation,
@@ -3932,7 +4057,7 @@ fn perform_cloud_operation(
         CloudOperation::SelectCustomer
         | CloudOperation::SelectVehicle
         | CloudOperation::SelectKeyFob => unreachable!("select operations carry selected ids"),
-        CloudOperation::RunDiagnostic | CloudOperation::RunAllDiagnostics => {
+        CloudOperation::RunDiagnostic => {
             unreachable!("diagnostic operations carry selected attack context")
         }
         CloudOperation::PrepareDiagnostics => controller.prepare_diagnostics_context(),
@@ -4832,10 +4957,12 @@ mod tests {
             .expect("main source should contain production code before tests");
 
         assert!(production_source.contains("diagnostics_context_is_ready"));
-        assert!(production_source.contains("diagnostic_button_panel(diagnostics_ready)"));
+        assert!(production_source
+            .contains("diagnostic_button_panel(diagnostics_ready, selected_context_ready)"));
+        assert!(production_source.contains("No-AIACS Clone"));
         assert!(production_source.contains("if enabled"));
         assert!(production_source.contains("diagnostic = diagnostic.on_press"));
-        assert!(production_source.contains("run_all = run_all.on_press"));
+        assert!(!production_source.contains("run_all = run_all.on_press"));
         assert!(production_source.contains("Diagnostics Not Ready"));
         assert!(production_source
             .contains("Select a customer, vehicle, and key fob before running attack validation."));
@@ -4849,11 +4976,17 @@ mod tests {
             .next()
             .expect("main source should contain production code before tests");
 
-        assert!(production_source.contains("self.diagnostic_button_panel(diagnostics_ready)"));
+        assert!(production_source
+            .contains("self.diagnostic_button_panel(diagnostics_ready, selected_context_ready)"));
         assert!(production_source.contains(".width(Length::Fixed(560.0))"));
         assert!(production_source.contains(".width(Length::Fixed(260.0))"));
+        assert!(production_source.contains("No-AIACS Clone"));
+        assert!(production_source.contains("ButtonKind::DiagnosticPrimary"));
+        assert!(production_source.contains("Color::from_rgb(0.22, 0.14, 0.19)"));
+        assert!(production_source.contains(".width(Length::Fill)"));
         assert!(production_source.contains("Replay Attack"));
         assert!(production_source.contains("Wrong Master Key"));
+        assert!(!production_source.contains("Run All Diagnostics"));
         assert!(!production_source.contains("Run Wrong Master Key Recovery Test"));
     }
 
@@ -4890,6 +5023,40 @@ mod tests {
         ] {
             assert!(!labels.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn diagnostics_display_formats_replay_comparison_for_humans() {
+        assert_eq!(
+            diagnostic_display_value("attack_successful_vehicle_opened"),
+            "Vulnerable - replayed signal accepted and vehicle opened."
+        );
+        assert_eq!(
+            diagnostic_display_value("attack_blocked_access_denied"),
+            "Protected - replay attack blocked and access denied."
+        );
+        assert_eq!(
+            diagnostic_display_value("nonce_reuse_detection"),
+            "Nonce Reuse Detection"
+        );
+        assert_eq!(
+            diagnostic_display_value("certificate_required_or_nonce_reuse_detection"),
+            "Certificate Required / Nonce Reuse Detection"
+        );
+        assert_eq!(
+            diagnostic_display_value("certificate_required"),
+            "Certificate Required"
+        );
+        assert_eq!(
+            diagnostic_display_value("not_applicable"),
+            "Not applicable for this diagnostic."
+        );
+        assert_eq!(
+            diagnostic_display_value(
+                "Insecure clone exposed plaintext signal; AIACS protected clone was encrypted and denied"
+            ),
+            "Insecure clone exposed plaintext signal; AIACS protected clone was encrypted and denied."
+        );
     }
 
     #[test]

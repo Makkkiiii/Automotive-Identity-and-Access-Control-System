@@ -42,6 +42,7 @@ const PROTOCOL_TRACE_LOG_FILE: &str = "aiacs_protocol_trace.log";
 const PROVISIONING_REPORT_FILE: &str = "aiacs_provisioning_report.txt";
 const RECOVERY_ARTIFACTS_DIR: &str = "recovery_artifacts";
 const DIAGNOSTIC_RESULTS_DIR: &str = "diagnostic_results";
+const ATTACKER_ARTIFACTS_DIR: &str = "attacker_artifacts";
 const CA_PRIVATE_KEY_PATH: &str = "keys/ca_private.json";
 const CA_PUBLIC_KEY_PATH: &str = "keys/ca_public.json";
 const KEYFOB_PRIVATE_KEY_PATH: &str = "keys/fob_FOB-0001_private.json";
@@ -949,6 +950,7 @@ impl AppController {
         &mut self,
     ) -> Result<Vec<DiagnosticDashboardResult>, AppControllerError> {
         let keys = [
+            "no_aiacs_signal_clone_attack",
             "replay_attack",
             "forged_signature",
             "fake_certificate",
@@ -1246,6 +1248,12 @@ impl AppController {
         &self,
         attack_key: &str,
     ) -> Result<Vec<String>, AppControllerError> {
+        if attack_key == "no_aiacs_signal_clone_attack" {
+            return Ok(no_aiacs_signal_clone_steps()
+                .iter()
+                .map(|step| (*step).to_string())
+                .collect());
+        }
         let attack_type = attack_type_from_key(attack_key)?;
         Ok(attack_steps(attack_type)
             .iter()
@@ -3033,6 +3041,33 @@ impl AppController {
         self.active_session_id.clone()
     }
 
+    fn diagnostic_certificate_id_for_selected_context(&self) -> String {
+        if self.current_certificate_belongs_to_active_fob()
+            || self
+                .active_certificate_metadata
+                .as_ref()
+                .map(|metadata| metadata.fob_id == self.active_key_fob.fob_id)
+                .unwrap_or(false)
+        {
+            self.derive_certificate_id_for_active_context()
+        } else {
+            "not_issued".to_string()
+        }
+    }
+
+    fn diagnostic_session_id_for_selected_context(&self) -> String {
+        if self
+            .session
+            .as_ref()
+            .map(|session| session.established)
+            .unwrap_or(false)
+        {
+            self.derive_session_id_for_active_context()
+        } else {
+            "not_established".to_string()
+        }
+    }
+
     pub fn get_cloud_sync_status_summary(&self) -> String {
         if self.cloud_auto_sync_enabled {
             "Cloud auto-sync enabled; safe provisioning metadata will sync after successful workflow actions".to_string()
@@ -3681,6 +3716,18 @@ impl AppController {
         definition: DiagnosticDefinition,
     ) -> Result<(), AppControllerError> {
         let mut summary = self.hydrate_diagnostics_context(false)?;
+        if definition.attack_name == "no_aiacs_signal_clone_attack" {
+            self.ensure_visible_provisioning_context_selected()?;
+            summary.readiness = "ready".to_string();
+            summary.readiness_reason = "selected_context_ready".to_string();
+            summary.evidence_directory = format!(
+                "{}/{}",
+                ATTACKER_ARTIFACTS_DIR,
+                safe_path_component(&self.active_key_fob.fob_id)
+            );
+            self.last_diagnostic_context = summary;
+            return Ok(());
+        }
         if summary.readiness != "ready" {
             self.last_diagnostic_context = summary.clone();
             return Err(AppControllerError::Backend(summary.readiness_reason));
@@ -3822,25 +3869,48 @@ impl AppController {
     ) -> Result<DiagnosticDashboardResult, AppControllerError> {
         let created_at = Utc::now();
         let context = self.get_visible_provisioning_context();
-        let certificate_id = self.derive_certificate_id_for_active_context();
-        let session_id = self.active_session_id.clone();
-        let (actual_result, protected_result, access_decision, pass_fail) =
-            if let Some(attack_type) = definition.attack_type {
+        let certificate_id = self.diagnostic_certificate_id_for_selected_context();
+        let session_id = self.diagnostic_session_id_for_selected_context();
+        let (comparison, custom_evidence_file_path) =
+            if definition.attack_name == "no_aiacs_signal_clone_attack" {
+                let (comparison, evidence_path) = self.run_no_aiacs_signal_clone_diagnostic(
+                    &context,
+                    &certificate_id,
+                    &session_id,
+                    created_at,
+                )?;
+                (comparison, Some(evidence_path))
+            } else if definition.attack_name == "replay_attack" {
+                (self.run_selected_replay_diagnostic_comparison()?, None)
+            } else if let Some(attack_type) = definition.attack_type {
                 let attack_result = run_adversarial_attack(attack_type);
                 let pass = attack_result.success;
                 (
-                    attack_result.access_decision.clone(),
-                    if pass {
-                        definition.protected_result.to_string()
-                    } else {
-                        "attack_not_blocked".to_string()
+                    SelectedReplayComparison {
+                        baseline_result: definition.baseline_result.to_string(),
+                        baseline_access_decision: "not_applicable".to_string(),
+                        baseline_status: "not_applicable".to_string(),
+                        baseline_explanation:
+                            "Insecure baseline comparison is not applicable for this diagnostic."
+                                .to_string(),
+                        protected_result: if pass {
+                            definition.protected_result.to_string()
+                        } else {
+                            "attack_not_blocked".to_string()
+                        },
+                        protected_status: if pass { "protected" } else { "failed" }.to_string(),
+                        protected_explanation: definition.evidence_summary.to_string(),
+                        actual_result: attack_result.access_decision.clone(),
+                        security_control_triggered: definition.security_control.to_string(),
+                        access_decision: if pass {
+                            definition.access_decision.to_string()
+                        } else {
+                            "grant_access".to_string()
+                        },
+                        diagnostic_status: if pass { "protected" } else { "failed" }.to_string(),
+                        pass_fail: if pass { "pass" } else { "fail" }.to_string(),
                     },
-                    if pass {
-                        definition.access_decision.to_string()
-                    } else {
-                        "grant_access".to_string()
-                    },
-                    if pass { "pass" } else { "fail" }.to_string(),
+                    None,
                 )
             } else {
                 let master_key = parse_master_key_from_env()
@@ -3850,40 +3920,59 @@ impl AppController {
                 let failed_safely =
                     decrypt_private_key_from_cloud(&record.encrypted_key, &wrong_key).is_err();
                 (
-                    if failed_safely {
-                        "encrypted_key_recovery_failed"
-                    } else {
-                        "encrypted_key_recovery_unexpectedly_succeeded"
-                    }
-                    .to_string(),
-                    if failed_safely {
-                        "recovery_blocked"
-                    } else {
-                        "recovery_not_blocked"
-                    }
-                    .to_string(),
-                    "not_applicable".to_string(),
-                    if failed_safely { "pass" } else { "fail" }.to_string(),
+                    SelectedReplayComparison {
+                        baseline_result: definition.baseline_result.to_string(),
+                        baseline_access_decision: "not_applicable".to_string(),
+                        baseline_status: "not_applicable".to_string(),
+                        baseline_explanation:
+                            "Insecure baseline comparison is not applicable for this diagnostic."
+                                .to_string(),
+                        protected_result: if failed_safely {
+                            "recovery_blocked"
+                        } else {
+                            "recovery_not_blocked"
+                        }
+                        .to_string(),
+                        protected_status: if failed_safely { "protected" } else { "failed" }
+                            .to_string(),
+                        protected_explanation: definition.evidence_summary.to_string(),
+                        actual_result: if failed_safely {
+                            "encrypted_key_recovery_failed"
+                        } else {
+                            "encrypted_key_recovery_unexpectedly_succeeded"
+                        }
+                        .to_string(),
+                        security_control_triggered: definition.security_control.to_string(),
+                        access_decision: "not_applicable".to_string(),
+                        diagnostic_status: if failed_safely { "protected" } else { "failed" }
+                            .to_string(),
+                        pass_fail: if failed_safely { "pass" } else { "fail" }.to_string(),
+                    },
+                    None,
                 )
             };
-
-        let evidence_file_path = self.save_diagnostic_evidence(DiagnosticEvidenceInput {
-            definition,
-            context: &context,
-            certificate_id: &certificate_id,
-            session_id: &session_id,
-            actual_result: &actual_result,
-            protected_result: &protected_result,
-            access_decision: &access_decision,
-            pass_fail: &pass_fail,
-            created_at,
-        })?;
-        let evidence_summary = definition.evidence_summary.to_string();
-        let diagnostic_status = if pass_fail == "pass" {
-            "protected".to_string()
+        let evidence_file_path = if let Some(evidence_file_path) = custom_evidence_file_path {
+            evidence_file_path
         } else {
-            "failed".to_string()
+            self.save_diagnostic_evidence(DiagnosticEvidenceInput {
+                definition,
+                context: &context,
+                certificate_id: &certificate_id,
+                session_id: &session_id,
+                actual_result: &comparison.actual_result,
+                baseline_access_decision: &comparison.baseline_access_decision,
+                baseline_status: &comparison.baseline_status,
+                baseline_explanation: &comparison.baseline_explanation,
+                protected_result: &comparison.protected_result,
+                protected_status: &comparison.protected_status,
+                protected_explanation: &comparison.protected_explanation,
+                access_decision: &comparison.access_decision,
+                security_control_triggered: &comparison.security_control_triggered,
+                pass_fail: &comparison.pass_fail,
+                created_at,
+            })?
         };
+        let evidence_summary = definition.evidence_summary.to_string();
         let mut result = DiagnosticDashboardResult {
             diagnostic_id: format!(
                 "DIAG-{}-{}-{}",
@@ -3899,13 +3988,13 @@ impl AppController {
             certificate_id,
             session_id,
             expected_result: definition.expected_result.to_string(),
-            baseline_result: definition.baseline_result.to_string(),
-            protected_result,
-            actual_result,
-            security_control_triggered: definition.security_control.to_string(),
-            access_decision,
-            diagnostic_status,
-            pass_fail,
+            baseline_result: comparison.baseline_result,
+            protected_result: comparison.protected_result,
+            actual_result: comparison.actual_result,
+            security_control_triggered: comparison.security_control_triggered,
+            access_decision: comparison.access_decision,
+            diagnostic_status: comparison.diagnostic_status,
+            pass_fail: comparison.pass_fail,
             evidence_summary,
             evidence_file_path,
             cloud_sync_status: "disabled".to_string(),
@@ -3913,6 +4002,244 @@ impl AppController {
         };
         result.cloud_sync_status = self.sync_diagnostic_dashboard_result(&result);
         Ok(result)
+    }
+
+    fn run_selected_replay_diagnostic_comparison(
+        &mut self,
+    ) -> Result<SelectedReplayComparison, AppControllerError> {
+        self.ensure_visible_provisioning_context_selected()?;
+        self.sync_vehicle_module_to_active_context()?;
+        self.ensure_active_key_fob_crypto_identity()?;
+
+        if self.current_certificate().is_none() || !self.current_certificate_belongs_to_active_fob()
+        {
+            self.issue_keyfob_certificate()?;
+        }
+
+        let ca = self
+            .ca
+            .clone()
+            .ok_or_else(|| AppControllerError::Backend("missing_certificate".to_string()))?;
+        let keyfob = self
+            .keyfob
+            .clone()
+            .ok_or_else(|| AppControllerError::Backend("missing_fob_identity".to_string()))?;
+        let vehicle_id = self.active_vehicle.vehicle_id.clone();
+        let fob_id = self.active_key_fob.fob_id.clone();
+
+        let mut diagnostic_vehicle = VehicleControlModule::new(vehicle_id.clone());
+        diagnostic_vehicle.initialize()?;
+        let challenge =
+            AuthenticationEngine::generate_challenge(&mut diagnostic_vehicle, &vehicle_id)
+                .map_err(|error| AppControllerError::Backend(error.to_string()))?;
+        let proof = keyfob.create_auth_proof(&vehicle_id, &challenge.nonce)?;
+        self.validate_auth_proof_binding(&proof)?;
+        self.active_challenge = Some(challenge);
+        self.active_auth_proof = Some(proof.clone());
+
+        let first_auth_result =
+            AuthenticationEngine::verify_response(&proof, &ca, &mut diagnostic_vehicle, 60)
+                .unwrap_or(AuthResult::InvalidSignature);
+        let replay_auth_result =
+            AuthenticationEngine::verify_response(&proof, &ca, &mut diagnostic_vehicle, 60)
+                .unwrap_or(AuthResult::InvalidSignature);
+
+        let diagnostic_session =
+            active_diagnostic_session(&self.active_session_id, &vehicle_id, &fob_id);
+        let protected_decision =
+            AccessDecisionEngine::evaluate_access(replay_auth_result, &diagnostic_session);
+        let protected_rejected = matches!(protected_decision, AccessDecision::RejectAccess(_));
+        let security_control = diagnostic_security_control_for_auth_result(replay_auth_result);
+        let pass = first_auth_result == AuthResult::Success
+            && protected_rejected
+            && matches!(
+                replay_auth_result,
+                AuthResult::ReusedNonce | AuthResult::FreshnessTimeout
+            );
+
+        Ok(SelectedReplayComparison {
+            baseline_result: "attack_successful_vehicle_opened".to_string(),
+            baseline_access_decision: "grant_access".to_string(),
+            baseline_status: "vulnerable".to_string(),
+            baseline_explanation: "The insecure baseline accepted the replayed signal because replay protection and freshness validation were not enforced.".to_string(),
+            protected_result: if pass {
+                "attack_blocked_access_denied"
+            } else {
+                "attack_not_blocked"
+            }
+            .to_string(),
+            protected_status: if pass { "protected" } else { "failed" }.to_string(),
+            protected_explanation: replay_protected_explanation(replay_auth_result).to_string(),
+            actual_result: AccessDecisionEngine::decision_message(&protected_decision),
+            security_control_triggered: security_control.to_string(),
+            access_decision: if protected_rejected {
+                "deny_access"
+            } else {
+                "grant_access"
+            }
+            .to_string(),
+            diagnostic_status: if pass { "protected" } else { "failed" }.to_string(),
+            pass_fail: if pass { "pass" } else { "fail" }.to_string(),
+        })
+    }
+
+    fn run_no_aiacs_signal_clone_diagnostic(
+        &mut self,
+        context: &VisibleProvisioningContext,
+        certificate_id: &str,
+        session_id: &str,
+        created_at: DateTime<Utc>,
+    ) -> Result<(SelectedReplayComparison, String), AppControllerError> {
+        self.ensure_visible_provisioning_context_selected()?;
+
+        let has_certificate = self.current_certificate_belongs_to_active_fob()
+            || self
+                .active_certificate_metadata
+                .as_ref()
+                .map(|metadata| metadata.fob_id == self.active_key_fob.fob_id)
+                .unwrap_or(false);
+        let security_control = if has_certificate {
+            "nonce_reuse_detection"
+        } else {
+            "certificate_required"
+        };
+        let actual_result = if has_certificate {
+            "Access denied: Reused nonce"
+        } else {
+            "Access denied: Missing certificate"
+        };
+        let protected_observation = if has_certificate {
+            "The captured AIACS-protected signal is bound to a fresh challenge and cannot be reused successfully."
+        } else {
+            "AIACS requires a CA-issued certificate before key fob access can be trusted."
+        };
+
+        let artifact_dir =
+            PathBuf::from(ATTACKER_ARTIFACTS_DIR).join(safe_path_component(&context.fob_id));
+        fs::create_dir_all(&artifact_dir)
+            .map_err(|error| AppControllerError::Backend(error.to_string()))?;
+
+        let insecure_path = artifact_dir.join("insecure_cloned_signal.json");
+        let protected_path = artifact_dir.join("protected_cloned_signal.enc");
+        let protected_metadata_path = artifact_dir.join("protected_clone_metadata.json");
+        let obsolete_protected_json_path = artifact_dir.join("protected_cloned_signal.json");
+        let evidence_path = artifact_dir.join("attacker_clone_evidence.json");
+        let created_at_nepal_time = format_nepal_time(created_at);
+        if obsolete_protected_json_path.exists() {
+            fs::remove_file(&obsolete_protected_json_path)
+                .map_err(|error| AppControllerError::Backend(error.to_string()))?;
+        }
+
+        let insecure_signal = serde_json::json!({
+            "warning": "INSECURE BASELINE SIMULATION - FOR ACADEMIC DEMONSTRATION ONLY",
+            "mode": "no_aiacs_baseline",
+            "customer_id": context.customer_id,
+            "vehicle_id": context.vehicle_id,
+            "fob_id": context.fob_id,
+            "signal_type": "static_plaintext_unlock_signal",
+            "command": "unlock_vehicle",
+            "captured_fob_identifier": context.fob_id,
+            "captured_vehicle_identifier": context.vehicle_id,
+            "captured_signal_payload": {
+                "fob_id": context.fob_id,
+                "vehicle_id": context.vehicle_id,
+                "command": "unlock_vehicle",
+                "static_authorization_value": "PLAINTEXT_STATIC_SIGNAL_FOR_SIMULATION"
+            },
+            "attacker_observation": "The attacker can read and clone the plaintext signal because no certificate, challenge-response, freshness, replay protection, or session encryption is enforced.",
+            "baseline_access_decision": "grant_access",
+            "baseline_result": "attack_successful_vehicle_opened",
+            "created_at_nepal_time": created_at_nepal_time
+        });
+
+        let protected_capture = simulated_protected_clone_capture(
+            &context.fob_id,
+            &context.vehicle_id,
+            certificate_id,
+            session_id,
+            security_control,
+            &created_at_nepal_time,
+        )?;
+        let ciphertext_fingerprint = fingerprint(protected_capture.as_bytes());
+        let protected_metadata = serde_json::json!({
+            "warning": "AIACS PROTECTED SIGNAL CAPTURE - SECRET MATERIAL REDACTED",
+            "mode": "aiacs_protected",
+            "customer_id": context.customer_id,
+            "vehicle_id": context.vehicle_id,
+            "fob_id": context.fob_id,
+            "certificate_id": certificate_id,
+            "session_id": session_id,
+            "protected_clone_file": path_for_report(&protected_path),
+            "encryption_algorithm": "AES-256-GCM",
+            "identity_algorithm": "Ed25519",
+            "key_agreement": "X25519 + HKDF-SHA256",
+            "ciphertext_fingerprint": ciphertext_fingerprint,
+            "attacker_observation": "The attacker can capture metadata but cannot recover private keys, session keys, valid fresh challenges, or reusable authentication material.",
+            "aiacs_access_decision": "deny_access",
+            "protected_result": "attack_blocked_access_denied",
+            "actual_result": actual_result,
+            "security_control_triggered": security_control,
+            "created_at_nepal_time": created_at_nepal_time
+        });
+
+        let insecure_path_for_report = path_for_report(&insecure_path);
+        let protected_path_for_report = path_for_report(&protected_path);
+        let protected_metadata_path_for_report = path_for_report(&protected_metadata_path);
+        let evidence_path_for_report = path_for_report(&evidence_path);
+        let evidence = serde_json::json!({
+            "attack_name": "no_aiacs_signal_clone_attack",
+            "customer_id": context.customer_id,
+            "vehicle_id": context.vehicle_id,
+            "fob_id": context.fob_id,
+            "certificate_id": certificate_id,
+            "session_id": session_id,
+            "insecure_baseline": {
+                "cloned_signal_file": insecure_path_for_report,
+                "attacker_visibility": "plaintext_signal_visible",
+                "baseline_result": "attack_successful_vehicle_opened",
+                "access_decision": "grant_access"
+            },
+            "aiacs_protected": {
+                "encrypted_clone_file": protected_path_for_report,
+                "metadata_file": protected_metadata_path_for_report,
+                "attacker_visibility": "encrypted_payload_only",
+                "protected_result": "attack_blocked_access_denied",
+                "access_decision": "deny_access",
+                "security_control_triggered": security_control
+            },
+            "pass_fail": "pass",
+            "security_meaning": "Without AIACS protections, a cloned plaintext/static signal can be reused to open the vehicle. With AIACS enabled, the captured material is protected and the replayed/cloned attempt is rejected.",
+            "created_at_nepal_time": created_at_nepal_time,
+            "raw_payload": "[REDACTED]",
+            "raw_signature": "[REDACTED]",
+            "raw_nonce": "[REDACTED]",
+            "private_key_material": "[REDACTED]",
+            "master_key": "[REDACTED]"
+        });
+
+        write_pretty_json(&insecure_path, &insecure_signal)?;
+        fs::write(&protected_path, protected_capture)
+            .map_err(|error| AppControllerError::Backend(error.to_string()))?;
+        write_pretty_json(&protected_metadata_path, &protected_metadata)?;
+        write_pretty_json(&evidence_path, &evidence)?;
+
+        Ok((
+            SelectedReplayComparison {
+                baseline_result: "attack_successful_vehicle_opened".to_string(),
+                baseline_access_decision: "grant_access".to_string(),
+                baseline_status: "vulnerable".to_string(),
+                baseline_explanation: "The insecure vehicle accepted the cloned plaintext fob signal because AIACS protections were not enforced.".to_string(),
+                protected_result: "attack_blocked_access_denied".to_string(),
+                protected_status: "protected".to_string(),
+                protected_explanation: protected_observation.to_string(),
+                actual_result: "Insecure clone exposed plaintext signal; AIACS protected clone was encrypted and denied".to_string(),
+                security_control_triggered: security_control.to_string(),
+                access_decision: "deny_access".to_string(),
+                diagnostic_status: "protected".to_string(),
+                pass_fail: "pass".to_string(),
+            },
+            evidence_path_for_report,
+        ))
     }
 
     fn save_diagnostic_evidence(
@@ -3924,7 +4251,7 @@ impl AppController {
         let dir = PathBuf::from(DIAGNOSTIC_RESULTS_DIR).join(safe_path_component(&context.fob_id));
         fs::create_dir_all(&dir).map_err(|error| AppControllerError::Backend(error.to_string()))?;
         let path = dir.join(format!("{}.json", definition.attack_name));
-        let evidence = serde_json::json!({
+        let mut evidence = serde_json::json!({
             "attack_name": definition.attack_name,
             "customer_id": context.customer_id,
             "vehicle_id": context.vehicle_id,
@@ -3935,7 +4262,7 @@ impl AppController {
             "baseline_result": definition.baseline_result,
             "protected_result": input.protected_result,
             "actual_result": input.actual_result,
-            "security_control_triggered": definition.security_control,
+            "security_control_triggered": input.security_control_triggered,
             "access_decision": input.access_decision,
             "diagnostic_result": input.pass_fail,
             "evidence_summary": definition.evidence_summary,
@@ -3947,6 +4274,22 @@ impl AppController {
             "master_key": "[REDACTED]",
             "created_at_nepal_time": format_nepal_time(input.created_at)
         });
+        if definition.attack_name == "replay_attack" {
+            evidence["insecure_baseline_simulation"] = serde_json::json!({
+                "status": input.baseline_status,
+                "result": definition.baseline_result,
+                "access_decision": input.baseline_access_decision,
+                "explanation": input.baseline_explanation
+            });
+            evidence["aiacs_protected_validation"] = serde_json::json!({
+                "status": input.protected_status,
+                "result": input.protected_result,
+                "access_decision": input.access_decision,
+                "security_control_triggered": input.security_control_triggered,
+                "explanation": input.protected_explanation
+            });
+            evidence["pass_fail"] = serde_json::json!(input.pass_fail);
+        }
         write_pretty_json(&path, &evidence)?;
         Ok(path_for_report(&path))
     }
@@ -4989,14 +5332,51 @@ struct DiagnosticEvidenceInput<'a> {
     certificate_id: &'a str,
     session_id: &'a str,
     actual_result: &'a str,
+    baseline_access_decision: &'a str,
+    baseline_status: &'a str,
+    baseline_explanation: &'a str,
     protected_result: &'a str,
+    protected_status: &'a str,
+    protected_explanation: &'a str,
     access_decision: &'a str,
+    security_control_triggered: &'a str,
     pass_fail: &'a str,
     created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SelectedReplayComparison {
+    baseline_result: String,
+    baseline_access_decision: String,
+    baseline_status: String,
+    baseline_explanation: String,
+    protected_result: String,
+    protected_status: String,
+    protected_explanation: String,
+    actual_result: String,
+    security_control_triggered: String,
+    access_decision: String,
+    diagnostic_status: String,
+    pass_fail: String,
+}
+
 fn diagnostic_definition(attack_key: &str) -> Result<DiagnosticDefinition, AppControllerError> {
     let definition = match attack_key {
+        "no_aiacs_signal_clone_attack" => DiagnosticDefinition {
+            attack_name: "no_aiacs_signal_clone_attack",
+            attack_label: "No-AIACS Signal Clone Attack",
+            attack_type: None,
+            expected_result: "attack_blocked_access_denied",
+            baseline_result: "attack_successful_vehicle_opened",
+            protected_result: "attack_blocked_access_denied",
+            security_control: "certificate_required_or_nonce_reuse_detection",
+            access_decision: "deny_access",
+            evidence_summary: "The insecure baseline exposes a cloneable plaintext signal while AIACS protects captured material and denies cloned access.",
+            requires_certificate: false,
+            requires_signed_payload: false,
+            requires_session: false,
+            requires_encrypted_backup: false,
+        },
         "replay_attack" => DiagnosticDefinition {
             attack_name: "replay_attack",
             attack_label: "Replay Attack",
@@ -5166,6 +5546,47 @@ fn run_adversarial_attack(attack_type: AttackType) -> AttackResult {
     }
 }
 
+fn active_diagnostic_session(session_id: &str, vehicle_id: &str, fob_id: &str) -> SessionState {
+    let now = Utc::now();
+    SessionState {
+        session_id: if session_id == "N/A" || session_id.is_empty() {
+            format!("SESSION-DIAG-{}", safe_path_component(fob_id))
+        } else {
+            session_id.to_string()
+        },
+        vehicle_id: vehicle_id.to_string(),
+        subject_id: fob_id.to_string(),
+        created_at: now.to_rfc3339(),
+        expires_at: (now + chrono::Duration::seconds(300)).to_rfc3339(),
+        established: true,
+    }
+}
+
+fn diagnostic_security_control_for_auth_result(auth_result: AuthResult) -> &'static str {
+    match auth_result {
+        AuthResult::ReusedNonce => "nonce_reuse_detection",
+        AuthResult::FreshnessTimeout => "freshness_validation",
+        AuthResult::InvalidCertificate | AuthResult::ExpiredCertificate => "certificate_validation",
+        AuthResult::IdentityMismatch => "selected_fob_identity_binding",
+        AuthResult::InvalidSignature => "ed25519_signature_verification",
+        AuthResult::InvalidTimestamp => "timestamp_freshness_validation",
+        AuthResult::UnknownNonce => "current_challenge_binding",
+        AuthResult::Success => "none",
+    }
+}
+
+fn replay_protected_explanation(auth_result: AuthResult) -> &'static str {
+    match auth_result {
+        AuthResult::ReusedNonce => {
+            "AIACS rejected the replayed proof because the nonce had already been used."
+        }
+        AuthResult::FreshnessTimeout => {
+            "AIACS rejected the replayed proof because the response was outside the freshness window."
+        }
+        _ => "AIACS protected validation rejected the replayed proof through challenge-response controls.",
+    }
+}
+
 fn attack_evidence(attack_type: AttackType) -> AttackEvidence {
     match attack_type {
         AttackType::ReplayAttack => AttackEvidence {
@@ -5300,6 +5721,46 @@ fn attack_steps(attack_type: AttackType) -> &'static [&'static str] {
             "Step 5: Rejected as session key mismatch",
         ],
     }
+}
+
+fn no_aiacs_signal_clone_steps() -> &'static [&'static str] {
+    &[
+        "Step 1: Load selected customer, vehicle, and key fob",
+        "Step 2: Simulate plaintext static unlock signal capture",
+        "Step 3: Clone insecure signal in no-AIACS baseline",
+        "Step 4: Evaluate AIACS protected validation result",
+        "Step 5: Save attacker artifact evidence files",
+    ]
+}
+
+fn simulated_protected_clone_capture(
+    fob_id: &str,
+    vehicle_id: &str,
+    certificate_id: &str,
+    session_id: &str,
+    security_control: &str,
+    created_at_nepal_time: &str,
+) -> Result<String, AppControllerError> {
+    let protected_material = format!(
+        "AIACS_PROTECTED_CAPTURE|{}|{}|{}|{}|{}|{}",
+        fingerprint(fob_id.as_bytes()),
+        fingerprint(vehicle_id.as_bytes()),
+        fingerprint(certificate_id.as_bytes()),
+        fingerprint(session_id.as_bytes()),
+        fingerprint(security_control.as_bytes()),
+        fingerprint(created_at_nepal_time.as_bytes())
+    );
+    let key = CryptoEngine::generate_random_nonce(32).map_err(AppControllerError::Backend)?;
+    let nonce = CryptoEngine::generate_random_nonce(12).map_err(AppControllerError::Backend)?;
+    let encrypted = CryptoEngine::encrypt_aes_gcm(&key, protected_material.as_bytes(), &nonce)
+        .map_err(AppControllerError::Backend)?;
+    let mut ciphertext_with_tag = encrypted.ciphertext;
+    ciphertext_with_tag.extend_from_slice(&encrypted.tag);
+    let ciphertext = general_purpose::STANDARD.encode(ciphertext_with_tag);
+
+    Ok(format!(
+        "AIACS-PROTECTED-CLONE-V1\nalgorithm=AES-256-GCM\nencoding=base64\nciphertext={ciphertext}\ntag=included_in_aes_gcm_output\n"
+    ))
 }
 
 fn canonical_auth_payload(
@@ -8252,7 +8713,10 @@ mod tests {
         assert_eq!(result.fob_id, "FOB-CRYPTO-PHASE10REPLAY");
         assert_eq!(result.baseline_result, "attack_successful_vehicle_opened");
         assert_eq!(result.protected_result, "attack_blocked_access_denied");
+        assert_eq!(result.actual_result, "Access denied: Reused nonce");
         assert_eq!(result.security_control_triggered, "nonce_reuse_detection");
+        assert_eq!(result.access_decision, "deny_access");
+        assert_eq!(result.diagnostic_status, "protected");
         assert_eq!(result.pass_fail, "pass");
         assert_eq!(result.cloud_sync_status, "disabled");
         assert!(!result.customer_id.contains(DEMO_CUSTOMER_ID));
@@ -8261,6 +8725,15 @@ mod tests {
             fs::read_to_string(&result.evidence_file_path).expect("evidence file should exist");
         assert!(evidence.contains("created_at_nepal_time"));
         assert!(evidence.contains("NPT"));
+        assert!(evidence.contains("\"insecure_baseline_simulation\""));
+        assert!(evidence.contains("\"aiacs_protected_validation\""));
+        assert!(evidence.contains("\"status\": \"vulnerable\""));
+        assert!(evidence.contains("\"access_decision\": \"grant_access\""));
+        assert!(evidence.contains("\"status\": \"protected\""));
+        assert!(evidence.contains("\"access_decision\": \"deny_access\""));
+        assert!(evidence.contains("FOB-CRYPTO-PHASE10REPLAY"));
+        assert!(!evidence.contains("FOB-TEST-001"));
+        assert!(!evidence.contains("VEH-TEST-001"));
         assert!(evidence.contains("\"raw_payload\": \"[REDACTED]\""));
         assert!(evidence.contains("\"raw_signature\": \"[REDACTED]\""));
         assert!(evidence.contains("\"raw_nonce\": \"[REDACTED]\""));
@@ -8278,6 +8751,144 @@ mod tests {
         let _ = fs::remove_dir_all(
             PathBuf::from(DIAGNOSTIC_RESULTS_DIR).join("FOB-CRYPTO-PHASE10REPLAY"),
         );
+    }
+
+    #[test]
+    fn test_selected_replay_diagnostic_protected_path_consumes_and_rejects_same_proof() {
+        let mut controller = provision_selected_context_for_diagnostics("REPLAYREAL");
+        controller.active_challenge = None;
+        controller.active_auth_proof = None;
+
+        let result = controller
+            .run_diagnostic_attack("replay_attack")
+            .expect("selected replay diagnostic should run");
+        let proof = controller
+            .active_auth_proof
+            .as_ref()
+            .expect("diagnostic proof should be retained");
+
+        assert_eq!(proof.subject_id, "FOB-CRYPTO-REPLAYREAL");
+        assert_eq!(proof.vehicle_id, "VEH-CRYPTO-REPLAYREAL");
+        assert_eq!(result.customer_id, "CUST-CRYPTO-REPLAYREAL");
+        assert_eq!(result.vehicle_id, "VEH-CRYPTO-REPLAYREAL");
+        assert_eq!(result.fob_id, "FOB-CRYPTO-REPLAYREAL");
+        assert_eq!(result.baseline_result, "attack_successful_vehicle_opened");
+        assert_eq!(result.protected_result, "attack_blocked_access_denied");
+        assert_eq!(result.actual_result, "Access denied: Reused nonce");
+        assert_eq!(result.security_control_triggered, "nonce_reuse_detection");
+        assert_eq!(result.pass_fail, "pass");
+        assert!(!result.actual_result.contains("FOB-TEST-001"));
+        assert!(!result.evidence_file_path.contains("FOB-TEST-001"));
+
+        let _ =
+            fs::remove_dir_all(PathBuf::from(DIAGNOSTIC_RESULTS_DIR).join("FOB-CRYPTO-REPLAYREAL"));
+    }
+
+    #[test]
+    fn test_no_aiacs_clone_diagnostic_runs_without_certificate_and_writes_artifacts() {
+        let mut controller =
+            AppController::new_with_log_dir(temp_log_dir("no_aiacs_clone_no_cert"));
+        bind_custom_context(&mut controller, "NOAIACS");
+
+        assert!(controller.current_certificate().is_none());
+        let result = controller
+            .run_diagnostic_attack("no_aiacs_signal_clone_attack")
+            .expect("no-AIACS clone diagnostic should run with selected records only");
+
+        assert_eq!(result.attack_name, "no_aiacs_signal_clone_attack");
+        assert_eq!(result.customer_id, "CUST-CRYPTO-NOAIACS");
+        assert_eq!(result.vehicle_id, "VEH-CRYPTO-NOAIACS");
+        assert_eq!(result.fob_id, "FOB-CRYPTO-NOAIACS");
+        assert_eq!(result.certificate_id, "not_issued");
+        assert_eq!(result.session_id, "not_established");
+        assert_eq!(result.baseline_result, "attack_successful_vehicle_opened");
+        assert_eq!(result.protected_result, "attack_blocked_access_denied");
+        assert_eq!(
+            result.actual_result,
+            "Insecure clone exposed plaintext signal; AIACS protected clone was encrypted and denied"
+        );
+        assert_eq!(result.security_control_triggered, "certificate_required");
+        assert_eq!(result.access_decision, "deny_access");
+        assert_eq!(result.pass_fail, "pass");
+        assert!(result
+            .evidence_file_path
+            .ends_with("attacker_artifacts/FOB-CRYPTO-NOAIACS/attacker_clone_evidence.json"));
+
+        let artifact_dir = PathBuf::from(ATTACKER_ARTIFACTS_DIR).join("FOB-CRYPTO-NOAIACS");
+        let insecure_path = artifact_dir.join("insecure_cloned_signal.json");
+        let protected_path = artifact_dir.join("protected_cloned_signal.enc");
+        let protected_metadata_path = artifact_dir.join("protected_clone_metadata.json");
+        let old_protected_json_path = artifact_dir.join("protected_cloned_signal.json");
+        let evidence_path = artifact_dir.join("attacker_clone_evidence.json");
+
+        assert!(insecure_path.exists());
+        assert!(protected_path.exists());
+        assert!(protected_metadata_path.exists());
+        assert!(!old_protected_json_path.exists());
+        assert!(evidence_path.exists());
+
+        let insecure = fs::read_to_string(&insecure_path).expect("insecure signal should exist");
+        assert!(insecure.contains("FOB-CRYPTO-NOAIACS"));
+        assert!(insecure.contains("VEH-CRYPTO-NOAIACS"));
+        assert!(insecure.contains("static_plaintext_unlock_signal"));
+        assert!(insecure.contains("grant_access"));
+        assert!(insecure.contains("attack_successful_vehicle_opened"));
+
+        let protected = fs::read_to_string(&protected_path).expect("protected signal should exist");
+        assert!(protected.starts_with("AIACS-PROTECTED-CLONE-V1"));
+        assert!(protected.contains("ciphertext="));
+        assert!(!protected.trim_start().starts_with('{'));
+        for forbidden_plaintext in [
+            "FOB-CRYPTO-NOAIACS",
+            "VEH-CRYPTO-NOAIACS",
+            "unlock_vehicle",
+            "static_authorization_value",
+            "private_key",
+            "session_key",
+            "AIACS_MASTER_KEY",
+        ] {
+            assert!(
+                !protected.contains(forbidden_plaintext),
+                "protected encrypted artifact leaked {forbidden_plaintext}"
+            );
+        }
+
+        let metadata =
+            fs::read_to_string(&protected_metadata_path).expect("protected metadata should exist");
+        assert!(metadata.contains("FOB-CRYPTO-NOAIACS"));
+        assert!(metadata.contains("protected_cloned_signal.enc"));
+        assert!(metadata.contains("ciphertext_fingerprint"));
+        assert!(metadata.contains("certificate_required"));
+        assert!(!metadata.contains("raw_payload"));
+        assert!(!metadata.contains("session_key"));
+        assert!(!metadata.contains("private_key"));
+
+        let evidence = fs::read_to_string(&evidence_path).expect("evidence should exist");
+        assert!(evidence.contains("\"insecure_baseline\""));
+        assert!(evidence.contains("\"aiacs_protected\""));
+        assert!(evidence.contains("plaintext_signal_visible"));
+        assert!(evidence.contains("encrypted_payload_only"));
+        assert!(evidence.contains("protected_cloned_signal.enc"));
+        assert!(evidence.contains("protected_clone_metadata.json"));
+        assert!(evidence.contains("FOB-CRYPTO-NOAIACS"));
+        assert!(!evidence.contains("FOB-TEST-001"));
+        assert!(!evidence.contains("VEH-TEST-001"));
+        for forbidden in [
+            "AIACS_MASTER_KEY",
+            "DATABASE_URL",
+            "session_key\": \"[0",
+            "private_key\": \"[0",
+            "shared_secret",
+            "encrypted_key_blob",
+            "encryption_nonce",
+        ] {
+            assert!(
+                !evidence.contains(forbidden),
+                "attacker evidence leaked {forbidden}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(artifact_dir);
     }
 
     #[test]
@@ -8361,7 +8972,7 @@ mod tests {
             .run_all_diagnostics()
             .expect("all diagnostics should run");
 
-        assert_eq!(results.len(), 9);
+        assert_eq!(results.len(), 10);
         assert!(results.iter().all(|result| result.pass_fail == "pass"));
         assert!(results
             .iter()
@@ -8369,6 +8980,9 @@ mod tests {
         assert!(results
             .iter()
             .all(|result| result.fob_id == "FOB-CRYPTO-PHASE10ALL"));
+        assert!(results
+            .iter()
+            .any(|result| result.attack_name == "no_aiacs_signal_clone_attack"));
         assert!(results
             .iter()
             .any(|result| result.attack_name == "wrong_master_key_recovery"));
@@ -8383,6 +8997,8 @@ mod tests {
 
         let _ =
             fs::remove_dir_all(PathBuf::from(DIAGNOSTIC_RESULTS_DIR).join("FOB-CRYPTO-PHASE10ALL"));
+        let _ =
+            fs::remove_dir_all(PathBuf::from(ATTACKER_ARTIFACTS_DIR).join("FOB-CRYPTO-PHASE10ALL"));
         if let Some(value) = previous_master_key {
             std::env::set_var("AIACS_MASTER_KEY", value);
         } else {

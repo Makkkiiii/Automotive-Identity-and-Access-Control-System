@@ -373,6 +373,12 @@ Phase 10.1.2 fixes `diagnostic_results` cloud sync for legacy Neon schemas by sa
 
 Phase 10.1.3 verifies each `diagnostic_results` write before reporting `Synced`, records safe diagnostic sync status messages, disables diagnostic actions while selected context is missing, and clears stale diagnostic progress/results when the selected customer, vehicle, or key fob changes. The Diagnostics page now uses aligned left/right panels with Diagnostic Controls directly under Selected Context.
 
+Phase 10.1.5 upgrades Replay Attack diagnostics with a real selected-context comparison. The insecure baseline simulation shows that a replayed signal can open the vehicle when nonce freshness and challenge binding are not enforced, while AIACS protected validation rejects the same replay through nonce reuse detection. The GUI now displays the baseline-vs-protected result in human-readable form, uses the selected customer/vehicle/fob context instead of generic test IDs, and does not weaken normal authentication behavior or expose secrets.
+
+Phase 10.1.6 adds a selected-context **No-AIACS Signal Clone Attack** diagnostic. It creates `attacker_artifacts/<fob_id>/` with report-friendly evidence showing that an insecure plaintext/static fob signal can be cloned and accepted by a no-AIACS vehicle, while the AIACS-protected flow redacts protected material and denies access through certificate-required or nonce-reuse controls. This is a controlled software simulation only, not real RF capture or vehicle signal cloning, and no real secrets are exposed. The `attacker_artifacts/` folder is intentionally kept visible for academic report/demo evidence.
+
+Phase 10.1.7 refines the No-AIACS clone evidence format. The protected capture now saves as `protected_cloned_signal.enc` instead of readable JSON, while `protected_clone_metadata.json` stores only safe metadata such as selected IDs, algorithms, evidence path, and ciphertext fingerprint. `insecure_cloned_signal.json` remains readable to demonstrate the plaintext baseline, and `attacker_clone_evidence.json` compares insecure plaintext clone behavior against the protected encrypted capture. `attacker_artifacts/` remains intentionally visible for report/demo evidence; no real RF cloning, real vehicle signal capture, or secret exposure is implemented.
+
 Diagnostics can also be run through the separate binary:
 
 ```bash

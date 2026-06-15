@@ -1,0 +1,30 @@
+{
+  "aiacs_protected": {
+    "access_decision": "deny_access",
+    "attacker_visibility": "encrypted_payload_only",
+    "encrypted_clone_file": "attacker_artifacts/FOB-6CD8D52A/protected_cloned_signal.enc",
+    "metadata_file": "attacker_artifacts/FOB-6CD8D52A/protected_clone_metadata.json",
+    "protected_result": "attack_blocked_access_denied",
+    "security_control_triggered": "certificate_required"
+  },
+  "attack_name": "no_aiacs_signal_clone_attack",
+  "certificate_id": "not_issued",
+  "created_at_nepal_time": "2026-06-15 08:49:44 NPT",
+  "customer_id": "CUST-FB2FFE2A",
+  "fob_id": "FOB-6CD8D52A",
+  "insecure_baseline": {
+    "access_decision": "grant_access",
+    "attacker_visibility": "plaintext_signal_visible",
+    "baseline_result": "attack_successful_vehicle_opened",
+    "cloned_signal_file": "attacker_artifacts/FOB-6CD8D52A/insecure_cloned_signal.json"
+  },
+  "master_key": "[REDACTED]",
+  "pass_fail": "pass",
+  "private_key_material": "[REDACTED]",
+  "raw_nonce": "[REDACTED]",
+  "raw_payload": "[REDACTED]",
+  "raw_signature": "[REDACTED]",
+  "security_meaning": "Without AIACS protections, a cloned plaintext/static signal can be reused to open the vehicle. With AIACS enabled, the captured material is protected and the replayed/cloned attempt is rejected.",
+  "session_id": "not_established",
+  "vehicle_id": "VEH-DBB3BBB5"
+}
