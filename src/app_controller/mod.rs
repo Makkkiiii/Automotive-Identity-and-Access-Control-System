@@ -2350,6 +2350,8 @@ impl AppController {
     }
 
     pub fn sync_demo_cloud_metadata(&mut self) -> Result<String, AppControllerError> {
+        // Compatibility wrapper kept for older tests/call sites; it now syncs the active
+        // selected provisioning context rather than forcing demo records into runtime flows.
         self.sync_active_cloud_metadata()
     }
 

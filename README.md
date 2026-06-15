@@ -46,15 +46,16 @@
 
 ## Technical Snapshot
 
-| Category           | Implementation        |
-| ------------------ | --------------------- |
-| Language           | Rust                  |
-| GUI                | Iced                  |
-| Database           | Neon PostgreSQL       |
-| Digital Signature  | Ed25519               |
-| Key Exchange       | X25519                |
-| Session Protection | HKDF-SHA256 + AES-GCM |
-| Trust Model        | Certificate-based PKI |
+| Category           | Implementation            |
+| ------------------ | ------------------------- |
+| Language           | Rust                      |
+| GUI                | Iced                      |
+| Database           | Neon PostgreSQL           |
+| Digital Signature  | Ed25519                   |
+| Key Exchange       | X25519                    |
+| Session Protection | HKDF-SHA256 + AES-256-GCM |
+| Trust Model        | Certificate-based PKI     |
+| Fingerprints       | SHA-256 previews          |
 
 The main desktop application is the **Vehicle Access Provisioning Console**. Security diagnostics are kept separate in `src/bin/aiacs_diagnostics.rs`.
 
@@ -95,7 +96,7 @@ AIACS demonstrates a complete digital vehicle access provisioning path:
 - The system initializes a vehicle trust root and certificate authority.
 - A key fob identity is registered and issued a CA-signed access certificate.
 - A challenge-response authentication flow verifies certificate trust, identity binding, signature validity, freshness, and replay resistance.
-- A secure session is established using X25519, HKDF-SHA256, and AES-GCM.
+- A secure session is established using X25519, HKDF-SHA256, and AES-256-GCM.
 - Safe provisioning metadata can be synced to a Neon PostgreSQL database.
 - Audit logs and reports expose protocol state without revealing sensitive key material.
 
@@ -105,18 +106,18 @@ AIACS is an academic prototype. It is designed to demonstrate protocol structure
 
 ## Key Features
 
-| Area                  | Capability                                                                         |
-| --------------------- | ---------------------------------------------------------------------------------- |
-| Vehicle provisioning  | Dealer/technician-side flow for customer, vehicle, and digital key fob setup       |
-| Certificate authority | Root trust initialization and CA-signed key fob certificate issuance               |
-| Authentication        | Ed25519 challenge-response authentication with PKI validation                      |
-| Replay protection     | Nonce freshness, nonce reuse detection, and timestamp validation                   |
-| Secure session        | X25519 key agreement, HKDF-SHA256 derivation, and AES-GCM authenticated encryption |
-| Access decisions      | Structured grant/reject decisions with displayable denial reasons                  |
-| Diagnostics           | Separate adversarial validation tool for controlled protocol testing               |
-| Audit reporting       | Human-readable provisioning report with redacted secrets                           |
-| Cloud metadata        | Neon PostgreSQL schema creation and safe customer/vehicle/key fob metadata sync    |
-| Secret handling       | Public debug/log/report output redacts private keys and session secrets            |
+| Area                  | Capability                                                                             |
+| --------------------- | -------------------------------------------------------------------------------------- |
+| Vehicle provisioning  | Dealer/technician-side flow for customer, vehicle, and digital key fob setup           |
+| Certificate authority | Root trust initialization and CA-signed key fob certificate issuance                   |
+| Authentication        | Ed25519 challenge-response authentication with PKI validation                          |
+| Replay protection     | Nonce freshness, nonce reuse detection, and timestamp validation                       |
+| Secure session        | X25519 key agreement, HKDF-SHA256 derivation, and AES-256-GCM authenticated encryption |
+| Access decisions      | Structured grant/reject decisions with displayable denial reasons                      |
+| Diagnostics           | Separate adversarial validation tool for controlled protocol testing                   |
+| Audit reporting       | Human-readable provisioning report with redacted secrets                               |
+| Cloud metadata        | Neon PostgreSQL schema creation and safe customer/vehicle/key fob metadata sync        |
+| Secret handling       | Public debug/log/report output redacts private keys and session secrets                |
 
 ---
 
@@ -273,9 +274,9 @@ sequenceDiagram
 
 ---
 
-## Demo Records
+## Demo / Fallback Records
 
-The GUI uses stable demonstration records suitable for academic presentation and repeatable testing.
+AIACS keeps stable demonstration records for tests, documentation, and controlled local fallback. The GUI does **not** auto-select these records on startup; operators select or create customer, vehicle, and key fob records before provisioning.
 
 ### Customer
 
@@ -308,7 +309,7 @@ The GUI uses stable demonstration records suitable for academic presentation and
 | ------------ | -------------- |
 | `session_id` | `SESSION-0001` |
 
-The README uses only the current generic demo records shown above.
+These records are examples only. Normal provisioning, diagnostics, cloud sync, and artifact paths use the active selected customer, vehicle, and key fob context.
 
 ---
 
@@ -316,18 +317,17 @@ The README uses only the current generic demo records shown above.
 
 The desktop GUI is organized as a multi-page vehicle provisioning console.
 
-| Page               | Purpose                                                                                                                                  |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| Dashboard          | High-level overview of active customer, selected vehicle, registered key fob, and provisioning status                                    |
-| Customers          | Cloud-backed customer records with manual owner, email, and phone input; customer IDs are generated automatically                        |
-| Vehicles           | Cloud-backed vehicle records with manual display name, make, model, year, VIN, and registration input; vehicle IDs are generated automatically |
+| Page               | Purpose                                                                                                                                           |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Dashboard          | High-level overview of active customer, selected vehicle, registered key fob, and provisioning status                                             |
+| Customers          | Cloud-backed customer records with manual owner, email, and phone input; customer IDs are generated automatically                                 |
+| Vehicles           | Cloud-backed vehicle records with manual display name, make, model, year, VIN, and registration input; vehicle IDs are generated automatically    |
 | Key Fobs           | Cloud-backed key fob records with manual fob label input, public fingerprint, and redacted private key state; fob IDs are generated automatically |
-| Provisioning       | Primary guided workflow for normal vehicle access provisioning                                                                           |
-| Protocol Artifacts | Selectable protocol artifacts such as challenge message, authentication proof, certificate details, session summary, and access decision |
-| Credential Storage | Safe credential paths, fingerprints, storage mode, and `[REDACTED]` private key values                                                   |
-| Logs / Report      | Event log, protocol trace, export report action, and clear log action                                                                    |
-| Diagnostics        | Launch page for the separate diagnostics tool                                                                                            |
-| Cloud Storage      | Neon connection health check and safe metadata sync controls                                                                             |
+| Provisioning       | Primary guided workflow for normal vehicle access provisioning                                                                                    |
+| Protocol Artifacts | Selectable protocol artifacts such as challenge message, authentication proof, certificate details, session summary, and access decision          |
+| Credential Storage | Safe credential paths, fingerprints, storage mode, and `[REDACTED]` private key values                                                            |
+| Logs / Report      | Event log, protocol trace, export report action, and clear log action                                                                             |
+| Diagnostics        | Launch page for selected-context security validation; attack buttons remain isolated from normal provisioning                                     |
 
 Diagnostics are not part of the normal provisioning workflow. The main GUI launches diagnostics separately and does not show attack buttons inside the provisioning page.
 
@@ -363,53 +363,6 @@ Certificate validation is strict: only `Ok(true)` from CA validation is accepted
 
 ---
 
-## Diagnostics and Attack Validation
-
-Phase 10 adds an in-app **Diagnostics / Attack Validation** dashboard. The dashboard runs selected-context checks against the active customer, vehicle, key fob, certificate, signed proof, secure session, and encrypted key backup where applicable.
-
-Phase 10.1 hydrates the Diagnostics context from selected cloud records. Existing Neon certificate metadata, finalized provisioning sessions, and encrypted key backup metadata can be loaded for the selected customer, vehicle, and key fob, so diagnostics do not require repeating the full provisioning workflow in the same runtime session. The Diagnostics page also includes a progress panel, latest-result panel, local evidence paths, and safe diagnostic cloud metadata sync only.
-
-Phase 10.1.2 fixes `diagnostic_results` cloud sync for legacy Neon schemas by safely migrating selected-context fields, legacy compatibility fields, truthful `cloud_sync_status`, and Nepal-time display columns. Diagnostics rows now store selected customer, vehicle, key fob, certificate, and session metadata while keeping `TIMESTAMPTZ` as the canonical database time. GUI, logs, reports, and evidence use `YYYY-MM-DD HH:MM:SS NPT` display strings; secrets remain redacted and are not stored or displayed.
-
-Phase 10.1.3 verifies each `diagnostic_results` write before reporting `Synced`, records safe diagnostic sync status messages, disables diagnostic actions while selected context is missing, and clears stale diagnostic progress/results when the selected customer, vehicle, or key fob changes. The Diagnostics page now uses aligned left/right panels with Diagnostic Controls directly under Selected Context.
-
-Phase 10.1.5 upgrades Replay Attack diagnostics with a real selected-context comparison. The insecure baseline simulation shows that a replayed signal can open the vehicle when nonce freshness and challenge binding are not enforced, while AIACS protected validation rejects the same replay through nonce reuse detection. The GUI now displays the baseline-vs-protected result in human-readable form, uses the selected customer/vehicle/fob context instead of generic test IDs, and does not weaken normal authentication behavior or expose secrets.
-
-Phase 10.1.6 adds a selected-context **No-AIACS Signal Clone Attack** diagnostic. It creates `attacker_artifacts/<fob_id>/no_aiacs_signal_clone_attack/` with report-friendly evidence showing that an insecure plaintext/static fob signal can be cloned and accepted by a no-AIACS vehicle, while the AIACS-protected flow stores encrypted capture material and denies access through certificate-required or nonce-reuse controls. This is a controlled AIACS software validation artifact, not RF capture or vehicle signal cloning, and no real secrets are exposed. The `attacker_artifacts/` folder is intentionally kept visible for report evidence.
-
-Phase 10.1.7 refines the No-AIACS clone evidence format. The protected capture now saves as `protected_cloned_signal.enc` instead of readable JSON, while `protected_clone_metadata.json` stores only safe metadata such as selected IDs, algorithms, evidence path, and ciphertext fingerprint. `insecure_cloned_signal.json` remains readable to demonstrate the plaintext baseline, and `attacker_clone_evidence.json` compares insecure plaintext clone behavior against the protected encrypted capture. `attacker_artifacts/` remains intentionally visible for report evidence; no RF cloning, vehicle signal capture, or secret exposure is implemented.
-
-Phase 10.1.8 extends protected attacker capture artifacts to all protected Diagnostics attacks. Replay, forged signature, fake certificate, identity mismatch, delayed relay, packet tampering, tampered ciphertext, wrong session key, and wrong master-key recovery diagnostics now create `attacker_artifacts/<fob_id>/<attack_name>/protected_cloned_signal.enc`, `protected_clone_metadata.json`, and `attacker_clone_evidence.json`. The `.enc` file is written as binary AES-256-GCM protected bytes with metadata stored separately. The No-AIACS baseline keeps its readable insecure signal file. Customer, vehicle, and key-fob cards now turn their Select button into Selected, and provisioning state resets or hydrates from the selected context so stale certificate/session/proof data is not shown across records.
-
-Phase 10.1.9 fixes Provisioning page cloud hydration for existing completed records. Selecting an existing cloud-backed customer, vehicle, and key fob now refreshes safe vehicle/key-fob status metadata, loads issued certificate metadata, applies the latest finalized provisioning session, and shows encrypted key-backup availability from safe metadata. Completed cloud state is not downgraded by partial certificate hydration, new selections clear stale certificate/session/proof state, Diagnostics and attacker artifacts remain unchanged, and only safe IDs, statuses, fingerprints, and redacted metadata are displayed.
-
-Diagnostics can also be run through the separate binary:
-
-```bash
-cargo run --bin aiacs_diagnostics
-```
-
-| Attack               | Expected Outcome                                                    |
-| -------------------- | ------------------------------------------------------------------- |
-| Replay Attack        | Rejected because reused nonce is detected                           |
-| Forged Signature     | Rejected because Ed25519 verification fails                         |
-| Fake Certificate     | Rejected because CA validation fails                                |
-| Identity Mismatch    | Rejected because proof subject and certificate subject do not match |
-| Delayed Relay        | Rejected because freshness timeout fails                            |
-| Packet Tampering     | Rejected because payload/signature binding fails                    |
-| Unauthorized Key Fob | Rejected because identity is not authorized                         |
-| Tampered Ciphertext  | Rejected because AES-GCM integrity check fails                      |
-| Wrong Session Key    | Rejected because session decryption/integrity validation fails      |
-| Wrong Master Key     | Rejected because encrypted key recovery fails with the wrong key    |
-
-The dashboard includes an insecure baseline comparison for replay attack evidence, showing what happens without AIACS nonce freshness and replay controls. AIACS protected results are displayed with the triggered security control, pass/fail status, evidence file path, and cloud sync status.
-
-Safe diagnostic evidence files are saved under `diagnostic_results/<fob_id>/`. Cloud sync stores safe diagnostic metadata only. Raw keys, payloads, nonces, signatures, ciphertext, encrypted blobs, encryption nonces, and recovered key material are redacted and are not uploaded.
-
-The diagnostics tool and dashboard exercise protocol behavior through `AppController`. They do not bypass the authentication engine or duplicate CA validation logic in the GUI.
-
----
-
 ## Cloud Database Support
 
 AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metadata.
@@ -426,56 +379,6 @@ AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metada
 | `provisioning_sessions` | Safe provisioning session metadata sync                               |
 | `audit_logs`            | Safe provisioning workflow audit events                               |
 | `diagnostic_results`    | Safe adversarial validation outcomes                                  |
-
-### Current Behavior
-
-- Schema can be created automatically.
-- Safe customer, vehicle, and key fob metadata can be synced.
-- Safe certificate metadata can be synced.
-- Safe provisioning session metadata can be synced after secure session activation.
-- Safe provisioning workflow audit events can be synced with `[REDACTED]` markers.
-- Safe diagnostic result records can be synced for adversarial validation outcomes.
-- Cloud Auto Sync can push safe records after successful GUI workflow actions when explicitly enabled.
-- Private key blobs can be encrypted locally before cloud upload.
-- Raw private keys are not uploaded.
-- Raw session keys, shared secrets, HKDF output, AES keys, and X25519 private keys are not uploaded.
-- Raw attack payloads, raw ciphertext, and raw nonces are not uploaded.
-- Safe certificate JSON metadata can be uploaded; private key material and session secrets are never included.
-- Cloud Phase 6D adds diagnostic result sync for rejected malicious scenarios.
-- Cloud Phase 7 adds automatic GUI workflow-to-cloud sync while preserving manual sync buttons for verification and recovery.
-- GUI cloud operations continue to call `AppController` only; the GUI does not call cloud storage or cryptographic modules directly.
-- Cloud Phase 8 adds database-backed customer, vehicle, and key fob record management.
-- Cloud Phase 8.5 moves cloud-connected GUI actions onto asynchronous Iced commands so the interface remains responsive during load/create/sync operations.
-- Customers, Vehicles, and Key Fobs pages use manual record input; only generated metadata IDs are automatic.
-- Cloud Phase 8.6 persists GUI-created customer, vehicle, and key fob metadata to Neon with unique generated IDs, cached cloud connection reuse, and cached schema initialization.
-- Cloud Phase 8.7 maintains an active provisioning context so created or selected customer, vehicle, and key fob records flow into the Provisioning page and safe certificate/session/audit metadata syncs when Cloud Auto Sync is enabled.
-- Cloud Phase 8.8 wires Provisioning page buttons to automatic safe Neon sync when Cloud Auto Sync is enabled: connection metadata, certificate metadata, provisioning session metadata, audit logs, and diagnostics use the active provisioning context.
-- The dedicated Cloud Storage GUI page is removed from normal navigation; the top header now shows a short cloud state such as `Cloud: Connecting...`, `Cloud: Connected`, `Cloud: Not Configured`, `Cloud: Disconnected`, or `Cloud: Disabled`.
-- Small retry/disable controls remain in Logs / Report for recovery; if Cloud Auto Sync is disabled, local provisioning still works and cloud sync is reported as skipped.
-- Cloud sync failures are reported separately from local provisioning success, and cloud operations reuse the cached runtime, PostgreSQL client/pool, and schema-initialization state.
-- Cloud Phase 8.9 attempts to enable Cloud Auto Sync automatically on startup when cloud configuration is present and healthy; if startup cloud initialization fails, the app remains fully usable locally and manual cloud controls remain available for retry or disabling.
-- Provisioning buttons can sync automatically after startup auto-enable without requiring the user to click Enable Cloud Auto Sync first; the first hosted database check may be slower during Neon warm-up.
-- `Cloud: Connected` appears only after connection, health check, schema initialization, and auto-sync enablement succeed; database credentials and master keys are never displayed.
-- Cloud Phase 8.9.2 keeps startup cloud work in the background, caches local `.env.local` discovery during normal operations, tunes the desktop PostgreSQL pool for a small GUI app, and records a cloud schema version so current schemas skip the full migration list on later app sessions.
-- Provisioning sync remains targeted: vehicle connection syncs active metadata, certificate issuance syncs certificate metadata, secure session activation syncs provisioning session metadata, finalization syncs audit logs, and diagnostics sync diagnostic results only.
-- Certificate and provisioning session metadata now reference the same selected key fob identity used by the cryptographic authentication flow.
-- The first cloud request can be slower while the hosted database connection warms up; later operations reuse the active PostgreSQL pool.
-- Demo records remain available as fallback/sample records when cloud storage is not configured.
-- Selected/custom key fobs can use their own Ed25519 keypair and CA-issued certificate; the demo `FOB-0001` flow remains available as fallback when no custom fob is selected.
-- Customer, vehicle, and key fob tables store safe metadata only, never private keys or session secret material.
-- Authentication verifies trusted certificate validation, subject binding, Ed25519 signature binding, freshness, and replay protection; production hardware secure element / TPM storage remains out of scope.
-- The GUI dashboard starts with no selected customer, vehicle, or key fob; cloud records load dynamically and the operator must select or create records before provisioning.
-- Customer, vehicle, and key fob records are displayed as selectable GUI lists/cards; the normal workflow no longer exposes demo-fill controls.
-- Protocol Artifacts and Credential Storage reflect the active selected context; certificate details are shown for the selected key fob and credential storage displays safe metadata only.
-- Newly issued certificates use issuer `Denish`; certificate metadata can be restored from cloud records after restart, certificate rows store safe `vehicle_id`, public/signature fingerprints, and safe JSON metadata, provisioning sessions store safe completion metadata, and audit logs include event tags plus selected customer/vehicle/fob context.
-- Provisioning sessions sync after secure session activation and finalization, key fob cloud statuses track provisioning progress with machine-readable values, and user-facing timestamps are displayed in Nepal time / NPT while database timestamps remain timezone-safe.
-- Phase 9.6.3 fixes first-click Verify Authentication readiness, syncs `vehicles.provisioning_status` through the workflow, creates selected key fob encrypted backup rows, and keeps encrypted key recovery local through `AIACS_MASTER_KEY` with fingerprint-match evidence only.
-- Cloud encrypted key storage keeps encrypted blobs and safe metadata only; plaintext private keys, session keys, shared secrets, HKDF output, AES keys, raw nonces, raw ciphertext, and database/master secrets are never displayed, logged, or uploaded.
-- Phase 9.6.4 adds selected key fob recovery artifacts under `recovery_artifacts/<fob_id>/`: local encrypted backup, cloud encrypted blob copy, safe encrypted-backup metadata, a report-safe recovery evidence JSON, and an explicitly sensitive decrypted recovered key file created only by the recovery action.
-- Credential Storage can test/decrypt the selected fob backup locally with `AIACS_MASTER_KEY`; Neon stores encrypted blobs only and cannot decrypt the backup independently.
-- Recovery evidence is report-safe because it uses stored/recovered public key fingerprints, local-vs-cloud encrypted backup comparison, and redacted secret fields. `decrypted_fob_key_recovered.json` may contain recovered private key material and must not be shared or committed.
-- Recovery artifacts are local-only and ignored by Git by default, including `recovery_artifacts/`, encrypted backup `.bin` files, decrypted recovered key files, and report artifact JSON files.
-- Demo/default records are not automatically selected in the GUI; they remain only as controlled local fallback/sample data where applicable.
 
 ---
 
@@ -512,7 +415,7 @@ Generate a local 32-byte master key:
 python -c "import os,base64; print(base64.b64encode(os.urandom(32)).decode())"
 ```
 
-`AIACS_MASTER_KEY` is reserved for future client-side encryption of confidential key material before cloud upload.
+`AIACS_MASTER_KEY` is used locally for AES-256-GCM encrypted key backup and recovery evidence. Neon stores encrypted blobs and safe metadata only; decryption happens locally.
 
 ---
 
@@ -583,14 +486,14 @@ FROM diagnostic_results
 ORDER BY diagnostic_id;
 ```
 
-Expected demo records:
+Optional demo/fallback records:
 
-| Table       | Expected Record                |
-| ----------- | ------------------------------ |
-| `customers` | `CUST-0001` / `XYZ`            |
-| `vehicles`  | `VEH-0001` / `Nissan `         |
-| `key_fobs`  | `FOB-0001` / `Primary Key Fob` |
-| `audit_logs` | `AUDIT-0001` through `AUDIT-0007` |
+| Table                | Expected Record                                          |
+| -------------------- | -------------------------------------------------------- |
+| `customers`          | `CUST-0001` / `XYZ`                                      |
+| `vehicles`           | `VEH-0001` / `Nissan `                                   |
+| `key_fobs`           | `FOB-0001` / `Primary Key Fob`                           |
+| `audit_logs`         | `AUDIT-0001` through `AUDIT-0007`                        |
 | `diagnostic_results` | `DIAG-REPLAY-0001` through `DIAG-WRONG-SESSION-KEY-0001` |
 
 ---
@@ -662,9 +565,8 @@ Run the release binary on Linux/macOS:
 5. Complete the guided vehicle access workflow.
 6. Review Protocol Artifacts.
 7. Review Credential Storage and confirm private key values are redacted.
-8. Open Cloud Storage and run safe metadata sync if `.env.local` is configured.
-9. Export the provisioning report from Logs / Report.
-10. Launch diagnostics separately when testing adversarial validation.
+8. Export the provisioning report from Logs / Report.
+9. Launch diagnostics separately when testing adversarial validation.
 
 Selected cloud metadata records are now bound to the cryptographic provisioning flow: a selected/custom key fob uses its own Ed25519 keypair, receives a CA-issued certificate for that fob ID, signs the vehicle challenge as that fob, and syncs only safe certificate/session/audit metadata. Plaintext private keys and session secrets are not uploaded.
 
@@ -698,7 +600,8 @@ Current validation status:
 
 | Area                    | Status                                       |
 | ----------------------- | -------------------------------------------- |
-| Unit tests              | 147+ tests                                   |
+| Library tests           | 280 passing tests                            |
+| Binary/GUI tests        | 31 passing tests                             |
 | Diagnostics             | Separate from main provisioning console      |
 | Cloud tests             | Normal tests do not require a live database  |
 | Live cloud verification | Available behind `AIACS_RUN_LIVE_DB_TESTS=1` |
@@ -780,8 +683,8 @@ Allowed in GUI, logs, reports, or cloud metadata:
 - Algorithm names
 - Key file paths
 - Timestamps
-- Nonces where safe
-- Future encrypted blobs
+- Nonce fingerprints or redacted nonce markers
+- Encrypted key backup status and fingerprints
 - `[REDACTED]` markers
 
 `[REDACTED]` means sensitive material may exist internally for protocol operation, but it is intentionally hidden from GUI output, logs, reports, Debug formatting, README examples, and cloud metadata sync.
@@ -797,10 +700,14 @@ AIACS does not claim:
 - Production automotive readiness
 - Hardware-backed secure element protection
 - TPM-backed key isolation
+- Real RF distance bounding
 - Real RF relay attack elimination
+- CAN bus integration
 - Compliance with an automotive OEM security standard
 - Safety certification
 - Complete cloud production hardening
+
+Relay mitigation in this prototype is limited to software-level nonce freshness, replay detection, and timestamp validation. It does not prove physical proximity or replace automotive-grade RF distance-bounding hardware.
 
 The project is intentionally scoped as a prototype. Its value is in showing protocol composition, safe GUI/backend boundaries, strict certificate validation, adversarial testing, audit reporting, and secret redaction discipline.
 
