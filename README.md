@@ -655,7 +655,7 @@ All secrets must remain redacted. Reports may include safe metadata, certificate
 
 ## Screenshots
 
-> Yet to be added.
+Project screenshots are available in [Screenshots](Screenshots/).
 
 ---
 
