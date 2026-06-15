@@ -2673,7 +2673,7 @@ impl AIACSApp {
         let buttons = column![
             row![
                 diagnostic_button(
-                    "No-AIACS Clone",
+                    "No-AIACS Test",
                     "no_aiacs_signal_clone_attack",
                     selected_context_ready,
                     ButtonKind::DiagnosticPrimary
@@ -5116,7 +5116,7 @@ mod tests {
         assert!(production_source.contains("diagnostics_context_is_ready"));
         assert!(production_source
             .contains("diagnostic_button_panel(diagnostics_ready, selected_context_ready)"));
-        assert!(production_source.contains("No-AIACS Clone"));
+        assert!(production_source.contains("No-AIACS Test"));
         assert!(production_source.contains("if enabled"));
         assert!(production_source.contains("diagnostic = diagnostic.on_press"));
         assert!(!production_source.contains("run_all = run_all.on_press"));
@@ -5137,7 +5137,7 @@ mod tests {
             .contains("self.diagnostic_button_panel(diagnostics_ready, selected_context_ready)"));
         assert!(production_source.contains(".width(Length::Fixed(560.0))"));
         assert!(production_source.contains(".width(Length::Fixed(260.0))"));
-        assert!(production_source.contains("No-AIACS Clone"));
+        assert!(production_source.contains("No-AIACS Test"));
         assert!(production_source.contains("ButtonKind::DiagnosticPrimary"));
         assert!(production_source.contains("Color::from_rgb(0.22, 0.14, 0.19)"));
         assert!(production_source.contains(".width(Length::Fill)"));
