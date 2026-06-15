@@ -207,6 +207,32 @@ pub struct VisibleProvisioningContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvisioningDisplaySummary {
+    pub customer_selected: bool,
+    pub vehicle_selected: bool,
+    pub key_fob_selected: bool,
+    pub customer_id: String,
+    pub owner_name: String,
+    pub vehicle_id: String,
+    pub vehicle_display_name: String,
+    pub fob_id: String,
+    pub fob_label: String,
+    pub certificate_id: String,
+    pub certificate_status: String,
+    pub auth_result: String,
+    pub session_id: String,
+    pub session_status: String,
+    pub access_decision: String,
+    pub provisioning_status: String,
+    pub vehicle_provisioning_status: String,
+    pub key_fob_provisioning_status: String,
+    pub encrypted_backup_status: String,
+    pub encrypted_backup_key_purpose: String,
+    pub encrypted_backup_algorithm: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProvisioningCloudSyncResult {
     pub action_name: String,
     pub provisioning_status: String,
@@ -332,6 +358,40 @@ pub fn format_status_label(status: &str) -> String {
     }
 }
 
+fn provisioning_status_rank(status: &str) -> u8 {
+    match status.trim() {
+        "created" | "connected" | "registered" => 1,
+        "trust_initialized" => 2,
+        "certificate_issued" | "issued" => 3,
+        "challenge_generated" => 4,
+        "authenticated" => 5,
+        "session_established" | "secure_session_established" => 6,
+        "finalized" => 7,
+        _ => 0,
+    }
+}
+
+fn merge_provisioning_status(existing: Option<&str>, candidate: &str) -> String {
+    let existing = existing.unwrap_or(DEFAULT_PROVISIONING_STATUS);
+    if provisioning_status_rank(existing) >= provisioning_status_rank(candidate) {
+        existing.to_string()
+    } else {
+        candidate.to_string()
+    }
+}
+
+fn session_metadata_provisioning_status(metadata: &ProvisioningSessionMetadata) -> String {
+    let mut status = metadata.provisioning_status.clone();
+    if metadata.auth_status == AUTHENTICATED_STATUS || metadata.auth_result == AUTHENTICATED_STATUS
+    {
+        status = merge_provisioning_status(Some(&status), AUTHENTICATED_STATUS);
+    }
+    if metadata.session_status == SECURE_SESSION_ESTABLISHED_STATUS {
+        status = merge_provisioning_status(Some(&status), SESSION_ESTABLISHED_PROVISIONING_STATUS);
+    }
+    status
+}
+
 pub fn format_nepal_time(timestamp: DateTime<Utc>) -> String {
     let nepal_offset = FixedOffset::east_opt(5 * 3600 + 45 * 60)
         .expect("Nepal offset should be a valid fixed offset");
@@ -375,6 +435,7 @@ pub struct AppController {
     selected_vehicle: Option<VehicleMetadata>,
     selected_key_fob: Option<KeyFobMetadata>,
     active_certificate_metadata: Option<CertificateMetadata>,
+    selected_key_fob_encrypted_backup_metadata: Option<EncryptedKeyRecord>,
     selection_source: String,
     active_session_id: String,
     customer_records: Vec<CustomerMetadata>,
@@ -424,6 +485,10 @@ impl fmt::Debug for AppController {
             .field("selected_customer", &self.selected_customer)
             .field("selected_vehicle", &self.selected_vehicle)
             .field("selected_key_fob", &self.selected_key_fob)
+            .field(
+                "selected_key_fob_encrypted_backup_loaded",
+                &self.selected_key_fob_encrypted_backup_metadata.is_some(),
+            )
             .field("selection_source", &self.selection_source)
             .field("active_session_id", &self.active_session_id)
             .field("cloud_client_cached", &self.cloud_client.is_some())
@@ -479,6 +544,7 @@ impl AppController {
             selected_vehicle: None,
             selected_key_fob: None,
             active_certificate_metadata: None,
+            selected_key_fob_encrypted_backup_metadata: None,
             selection_source: "None".to_string(),
             active_session_id: DEMO_SESSION_ID.to_string(),
             customer_records: Vec::new(),
@@ -1843,6 +1909,7 @@ impl AppController {
         let message = self.persist_customer_record(customer.clone())?;
         self.select_customer_context(customer.clone(), "CreatedThisSession");
         upsert_local_customer(&mut self.customer_records, customer);
+        self.hydrate_selected_provisioning_state_from_cloud();
         Ok(message)
     }
 
@@ -1875,8 +1942,7 @@ impl AppController {
             .cloned()
         {
             self.select_customer_context(customer.clone(), "CloudSelected");
-            let customer_id = customer.customer_id.clone();
-            let _ = self.load_vehicle_records_for_customer(&customer_id);
+            self.hydrate_selected_provisioning_state_from_cloud();
             return Ok(format!("Customer selected: {}", customer.customer_id));
         }
 
@@ -1885,8 +1951,7 @@ impl AppController {
             Ok(Some(customer)) => {
                 self.select_customer_context(customer.clone(), "CloudSelected");
                 upsert_local_customer(&mut self.customer_records, customer.clone());
-                let customer_id = customer.customer_id.clone();
-                let _ = self.load_vehicle_records_for_customer(&customer_id);
+                self.hydrate_selected_provisioning_state_from_cloud();
                 Ok(format!("Customer selected: {}", customer.customer_id))
             }
             Ok(None) => Err(AppControllerError::Backend(
@@ -1948,6 +2013,7 @@ impl AppController {
         let message = self.persist_vehicle_record(vehicle.clone())?;
         self.select_vehicle_context(vehicle.clone(), "CreatedThisSession");
         upsert_local_vehicle(&mut self.vehicle_records, vehicle);
+        self.hydrate_selected_provisioning_state_from_cloud();
         Ok(message)
     }
 
@@ -2004,9 +2070,7 @@ impl AppController {
             .cloned()
         {
             self.select_vehicle_context(vehicle.clone(), "CloudSelected");
-            let _ = self.hydrate_selected_vehicle_status_from_cloud();
-            let vehicle_id = self.active_vehicle.vehicle_id.clone();
-            let _ = self.load_key_fob_records_for_vehicle(&vehicle_id);
+            self.hydrate_selected_provisioning_state_from_cloud();
             return Ok(format!("Vehicle selected: {}", vehicle.vehicle_id));
         }
 
@@ -2015,9 +2079,7 @@ impl AppController {
             Ok(Some(vehicle)) => {
                 self.select_vehicle_context(vehicle.clone(), "CloudSelected");
                 upsert_local_vehicle(&mut self.vehicle_records, vehicle.clone());
-                let _ = self.hydrate_selected_vehicle_status_from_cloud();
-                let vehicle_id = self.active_vehicle.vehicle_id.clone();
-                let _ = self.load_key_fob_records_for_vehicle(&vehicle_id);
+                self.hydrate_selected_provisioning_state_from_cloud();
                 Ok(format!("Vehicle selected: {}", vehicle.vehicle_id))
             }
             Ok(None) => Err(AppControllerError::Backend(
@@ -2065,6 +2127,7 @@ impl AppController {
         self.select_key_fob_context(key_fob.clone(), "CreatedThisSession");
         upsert_local_key_fob(&mut self.key_fob_records, key_fob);
         self.ensure_active_key_fob_crypto_identity()?;
+        self.hydrate_selected_provisioning_state_from_cloud();
         Ok(message)
     }
 
@@ -2121,16 +2184,8 @@ impl AppController {
             .cloned()
         {
             self.select_key_fob_context(key_fob.clone(), "CloudSelected");
-            let _ = self.hydrate_selected_key_fob_status_from_cloud();
-            self.keyfob_detected = false;
-            self.session = None;
-            self.last_auth_result = None;
-            self.last_access_decision = None;
             self.ensure_active_key_fob_crypto_identity()?;
-            let _ = self.load_active_certificate_from_cloud();
-            if let Ok(Some(session)) = self.load_latest_session_for_selected_context() {
-                self.apply_loaded_provisioning_session_metadata(session);
-            }
+            self.hydrate_selected_provisioning_state_from_cloud();
             return Ok(format!(
                 "Key fob selected: {}; crypto identity ready",
                 key_fob.fob_id
@@ -2142,16 +2197,8 @@ impl AppController {
             Ok(Some(key_fob)) => {
                 self.select_key_fob_context(key_fob.clone(), "CloudSelected");
                 upsert_local_key_fob(&mut self.key_fob_records, key_fob.clone());
-                let _ = self.hydrate_selected_key_fob_status_from_cloud();
-                self.keyfob_detected = false;
-                self.session = None;
-                self.last_auth_result = None;
-                self.last_access_decision = None;
                 self.ensure_active_key_fob_crypto_identity()?;
-                let _ = self.load_active_certificate_from_cloud();
-                if let Ok(Some(session)) = self.load_latest_session_for_selected_context() {
-                    self.apply_loaded_provisioning_session_metadata(session);
-                }
+                self.hydrate_selected_provisioning_state_from_cloud();
                 Ok(format!(
                     "Key fob selected: {}; crypto identity ready",
                     key_fob.fob_id
@@ -2754,7 +2801,11 @@ impl AppController {
                     .map(|metadata| metadata.fob_id == self.active_key_fob.fob_id)
                     .unwrap_or(false))
         {
-            self.derive_certificate_id_for_active_context()
+            self.active_certificate_metadata
+                .as_ref()
+                .filter(|metadata| metadata.fob_id == self.active_key_fob.fob_id)
+                .map(|metadata| metadata.certificate_id.clone())
+                .unwrap_or_else(|| self.derive_certificate_id_for_active_context())
         } else {
             "N/A".to_string()
         };
@@ -2769,7 +2820,7 @@ impl AppController {
                 })
                 .unwrap_or(false)
         {
-            self.derive_session_id_for_active_context()
+            self.active_session_id.clone()
         } else {
             "N/A".to_string()
         };
@@ -2969,6 +3020,205 @@ impl AppController {
             source: "NotIssued".to_string(),
             message: "No certificate issued for selected key fob".to_string(),
         }
+    }
+
+    pub fn get_provisioning_display_summary(&self) -> ProvisioningDisplaySummary {
+        let context = self.get_visible_provisioning_context();
+        let certificate = self.get_active_certificate_details();
+        let vehicle_status = self
+            .selected_vehicle
+            .as_ref()
+            .and_then(|record| record.provisioning_status.clone())
+            .unwrap_or_else(|| DEFAULT_PROVISIONING_STATUS.to_string());
+        let key_fob_status = self
+            .selected_key_fob
+            .as_ref()
+            .and_then(|record| record.provisioning_status.clone())
+            .unwrap_or_else(|| DEFAULT_PROVISIONING_STATUS.to_string());
+        let combined_status = merge_provisioning_status(Some(&vehicle_status), &key_fob_status);
+        let certificate_id = if certificate.available {
+            certificate
+                .certificate_id
+                .clone()
+                .unwrap_or_else(|| context.certificate_id.clone())
+        } else {
+            "N/A".to_string()
+        };
+        let certificate_status = if certificate.available {
+            "Issued".to_string()
+        } else if context.key_fob_selected {
+            "Pending".to_string()
+        } else {
+            "N/A".to_string()
+        };
+        let authenticated = self.last_auth_result == Some(AuthResult::Success)
+            || provisioning_status_rank(&combined_status)
+                >= provisioning_status_rank(AUTHENTICATED_STATUS)
+            || context.session_id != "N/A";
+        let session_established = self
+            .session
+            .as_ref()
+            .map(|session| session.established)
+            .unwrap_or(false)
+            || provisioning_status_rank(&combined_status)
+                >= provisioning_status_rank(SESSION_ESTABLISHED_PROVISIONING_STATUS);
+        let access_granted = self.last_access_decision == Some(AccessDecision::GrantAccess)
+            || authenticated
+                && (session_established
+                    || provisioning_status_rank(&combined_status)
+                        >= provisioning_status_rank(FINALIZED_PROVISIONING_STATUS));
+        let encrypted_backup = self.selected_key_fob_encrypted_backup_metadata.as_ref();
+        let encrypted_backup_status = if !context.key_fob_selected {
+            "N/A".to_string()
+        } else if encrypted_backup.is_some() {
+            "Available".to_string()
+        } else {
+            "Missing".to_string()
+        };
+        let source =
+            if !context.customer_selected && !context.vehicle_selected && !context.key_fob_selected
+            {
+                "Pending".to_string()
+            } else if self.selection_source == "CreatedThisSession"
+                && !certificate.available
+                && context.session_id == "N/A"
+            {
+                "NewSelection".to_string()
+            } else if self.active_certificate_metadata.is_some()
+                || encrypted_backup.is_some()
+                || context.session_id != "N/A"
+            {
+                "Mixed".to_string()
+            } else {
+                self.selection_source.clone()
+            };
+
+        ProvisioningDisplaySummary {
+            customer_selected: context.customer_selected,
+            vehicle_selected: context.vehicle_selected,
+            key_fob_selected: context.key_fob_selected,
+            customer_id: context.customer_id,
+            owner_name: context.owner_name,
+            vehicle_id: context.vehicle_id,
+            vehicle_display_name: context.vehicle_display_name,
+            fob_id: context.fob_id,
+            fob_label: context.fob_label,
+            certificate_id,
+            certificate_status,
+            auth_result: if authenticated {
+                "Authenticated".to_string()
+            } else if context.key_fob_selected {
+                "Pending".to_string()
+            } else {
+                "N/A".to_string()
+            },
+            session_id: if session_established {
+                context.session_id
+            } else {
+                "N/A".to_string()
+            },
+            session_status: if session_established {
+                "Secure Session Established".to_string()
+            } else if context.key_fob_selected {
+                "Pending".to_string()
+            } else {
+                "N/A".to_string()
+            },
+            access_decision: if access_granted {
+                "Grant Access".to_string()
+            } else {
+                "N/A".to_string()
+            },
+            provisioning_status: if context.key_fob_selected || context.vehicle_selected {
+                format_status_label(&combined_status)
+            } else {
+                "Pending".to_string()
+            },
+            vehicle_provisioning_status: vehicle_status,
+            key_fob_provisioning_status: key_fob_status,
+            encrypted_backup_status,
+            encrypted_backup_key_purpose: encrypted_backup
+                .map(|record| record.key_purpose.clone())
+                .unwrap_or_else(|| "N/A".to_string()),
+            encrypted_backup_algorithm: encrypted_backup
+                .map(|record| record.encrypted_key.encryption_algorithm.clone())
+                .unwrap_or_else(|| "N/A".to_string()),
+            source,
+        }
+    }
+
+    pub fn hydrate_selected_provisioning_state_from_cloud(&mut self) -> ProvisioningDisplaySummary {
+        if self.selected_customer.is_none() {
+            return self.get_provisioning_display_summary();
+        }
+
+        if let Some(customer_id) = self
+            .selected_customer
+            .as_ref()
+            .map(|record| record.customer_id.clone())
+        {
+            if let Err(error) = self.load_vehicle_records_for_customer(&customer_id) {
+                self.log(format!(
+                    "Cloud hydration unavailable for selected provisioning context: {}",
+                    Self::safe_hydration_error(error)
+                ));
+            }
+        }
+
+        if self.selected_vehicle.is_some() {
+            if let Err(error) = self.hydrate_selected_vehicle_status_from_cloud() {
+                self.log(format!(
+                    "Cloud hydration unavailable for selected vehicle metadata: {}",
+                    Self::safe_hydration_error(error)
+                ));
+            }
+            if let Some(vehicle_id) = self
+                .selected_vehicle
+                .as_ref()
+                .map(|record| record.vehicle_id.clone())
+            {
+                if let Err(error) = self.load_key_fob_records_for_vehicle(&vehicle_id) {
+                    self.log(format!(
+                        "Cloud hydration unavailable for selected key fob list: {}",
+                        Self::safe_hydration_error(error)
+                    ));
+                }
+            }
+        }
+
+        if self.selected_key_fob.is_some() {
+            if let Err(error) = self.hydrate_selected_key_fob_status_from_cloud() {
+                self.log(format!(
+                    "Cloud hydration unavailable for selected key fob metadata: {}",
+                    Self::safe_hydration_error(error)
+                ));
+            }
+            if let Err(error) = self.load_active_certificate_from_cloud() {
+                self.log(format!(
+                    "Cloud hydration unavailable for selected certificate metadata: {}",
+                    Self::safe_hydration_error(error)
+                ));
+            }
+            match self.load_latest_session_for_selected_context() {
+                Ok(Some(session)) => self.apply_loaded_provisioning_session_metadata(session),
+                Ok(None) => {}
+                Err(error) => self.log(format!(
+                    "Cloud hydration unavailable for selected session metadata: {}",
+                    Self::safe_hydration_error(error)
+                )),
+            }
+            match self.load_encrypted_backup_metadata_for_selected_fob() {
+                Ok(metadata) => {
+                    self.selected_key_fob_encrypted_backup_metadata = metadata;
+                }
+                Err(error) => self.log(format!(
+                    "Cloud hydration unavailable for selected encrypted backup metadata: {}",
+                    Self::safe_hydration_error(error)
+                )),
+            }
+        }
+
+        self.get_provisioning_display_summary()
     }
 
     pub fn load_active_certificate_from_cloud(&mut self) -> Result<String, AppControllerError> {
@@ -3418,16 +3668,18 @@ impl AppController {
     }
 
     fn apply_loaded_certificate_metadata(&mut self, metadata: CertificateMetadata) {
+        let merged_provisioning_status = merge_provisioning_status(
+            self.active_key_fob.provisioning_status.as_deref(),
+            CERTIFICATE_ISSUED_PROVISIONING_STATUS,
+        );
         self.active_key_fob.certificate_status = Some(metadata.certificate_status.clone());
-        self.active_key_fob.provisioning_status =
-            Some(CERTIFICATE_ISSUED_PROVISIONING_STATUS.to_string());
+        self.active_key_fob.provisioning_status = Some(merged_provisioning_status.clone());
         if let Some(fingerprint) = metadata.public_key_fingerprint.clone() {
             self.active_key_fob.public_key_fingerprint = Some(fingerprint);
         }
         if let Some(selected_key_fob) = self.selected_key_fob.as_mut() {
             selected_key_fob.certificate_status = Some(metadata.certificate_status.clone());
-            selected_key_fob.provisioning_status =
-                Some(CERTIFICATE_ISSUED_PROVISIONING_STATUS.to_string());
+            selected_key_fob.provisioning_status = Some(merged_provisioning_status);
             if let Some(fingerprint) = metadata.public_key_fingerprint.clone() {
                 selected_key_fob.public_key_fingerprint = Some(fingerprint);
             }
@@ -3547,6 +3799,7 @@ impl AppController {
 
     fn clear_provisioning_runtime_state_for_new_selection(&mut self) {
         self.active_certificate_metadata = None;
+        self.selected_key_fob_encrypted_backup_metadata = None;
         self.keyfob = None;
         self.keyfob_detected = false;
         self.active_challenge = None;
@@ -3919,7 +4172,7 @@ impl AppController {
         &mut self,
         metadata: ProvisioningSessionMetadata,
     ) {
-        self.active_session_id = metadata.session_id;
+        self.active_session_id = metadata.session_id.clone();
         self.session = Some(SessionState {
             session_id: self.active_session_id.clone(),
             vehicle_id: metadata.vehicle_id.clone(),
@@ -3931,13 +4184,25 @@ impl AppController {
             expires_at: (Utc::now() + chrono::Duration::seconds(300)).to_rfc3339(),
             established: metadata.session_status == SECURE_SESSION_ESTABLISHED_STATUS,
         });
-        self.set_active_vehicle_status(&metadata.provisioning_status);
-        self.set_active_key_fob_status(
-            Some(ISSUED_CERTIFICATE_STATUS),
-            Some(&metadata.provisioning_status),
+        let session_provisioning_status = session_metadata_provisioning_status(&metadata);
+        let vehicle_status = merge_provisioning_status(
+            self.active_vehicle.provisioning_status.as_deref(),
+            &session_provisioning_status,
         );
-        if metadata.auth_status == AUTHENTICATED_STATUS {
+        let key_fob_status = merge_provisioning_status(
+            self.active_key_fob.provisioning_status.as_deref(),
+            &session_provisioning_status,
+        );
+        self.set_active_vehicle_status(&vehicle_status);
+        self.set_active_key_fob_status(Some(ISSUED_CERTIFICATE_STATUS), Some(&key_fob_status));
+        if metadata.auth_status == AUTHENTICATED_STATUS
+            || metadata.auth_result == AUTHENTICATED_STATUS
+        {
             self.last_auth_result = Some(AuthResult::Success);
+        }
+        if metadata.access_decision == GRANT_ACCESS_DECISION
+            || self.last_auth_result == Some(AuthResult::Success)
+        {
             self.last_access_decision = Some(AccessDecision::GrantAccess);
         }
     }
@@ -5065,6 +5330,18 @@ impl AppController {
                 "Cloud database connection failed. Retry after database warm-up.".to_string(),
             ),
             other => AppControllerError::Backend(other.to_string()),
+        }
+    }
+
+    fn safe_hydration_error(error: AppControllerError) -> String {
+        let message = error.to_string();
+        if message.contains("DATABASE_URL")
+            || message.contains("AIACS_MASTER_KEY")
+            || message.contains("postgresql://")
+        {
+            "Cloud hydration unavailable for selected provisioning context".to_string()
+        } else {
+            message
         }
     }
 
@@ -8648,6 +8925,175 @@ mod tests {
             controller.last_access_decision,
             Some(AccessDecision::GrantAccess)
         );
+    }
+
+    #[test]
+    fn test_certificate_hydration_does_not_downgrade_finalized_status() {
+        let mut controller = AppController::new();
+        bind_custom_context(&mut controller, "NODOWNGRADE");
+        controller.set_active_key_fob_status(
+            Some(ISSUED_CERTIFICATE_STATUS),
+            Some(FINALIZED_PROVISIONING_STATUS),
+        );
+
+        controller.apply_loaded_certificate_metadata(CertificateMetadata {
+            certificate_id: "CERT-FOB-CRYPTO-NODOWNGRADE".to_string(),
+            fob_id: "FOB-CRYPTO-NODOWNGRADE".to_string(),
+            vehicle_id: "VEH-CRYPTO-NODOWNGRADE".to_string(),
+            subject_id: "FOB-CRYPTO-NODOWNGRADE".to_string(),
+            issuer: "Denish".to_string(),
+            issued_at: Some(Utc::now()),
+            expires_at: Some(Utc::now() + chrono::Duration::days(365)),
+            public_key_fingerprint: Some("SHA256:NODOWNGRADE".to_string()),
+            signature_algorithm: CERTIFICATE_SIGNATURE_ALGORITHM.to_string(),
+            certificate_signature_fingerprint: Some("SHA256:NODOWNGRADESIG".to_string()),
+            certificate_json: None,
+            certificate_status: ISSUED_CERTIFICATE_STATUS.to_string(),
+        });
+
+        let selected_fob = controller
+            .selected_key_fob_record()
+            .expect("selected fob should remain active");
+        assert_eq!(
+            selected_fob.provisioning_status,
+            Some(FINALIZED_PROVISIONING_STATUS.to_string())
+        );
+        let summary = controller.get_provisioning_display_summary();
+        assert_eq!(summary.certificate_status, "Issued");
+        assert_eq!(summary.provisioning_status, "Finalized");
+    }
+
+    #[test]
+    fn test_provisioning_display_summary_reports_completed_cloud_session_state() {
+        let mut controller = AppController::new();
+        bind_custom_context(&mut controller, "SUMMARY");
+        controller.apply_loaded_certificate_metadata(CertificateMetadata {
+            certificate_id: "CERT-FOB-CRYPTO-SUMMARY".to_string(),
+            fob_id: "FOB-CRYPTO-SUMMARY".to_string(),
+            vehicle_id: "VEH-CRYPTO-SUMMARY".to_string(),
+            subject_id: "FOB-CRYPTO-SUMMARY".to_string(),
+            issuer: "Denish".to_string(),
+            issued_at: Some(Utc::now()),
+            expires_at: Some(Utc::now() + chrono::Duration::days(365)),
+            public_key_fingerprint: Some("SHA256:SUMMARY".to_string()),
+            signature_algorithm: CERTIFICATE_SIGNATURE_ALGORITHM.to_string(),
+            certificate_signature_fingerprint: Some("SHA256:SUMMARYSIG".to_string()),
+            certificate_json: None,
+            certificate_status: ISSUED_CERTIFICATE_STATUS.to_string(),
+        });
+        controller.apply_loaded_provisioning_session_metadata(ProvisioningSessionMetadata {
+            session_id: "SESSION-CRYPTO-SUMMARY".to_string(),
+            customer_id: "CUST-CRYPTO-SUMMARY".to_string(),
+            vehicle_id: "VEH-CRYPTO-SUMMARY".to_string(),
+            fob_id: "FOB-CRYPTO-SUMMARY".to_string(),
+            certificate_id: "CERT-FOB-CRYPTO-SUMMARY".to_string(),
+            auth_status: AUTHENTICATED_STATUS.to_string(),
+            auth_result: AUTHENTICATED_STATUS.to_string(),
+            session_status: SECURE_SESSION_ESTABLISHED_STATUS.to_string(),
+            access_decision: GRANT_ACCESS_DECISION.to_string(),
+            session_algorithm: SESSION_ALGORITHM.to_string(),
+            session_method: SESSION_ALGORITHM.to_string(),
+            provisioning_status: FINALIZED_PROVISIONING_STATUS.to_string(),
+            report_path: IN_APP_REPORT_ONLY_PATH.to_string(),
+            started_at: Some(Utc::now()),
+            completed_at: Some(Utc::now()),
+        });
+
+        let summary = controller.get_provisioning_display_summary();
+        assert_eq!(summary.certificate_id, "CERT-FOB-CRYPTO-SUMMARY");
+        assert_eq!(summary.certificate_status, "Issued");
+        assert_eq!(summary.auth_result, "Authenticated");
+        assert_eq!(summary.session_id, "SESSION-CRYPTO-SUMMARY");
+        assert_eq!(summary.session_status, "Secure Session Established");
+        assert_eq!(summary.access_decision, "Grant Access");
+        assert_eq!(summary.provisioning_status, "Finalized");
+    }
+
+    #[test]
+    fn test_provisioning_display_summary_reports_encrypted_backup_without_secret_bytes() {
+        let mut controller = AppController::new();
+        bind_custom_context(&mut controller, "BACKUP");
+        controller.selected_key_fob_encrypted_backup_metadata = Some(EncryptedKeyRecord {
+            key_id: "KEY-FOB-CRYPTO-BACKUP".to_string(),
+            owner_type: "key_fob".to_string(),
+            owner_id: "FOB-CRYPTO-BACKUP".to_string(),
+            public_key_fingerprint: Some("SHA256:BACKUP".to_string()),
+            key_purpose: KEY_FOB_KEY_PURPOSE.to_string(),
+            storage_status: ENCRYPTED_KEY_STORAGE_STATUS.to_string(),
+            encrypted_key: crate::cloud_storage::EncryptedKeyBlob {
+                encrypted_key_blob: vec![1, 2, 3, 4],
+                encryption_nonce: vec![5, 6, 7, 8],
+                encryption_algorithm: "AES-256-GCM".to_string(),
+            },
+        });
+
+        let summary = controller.get_provisioning_display_summary();
+        assert_eq!(summary.encrypted_backup_status, "Available");
+        assert_eq!(summary.encrypted_backup_key_purpose, KEY_FOB_KEY_PURPOSE);
+        assert_eq!(summary.encrypted_backup_algorithm, "AES-256-GCM");
+        let summary_debug = format!("{summary:?}");
+        assert!(!summary_debug.contains("encrypted_key_blob"));
+        assert!(!summary_debug.contains("encryption_nonce"));
+        assert!(!summary_debug.contains("1, 2, 3, 4"));
+    }
+
+    #[test]
+    fn test_new_key_fob_selection_clears_loaded_certificate_session_and_backup_state() {
+        let mut controller = AppController::new();
+        bind_custom_context(&mut controller, "OLD");
+        controller.apply_loaded_certificate_metadata(CertificateMetadata {
+            certificate_id: "CERT-FOB-CRYPTO-OLD".to_string(),
+            fob_id: "FOB-CRYPTO-OLD".to_string(),
+            vehicle_id: "VEH-CRYPTO-OLD".to_string(),
+            subject_id: "FOB-CRYPTO-OLD".to_string(),
+            issuer: "Denish".to_string(),
+            issued_at: Some(Utc::now()),
+            expires_at: Some(Utc::now() + chrono::Duration::days(365)),
+            public_key_fingerprint: Some("SHA256:OLD".to_string()),
+            signature_algorithm: CERTIFICATE_SIGNATURE_ALGORITHM.to_string(),
+            certificate_signature_fingerprint: Some("SHA256:OLDSIG".to_string()),
+            certificate_json: None,
+            certificate_status: ISSUED_CERTIFICATE_STATUS.to_string(),
+        });
+        controller.apply_loaded_provisioning_session_metadata(ProvisioningSessionMetadata {
+            session_id: "SESSION-CRYPTO-OLD".to_string(),
+            customer_id: "CUST-CRYPTO-OLD".to_string(),
+            vehicle_id: "VEH-CRYPTO-OLD".to_string(),
+            fob_id: "FOB-CRYPTO-OLD".to_string(),
+            certificate_id: "CERT-FOB-CRYPTO-OLD".to_string(),
+            auth_status: AUTHENTICATED_STATUS.to_string(),
+            auth_result: AUTHENTICATED_STATUS.to_string(),
+            session_status: SECURE_SESSION_ESTABLISHED_STATUS.to_string(),
+            access_decision: GRANT_ACCESS_DECISION.to_string(),
+            session_algorithm: SESSION_ALGORITHM.to_string(),
+            session_method: SESSION_ALGORITHM.to_string(),
+            provisioning_status: FINALIZED_PROVISIONING_STATUS.to_string(),
+            report_path: IN_APP_REPORT_ONLY_PATH.to_string(),
+            started_at: Some(Utc::now()),
+            completed_at: Some(Utc::now()),
+        });
+        controller.selected_key_fob_encrypted_backup_metadata = Some(EncryptedKeyRecord {
+            key_id: "KEY-FOB-CRYPTO-OLD".to_string(),
+            owner_type: "key_fob".to_string(),
+            owner_id: "FOB-CRYPTO-OLD".to_string(),
+            public_key_fingerprint: Some("SHA256:OLD".to_string()),
+            key_purpose: KEY_FOB_KEY_PURPOSE.to_string(),
+            storage_status: ENCRYPTED_KEY_STORAGE_STATUS.to_string(),
+            encrypted_key: crate::cloud_storage::EncryptedKeyBlob {
+                encrypted_key_blob: vec![1],
+                encryption_nonce: vec![2],
+                encryption_algorithm: "AES-256-GCM".to_string(),
+            },
+        });
+
+        bind_custom_context(&mut controller, "NEW");
+        let summary = controller.get_provisioning_display_summary();
+        assert_eq!(summary.fob_id, "FOB-CRYPTO-NEW");
+        assert_eq!(summary.certificate_id, "N/A");
+        assert_eq!(summary.certificate_status, "Pending");
+        assert_eq!(summary.session_id, "N/A");
+        assert_eq!(summary.auth_result, "Pending");
+        assert_eq!(summary.encrypted_backup_status, "Missing");
     }
 
     #[test]

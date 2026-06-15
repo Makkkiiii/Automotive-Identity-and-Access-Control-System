@@ -177,6 +177,7 @@ enum CloudOperation {
     ProvisioningVerifyAuthentication,
     ProvisioningActivateSession,
     ProvisioningFinalize,
+    HydrateProvisioningState,
     CredentialRecoveryTest,
     PrepareDiagnostics,
     RunDiagnostic,
@@ -393,6 +394,14 @@ impl Application for AIACSApp {
                                 result,
                             }
                         });
+                    }
+                    MainTab::Provisioning
+                        if self.controller.selected_customer_record().is_some()
+                            || self.controller.selected_vehicle_record().is_some()
+                            || self.controller.selected_key_fob_record().is_some() =>
+                    {
+                        self.begin_cloud_operation("Hydrating provisioning state...");
+                        return self.run_cloud_operation(CloudOperation::HydrateProvisioningState);
                     }
                     _ => {}
                 }
@@ -994,6 +1003,11 @@ impl AIACSApp {
                 let cloud_status = cloud_status_from_provisioning_result(&message);
                 self.cloud_sync_audit_status = cloud_status;
             }
+            CloudOperation::HydrateProvisioningState => {
+                self.selected_detail = message.clone();
+                self.push_log("[DB]", message);
+                self.sync_visible_provisioning_state_from_controller();
+            }
             CloudOperation::RunDiagnostic => {
                 self.cloud_sync_diagnostic_status = "Diagnostics completed".to_string();
                 self.selected_detail = message.clone();
@@ -1128,6 +1142,11 @@ impl AIACSApp {
                     "Finalize and export report",
                     error,
                 );
+            }
+            CloudOperation::HydrateProvisioningState => {
+                self.selected_detail = format!("Provisioning cloud hydration skipped: {}", error);
+                self.push_log("[WARN]", self.selected_detail.clone());
+                self.sync_visible_provisioning_state_from_controller();
             }
             CloudOperation::RunDiagnostic => {
                 self.cloud_sync_diagnostic_status = "Diagnostics failed".to_string();
@@ -2227,7 +2246,7 @@ impl AIACSApp {
     }
 
     fn view_provisioning_context_panel(&self) -> Element<'_, Message> {
-        let context = self.controller.get_visible_provisioning_context();
+        let summary = self.controller.get_provisioning_display_summary();
         let crypto_identity = self.controller.get_active_key_fob_crypto_identity();
         container(
             column![
@@ -2238,8 +2257,8 @@ impl AIACSApp {
                 self.selected_setup_card(
                     "auth",
                     "Customer",
-                    if context.customer_selected {
-                        format!("{} / {}", context.owner_name, context.customer_id)
+                    if summary.customer_selected {
+                        format!("{} / {}", summary.owner_name, summary.customer_id)
                     } else {
                         "No customer selected".to_string()
                     }
@@ -2247,8 +2266,8 @@ impl AIACSApp {
                 self.selected_setup_card(
                     "vehicle",
                     "Vehicle",
-                    if context.vehicle_selected {
-                        format!("{} / {}", context.vehicle_display_name, context.vehicle_id)
+                    if summary.vehicle_selected {
+                        format!("{} / {}", summary.vehicle_display_name, summary.vehicle_id)
                     } else {
                         "No vehicle selected".to_string()
                     }
@@ -2256,15 +2275,22 @@ impl AIACSApp {
                 self.selected_setup_card(
                     "key",
                     "Key Fob",
-                    if context.key_fob_selected {
-                        format!("{} / {}", context.fob_label, context.fob_id)
+                    if summary.key_fob_selected {
+                        format!("{} / {}", summary.fob_label, summary.fob_id)
                     } else {
                         "No key fob selected".to_string()
                     }
                 ),
-                self.selected_setup_card("certificate", "Certificate", context.certificate_id),
-                self.selected_setup_card("lock", "Session", context.session_id),
-                self.selected_setup_card("terminal", "Source", context.selection_source),
+                self.selected_setup_card("certificate", "Certificate", summary.certificate_id),
+                self.selected_setup_card("auth", "Authentication", summary.auth_result),
+                self.selected_setup_card("lock", "Session", summary.session_id),
+                self.selected_setup_card("decision", "Access", summary.access_decision),
+                self.selected_setup_card(
+                    "lock",
+                    "Encrypted Backup",
+                    summary.encrypted_backup_status
+                ),
+                self.selected_setup_card("terminal", "Source", summary.source),
                 text("Crypto Identity")
                     .size(16)
                     .font(Font::MONOSPACE)
@@ -3446,22 +3472,24 @@ impl AIACSApp {
     }
 
     fn view_provisioning_summary_rows(&self) -> Element<'_, Message> {
-        let context = self.controller.get_visible_provisioning_context();
-        let certificate_status = if context.key_fob_selected {
-            self.status.certificate_status.as_str()
-        } else {
-            "Not Issued"
-        };
+        let summary = self.controller.get_provisioning_display_summary();
         column![
-            self.view_summary_row("auth", "Owner", &context.owner_name),
-            self.view_summary_row("vehicle", "Vehicle", &context.vehicle_display_name),
-            self.view_summary_row("key", "Digital Key", &context.fob_label),
-            self.view_summary_row("certificate", "Certificate ID", &context.certificate_id),
-            self.view_summary_row("lock", "Session ID", &context.session_id),
-            self.view_summary_row("certificate", "Certificate", certificate_status),
-            self.view_summary_row("auth", "Authentication", &self.status.authentication_status),
-            self.view_summary_row("lock", "Secure Session", &self.status.session_status),
-            self.view_summary_row("decision", "Access Decision", &self.status.access_decision),
+            self.view_summary_row("auth", "Owner", &summary.owner_name),
+            self.view_summary_row("vehicle", "Vehicle", &summary.vehicle_display_name),
+            self.view_summary_row("key", "Digital Key", &summary.fob_label),
+            self.view_summary_row("certificate", "Certificate ID", &summary.certificate_id),
+            self.view_summary_row("certificate", "Certificate", &summary.certificate_status),
+            self.view_summary_row("auth", "Authentication", &summary.auth_result),
+            self.view_summary_row("lock", "Session ID", &summary.session_id),
+            self.view_summary_row("lock", "Secure Session", &summary.session_status),
+            self.view_summary_row("decision", "Access Decision", &summary.access_decision),
+            self.view_summary_row("gear", "Provisioning", &summary.provisioning_status),
+            self.view_summary_row(
+                "shield",
+                "Encrypted Backup",
+                &summary.encrypted_backup_status
+            ),
+            self.view_summary_row("terminal", "Source", &summary.source),
         ]
         .spacing(8)
         .into()
@@ -3497,69 +3525,51 @@ impl AIACSApp {
     }
 
     fn sync_visible_provisioning_state_from_controller(&mut self) {
-        let context = self.controller.get_visible_provisioning_context();
-        let vehicle_status = self
-            .controller
-            .selected_vehicle_record()
-            .and_then(|record| record.provisioning_status)
-            .unwrap_or_else(|| "pending".to_string());
-        let key_fob = self.controller.selected_key_fob_record();
-        let fob_provisioning_status = key_fob
-            .as_ref()
-            .and_then(|record| record.provisioning_status.clone())
-            .unwrap_or_else(|| "pending".to_string());
-        let fob_certificate_status = key_fob
-            .as_ref()
-            .and_then(|record| record.certificate_status.clone())
-            .unwrap_or_else(|| "not_issued".to_string());
-        let crypto_identity = self.controller.get_active_key_fob_crypto_identity();
+        let summary = self.controller.get_provisioning_display_summary();
 
         self.workflow_state = WorkflowState::default();
         self.status = SystemStatus::default();
 
-        if !context.customer_selected {
+        if !summary.customer_selected {
             self.status.top_badge = "No Customer Selected".to_string();
             return;
         }
         self.status.top_badge = "Customer Selected".to_string();
 
-        if context.vehicle_selected {
-            self.workflow_state.vehicle_connected = status_at_least(&vehicle_status, "connected")
-                || status_at_least(&fob_provisioning_status, "authenticated");
-            self.status.trust_status = if status_at_least(&vehicle_status, "trust_initialized")
-                || context.certificate_id != "N/A"
-            {
-                "Initialized".to_string()
-            } else {
-                "Not Initialized".to_string()
-            };
+        if summary.vehicle_selected {
+            self.workflow_state.vehicle_connected =
+                status_at_least(&summary.vehicle_provisioning_status, "connected")
+                    || status_at_least(&summary.key_fob_provisioning_status, "authenticated");
+            self.status.trust_status =
+                if status_at_least(&summary.vehicle_provisioning_status, "trust_initialized")
+                    || summary.certificate_id != "N/A"
+                {
+                    "Initialized".to_string()
+                } else {
+                    "Not Initialized".to_string()
+                };
         }
 
-        if context.key_fob_selected {
+        if summary.key_fob_selected {
             self.workflow_state.keyfob_detected = true;
             self.workflow_state.keyfob_registered =
-                status_at_least(&fob_provisioning_status, "registered");
-            self.status.key_fob_status = format_status_label(&fob_provisioning_status);
+                status_at_least(&summary.key_fob_provisioning_status, "registered");
+            self.status.key_fob_status = format_status_label(&summary.key_fob_provisioning_status);
 
-            let certificate_issued = context.certificate_id != "N/A"
-                || matches!(
-                    fob_certificate_status.as_str(),
-                    "issued" | "certificate_issued" | "finalized"
-                )
-                || matches!(
-                    crypto_identity.certificate_status.as_str(),
-                    "issued" | "certificate_issued" | "finalized"
-                );
+            let certificate_issued = summary.certificate_id != "N/A"
+                || summary.certificate_status == "Issued"
+                || status_at_least(&summary.key_fob_provisioning_status, "certificate_issued");
             self.workflow_state.certificate_issued = certificate_issued;
             self.workflow_state.certificate_viewed = certificate_issued;
-            self.status.certificate_status = if certificate_issued {
-                "Issued".to_string()
-            } else {
+            self.status.certificate_status = if summary.certificate_status == "N/A" {
                 "Not Issued".to_string()
+            } else {
+                summary.certificate_status.clone()
             };
 
-            let authenticated = status_at_least(&fob_provisioning_status, "authenticated")
-                || context.session_id != "N/A";
+            let authenticated = summary.auth_result == "Authenticated"
+                || status_at_least(&summary.key_fob_provisioning_status, "authenticated")
+                || summary.session_id != "N/A";
             self.workflow_state.authentication_verified = authenticated;
             self.status.authentication_status = if authenticated {
                 "Verified".to_string()
@@ -3567,8 +3577,9 @@ impl AIACSApp {
                 "Not Run".to_string()
             };
 
-            let session_active = status_at_least(&fob_provisioning_status, "session_established")
-                || context.session_id != "N/A";
+            let session_active = summary.session_status == "Secure Session Established"
+                || status_at_least(&summary.key_fob_provisioning_status, "session_established")
+                || summary.session_id != "N/A";
             self.workflow_state.session_active = session_active;
             self.status.session_status = if session_active {
                 "Active".to_string()
@@ -3576,13 +3587,16 @@ impl AIACSApp {
                 "Not Established".to_string()
             };
 
-            self.workflow_state.report_exported =
-                fob_provisioning_status == "finalized" || vehicle_status == "finalized";
-            self.status.access_decision = if authenticated || session_active {
-                "Access Granted".to_string()
-            } else {
-                "N/A".to_string()
-            };
+            self.workflow_state.report_exported = summary.key_fob_provisioning_status
+                == "finalized"
+                || summary.vehicle_provisioning_status == "finalized"
+                || summary.provisioning_status == "Finalized";
+            self.status.access_decision =
+                if summary.access_decision == "Grant Access" || authenticated || session_active {
+                    "Access Granted".to_string()
+                } else {
+                    "N/A".to_string()
+                };
             self.status.top_badge = if self.workflow_state.report_exported {
                 "Setup Complete".to_string()
             } else if session_active {
@@ -4199,6 +4213,10 @@ fn perform_cloud_operation(
         CloudOperation::ProvisioningFinalize => controller
             .finalize_provisioning_with_cloud_sync()
             .map(|result| result.to_string()),
+        CloudOperation::HydrateProvisioningState => {
+            controller.hydrate_selected_provisioning_state_from_cloud();
+            Ok("Provisioning state hydrated from selected cloud context".to_string())
+        }
         CloudOperation::CredentialRecoveryTest => controller
             .recover_key_fob_encrypted_key_backup()
             .map(|evidence| {
@@ -4371,6 +4389,14 @@ fn status_color(value: &str) -> Color {
         | "Trust root initialized"
         | "Enabled"
         | "Synced"
+        | "Authenticated"
+        | "Secure Session Established"
+        | "Grant Access"
+        | "Available"
+        | "Finalized"
+        | "Mixed"
+        | "CloudLoaded"
+        | "LocalRuntime"
         | "Customer saved to cloud"
         | "Vehicle saved to cloud"
         | "Key fob saved to cloud"
