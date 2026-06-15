@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://skillicons.dev/icons?i=rust" />
+  <img src="https://skillicons.dev/icons?i=rust,postgres,github" />
 </p>
 
 <p align="center"><strong>Core Stack</strong></p>
@@ -40,7 +40,7 @@
 <p align="center"><strong>Status</strong></p>
 <p align="center">
   <img src="https://img.shields.io/badge/Local_Validation-Passing-1F7A3D?style=flat-square" />
-  <img src="https://img.shields.io/badge/Cloud_Metadata-Sync_Ready-00A36C?style=flat-square" />
+  <img src="https://img.shields.io/badge/Cloud_Metadata-Sync_Active-00A36C?style=flat-square" />
   <img src="https://img.shields.io/badge/License-MIT-2563EB?style=flat-square" />
 </p>
 
@@ -116,58 +116,51 @@ AIACS is an academic prototype. It is designed to demonstrate protocol structure
 | Access decisions      | Structured grant/reject decisions with displayable denial reasons                      |
 | Diagnostics           | Separate adversarial validation tool for controlled protocol testing                   |
 | Audit reporting       | Human-readable provisioning report with redacted secrets                               |
-| Cloud metadata        | Neon PostgreSQL schema creation and safe customer/vehicle/key fob metadata sync        |
+| Cloud metadata        | Neon PostgreSQL schema creation, hydration, and safe selected-context metadata sync     |
+| Encrypted recovery    | AES-256-GCM encrypted key backup metadata and local-only recovery evidence             |
+| Attacker artifacts    | Report-friendly No-AIACS and protected attack evidence folders                         |
+| Docker packaging      | Reproducible build/test/diagnostics container support                                  |
 | Secret handling       | Public debug/log/report output redacts private keys and session secrets                |
 
 ---
 
 ## Project Structure
 
-AIACS is organized around a GUI-safe controller facade and backend modules for cryptographic provisioning, authentication, session handling, diagnostics, and cloud metadata storage.
+AIACS is organized around a GUI-safe controller facade and backend modules for cryptographic provisioning, authentication, secure sessions, diagnostics, cloud metadata storage, and local evidence generation.
 
-<div>
-  <p><img width="17" src="https://api.iconify.design/lucide/folder-root.svg?color=%23d3869b" alt="root" /> <strong><code>Cryptography/</code></strong></p>
-  <ul>
-    <li><img width="15" src="https://api.iconify.design/lucide/file-cog.svg?color=%23e6c384" alt="manifest" /> <code>Cargo.toml</code></li>
-    <li><img width="15" src="https://api.iconify.design/lucide/file-lock-2.svg?color=%23e6c384" alt="lockfile" /> <code>Cargo.lock</code></li>
-    <li><img width="15" src="https://api.iconify.design/lucide/file-text.svg?color=%237da9d8" alt="readme" /> <code>README.md</code></li>
-    <li><img width="15" src="https://api.iconify.design/lucide/scale.svg?color=%237da9d8" alt="license" /> <code>LICENSE</code></li>
-    <li><img width="15" src="https://api.iconify.design/lucide/file-key-2.svg?color=%238f7f82" alt="env example" /> <code>.env.example</code></li>
-    <li>
-      <img width="15" src="https://api.iconify.design/lucide/folder.svg?color=%23d3869b" alt="folder" /> <code>assets/</code>
-      <ul>
-        <li><img width="15" src="https://api.iconify.design/lucide/image.svg?color=%23d3869b" alt="icons" /> <code>icons/</code></li>
-      </ul>
-    </li>
-    <li>
-      <img width="15" src="https://api.iconify.design/lucide/folder-code.svg?color=%237da9d8" alt="source" /> <code>src/</code>
-      <ul>
-        <li><img width="15" src="https://api.iconify.design/lucide/monitor.svg?color=%237da9d8" alt="gui" /> <code>main.rs</code></li>
-        <li><img width="15" src="https://api.iconify.design/lucide/library.svg?color=%23a7d28d" alt="library" /> <code>lib.rs</code></li>
-        <li><img width="15" src="https://api.iconify.design/lucide/route.svg?color=%23e6c384" alt="controller" /> <code>app_controller/</code></li>
-        <li><img width="15" src="https://api.iconify.design/lucide/badge-check.svg?color=%23a7d28d" alt="access" /> <code>access/</code></li>
-        <li><img width="15" src="https://api.iconify.design/lucide/radar.svg?color=%23e06c75" alt="attacks" /> <code>attacks/</code></li>
-        <li><img width="15" src="https://api.iconify.design/lucide/fingerprint.svg?color=%23d3869b" alt="auth" /> <code>auth/</code></li>
-        <li><img width="15" src="https://api.iconify.design/lucide/shield-check.svg?color=%23a7d28d" alt="certificate authority" /> <code>ca/</code></li>
-        <li><img width="15" src="https://api.iconify.design/lucide/database.svg?color=%2300e599" alt="cloud storage" /> <code>cloud_storage/</code></li>
-        <li><img width="15" src="https://api.iconify.design/lucide/key-round.svg?color=%23d3869b" alt="crypto" /> <code>crypto/</code></li>
-        <li><img width="15" src="https://api.iconify.design/lucide/key-square.svg?color=%23d3869b" alt="keyfob" /> <code>keyfob/</code></li>
-        <li><img width="15" src="https://api.iconify.design/lucide/lock.svg?color=%23a7d28d" alt="session" /> <code>session/</code></li>
-        <li><img width="15" src="https://api.iconify.design/lucide/car.svg?color=%237da9d8" alt="vehicle" /> <code>vehicle/</code></li>
-        <li>
-          <img width="15" src="https://api.iconify.design/lucide/folder-cog.svg?color=%23e6c384" alt="binary" /> <code>bin/</code>
-          <ul>
-            <li><img width="15" src="https://api.iconify.design/lucide/terminal.svg?color=%23e6c384" alt="diagnostics binary" /> <code>aiacs_diagnostics.rs</code></li>
-          </ul>
-        </li>
-      </ul>
-    </li>
-    <li><img width="15" src="https://api.iconify.design/lucide/folder-check.svg?color=%23a7d28d" alt="certificates" /> <code>certs/</code></li>
-    <li><img width="15" src="https://api.iconify.design/lucide/folder-key.svg?color=%23d3869b" alt="keys" /> <code>keys/</code></li>
-    <li><img width="15" src="https://api.iconify.design/lucide/folder-clock.svg?color=%237da9d8" alt="logs" /> <code>logs/</code></li>
-    <li><img width="15" src="https://api.iconify.design/lucide/folder-git-2.svg?color=%238f7f82" alt="target" /> <code>target/</code></li>
-  </ul>
-</div>
+| Path                          | Purpose                                                                                   |
+| ----------------------------- | ----------------------------------------------------------------------------------------- |
+| `Cargo.toml`                  | Rust package manifest and dependency configuration                                        |
+| `Cargo.lock`                  | Locked dependency versions for reproducible application builds                             |
+| `Dockerfile`                  | Multi-stage Docker build for reproducible build/test/diagnostics support                  |
+| `.dockerignore`               | Excludes local secrets and generated artifacts from Docker build context                   |
+| `.env.example`                | Safe placeholder environment file                                                         |
+| `README.md`                   | Project documentation                                                                     |
+| `LICENSE`                     | MIT license                                                                               |
+| `assets/icons/`               | Local SVG icons used by the Iced GUI                                                      |
+| `Screenshots/`                | GUI and Neon screenshots for the final report                                             |
+| `src/main.rs`                 | Iced desktop GUI presentation layer; calls `AppController` only                           |
+| `src/lib.rs`                  | Library module exports                                                                    |
+| `src/app_controller/mod.rs`   | Main application facade for GUI actions, provisioning, diagnostics, reports, and cloud    |
+| `src/access/mod.rs`           | Access grant/reject decision logic                                                        |
+| `src/attacks/mod.rs`          | Core adversarial validation scenarios                                                     |
+| `src/auth/mod.rs`             | Certificate, identity, signature, freshness, and replay validation                        |
+| `src/ca/mod.rs`               | Certificate authority initialization, issuance, validation, and persistence               |
+| `src/cloud_storage/mod.rs`    | Neon/PostgreSQL schema setup, migrations, metadata sync, and safe cloud records           |
+| `src/crypto/mod.rs`           | Ed25519, AES-256-GCM, SHA-256, nonce, and key helper functions                            |
+| `src/keyfob/mod.rs`           | Digital key fob identity, key generation, challenge signing, and certificate association  |
+| `src/session/mod.rs`          | X25519, HKDF-SHA256, AES-256-GCM session establishment and validation                     |
+| `src/vehicle/mod.rs`          | Vehicle nonce generation, freshness, replay tracking, and context helpers                 |
+| `src/bin/aiacs_diagnostics.rs`| Separate diagnostics executable                                                           |
+| `certs/`                      | Local certificate artifacts generated by the prototype                                    |
+| `keys/`                       | Local prototype key files; sensitive and not for sharing                                  |
+| `logs/`                       | GUI logs, protocol trace, and exported provisioning report                                |
+| `attacker_artifacts/`         | No-AIACS clone evidence and protected encrypted `.enc` attacker artifacts                 |
+| `diagnostic_results/`         | Local diagnostic evidence JSON files                                                      |
+| `recovery_artifacts/`         | Local encrypted/decrypted key recovery evidence files                                     |
+| `target/`                     | Cargo build output; not part of source submission                                         |
+
+Generated runtime folders may contain sensitive or report-only artifacts. Review `.gitignore` and `.dockerignore` before sharing builds or screenshots.
 
 ---
 
@@ -184,6 +177,7 @@ flowchart LR
     SESSION["Session Module"]
     ACCESS["Access Decision Engine"]
     DB["Neon PostgreSQL Cloud DB"]
+    FILES["Local Evidence Artifacts"]
     DIAG["Separate Diagnostics Tool"]
 
     GUI --> CTRL
@@ -195,6 +189,7 @@ flowchart LR
     CTRL --> SESSION
     CTRL --> ACCESS
     CTRL --> DB
+    CTRL --> FILES
 ```
 
 The GUI calls `AppController` only. `AppController` is the safe application facade that coordinates backend modules and prevents GUI code from duplicating cryptographic, authentication, session, access, or diagnostics logic.
@@ -212,7 +207,7 @@ The GUI calls `AppController` only. `AppController` is the safe application faca
 | `src/session/mod.rs`           | X25519, HKDF-SHA256, AES-GCM session establishment and validation                                  |
 | `src/access/mod.rs`            | Access grant/reject decision evaluation                                                            |
 | `src/attacks/mod.rs`           | Adversarial validation scenarios                                                                   |
-| `src/cloud_storage/mod.rs`     | Neon/PostgreSQL connection, schema creation, and safe metadata sync                                |
+| `src/cloud_storage/mod.rs`     | Neon/PostgreSQL connection, schema migrations, hydration, and safe metadata sync                   |
 | `src/bin/aiacs_diagnostics.rs` | Separate diagnostics executable                                                                    |
 
 ### Cloud Data Model
@@ -225,6 +220,7 @@ erDiagram
     KEY_FOBS ||--o{ ENCRYPTED_KEYS : stores
     VEHICLES ||--o{ PROVISIONING_SESSIONS : records
     PROVISIONING_SESSIONS ||--o{ AUDIT_LOGS : produces
+    PROVISIONING_SESSIONS ||--o{ DIAGNOSTIC_RESULTS : validates
 ```
 
 ---
@@ -327,7 +323,7 @@ The desktop GUI is organized as a multi-page vehicle provisioning console.
 | Protocol Artifacts | Selectable protocol artifacts such as challenge message, authentication proof, certificate details, session summary, and access decision          |
 | Credential Storage | Safe credential paths, fingerprints, storage mode, and `[REDACTED]` private key values                                                            |
 | Logs / Report      | Event log, protocol trace, export report action, and clear log action                                                                             |
-| Diagnostics        | Launch page for selected-context security validation; attack buttons remain isolated from normal provisioning                                     |
+| Diagnostics        | Selected-context attack validation dashboard with isolated controls, latest result, evidence paths, and cloud sync status                         |
 
 Diagnostics are not part of the normal provisioning workflow. The main GUI launches diagnostics separately and does not show attack buttons inside the provisioning page.
 
@@ -363,22 +359,89 @@ Certificate validation is strict: only `Ok(true)` from CA validation is accepted
 
 ---
 
+## Diagnostics and Attack Validation
+
+Diagnostics are isolated from normal vehicle access provisioning. The GUI exposes a dedicated Diagnostics page, and the project also includes the separate `aiacs_diagnostics` binary for controlled validation runs.
+
+Diagnostics use the active selected customer, vehicle, and key fob context. They must not silently fall back to demo IDs unless those records are explicitly selected.
+
+### Implemented Diagnostic Scenarios
+
+| Diagnostic                         | Purpose                                                                                     |
+| ---------------------------------- | ------------------------------------------------------------------------------------------- |
+| No-AIACS Clone                     | Compares an insecure plaintext/static signal clone against AIACS-protected rejection         |
+| Replay Attack                      | Compares insecure baseline replay success against protected nonce/freshness rejection        |
+| Forged Signature                   | Verifies invalid Ed25519 signatures are rejected                                            |
+| Fake Certificate                   | Verifies certificates from an untrusted CA are rejected                                      |
+| Identity Mismatch                  | Verifies certificate subject and proof subject mismatches are rejected                       |
+| Delayed Relay                      | Verifies freshness timeout behavior                                                         |
+| Packet Tampering                   | Verifies tampered authentication payloads are rejected                                       |
+| Tampered Ciphertext                | Verifies AES-GCM authenticated decryption rejects modified ciphertext                        |
+| Wrong Session Key                  | Verifies session key binding rejects incorrect session material                              |
+| Wrong Master Key                   | Verifies encrypted key recovery fails safely with an incorrect `AIACS_MASTER_KEY`            |
+
+### No-AIACS Clone Evidence
+
+The No-AIACS Clone diagnostic is a software simulation only. It does not perform real RF capture, radio replay, rolling-code cloning, or vehicle unlocking.
+
+It creates selected-fob evidence under:
+
+```text
+attacker_artifacts/<active_fob_id>/
+```
+
+Typical files:
+
+```text
+insecure_cloned_signal.json
+protected_cloned_signal.json
+attacker_clone_evidence.json
+protected_capture.enc
+```
+
+The insecure file intentionally shows a simulated plaintext/static signal to demonstrate why protection is needed. The protected files use redacted metadata or encrypted `.enc` artifacts and never expose private keys, session keys, raw signatures, raw nonces, or raw ciphertext in GUI/report text.
+
+### Diagnostic Cloud Sync
+
+Diagnostic results are synced to Neon in the `diagnostic_results` table with safe selected-context metadata:
+
+- `customer_id`
+- `vehicle_id`
+- `fob_id`
+- `certificate_id`
+- `session_id`
+- `baseline_result`
+- `protected_result`
+- `actual_result`
+- `security_control_triggered`
+- `pass_fail`
+- `cloud_sync_status`
+- `created_at_nepal_time`
+
+Legacy compatibility columns are also populated where applicable. Cloud sync status is only marked synced when the database write succeeds.
+
+---
+
 ## Cloud Database Support
 
-AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metadata.
+AIACS includes Neon/PostgreSQL support for safe cloud-backed provisioning metadata, startup hydration, selected-context state restoration, diagnostic result sync, and encrypted key backup metadata.
 
 ### Tables
 
 | Table                   | Purpose                                                               |
 | ----------------------- | --------------------------------------------------------------------- |
-| `customers`             | Owner/customer metadata                                               |
-| `vehicles`              | Vehicle metadata and provisioning status                              |
-| `key_fobs`              | Key fob labels, fingerprints, certificate status, provisioning status |
-| `certificates`          | Safe certificate metadata sync                                        |
-| `encrypted_keys`        | Client-side encrypted private key blobs, never plaintext private keys |
-| `provisioning_sessions` | Safe provisioning session metadata sync                               |
-| `audit_logs`            | Safe provisioning workflow audit events                               |
-| `diagnostic_results`    | Safe adversarial validation outcomes                                  |
+| `customers`             | Owner/customer metadata and selected customer records                               |
+| `vehicles`              | Vehicle metadata, customer ownership, and provisioning status                       |
+| `key_fobs`              | Key fob labels, fingerprints, certificate status, and provisioning status           |
+| `certificates`          | Safe certificate metadata including issuer, subject, fingerprint, and status        |
+| `encrypted_keys`        | Client-side encrypted private key blobs and safe metadata; never plaintext keys     |
+| `provisioning_sessions` | Authentication/session/access status, report path, and selected-context IDs         |
+| `audit_logs`            | Safe provisioning workflow audit events with customer/vehicle/fob/session context   |
+| `diagnostic_results`    | Safe adversarial validation outcomes, evidence paths, and cloud sync status         |
+
+Cloud rows use canonical `TIMESTAMPTZ` values where appropriate. User-facing GUI, logs, reports, and evidence files use Nepal time strings in the format `YYYY-MM-DD HH:MM:SS NPT`.
+
+Plaintext private keys, session keys, shared secrets, HKDF output, AES keys, raw payloads, raw signatures, raw nonces, and database credentials are never uploaded as plaintext cloud metadata.
 
 ---
 
@@ -457,18 +520,61 @@ SELECT * FROM vehicles;
 SELECT * FROM key_fobs;
 ```
 
+Verify encrypted key backup metadata without exposing encrypted blobs or nonce bytes:
+
+```sql
+SELECT
+  key_id,
+  owner_type,
+  owner_id,
+  public_key_fingerprint,
+  encryption_algorithm,
+  key_purpose,
+  storage_status,
+  created_at
+FROM encrypted_keys
+ORDER BY created_at DESC;
+```
+
+Verify provisioning session metadata:
+
+```sql
+SELECT
+  session_id,
+  customer_id,
+  vehicle_id,
+  fob_id,
+  certificate_id,
+  auth_status,
+  auth_result,
+  session_status,
+  session_algorithm,
+  session_method,
+  access_decision,
+  provisioning_status,
+  report_path,
+  updated_at
+FROM provisioning_sessions
+ORDER BY updated_at DESC;
+```
+
 Verify synced audit log metadata without exposing secrets:
 
 ```sql
 SELECT
   log_id,
+  event_tag,
+  customer_id,
+  vehicle_id,
+  fob_id,
   session_id,
-  event_type,
+  certificate_id,
+  message,
   severity,
   actor,
   created_at
 FROM audit_logs
-ORDER BY log_id;
+ORDER BY created_at DESC;
 ```
 
 Verify synced diagnostic result metadata without exposing secrets:
@@ -477,16 +583,25 @@ Verify synced diagnostic result metadata without exposing secrets:
 SELECT
   diagnostic_id,
   attack_name,
-  expected_outcome,
-  actual_outcome,
-  result_status,
+  customer_id,
+  vehicle_id,
+  fob_id,
+  certificate_id,
+  session_id,
+  baseline_result,
+  protected_result,
+  actual_result,
+  security_control_triggered,
+  pass_fail,
   denial_reason,
-  executed_at
+  cloud_sync_status,
+  evidence_file_path,
+  created_at_nepal_time
 FROM diagnostic_results
-ORDER BY diagnostic_id;
+ORDER BY created_at DESC;
 ```
 
-Optional demo/fallback records:
+Optional controlled fallback/demo records may exist for tests and local fallback. They are not auto-selected by the GUI:
 
 | Table                | Expected Record                                          |
 | -------------------- | -------------------------------------------------------- |
@@ -560,13 +675,14 @@ Run the release binary on Linux/macOS:
 
 1. Open the GUI with `cargo run`.
 2. Review the Dashboard page.
-3. Open Customers, Vehicles, and Key Fobs to manually enter or load safe metadata records.
+3. Open Customers, Vehicles, and Key Fobs to manually create, load, and select cloud-backed records.
 4. Open Provisioning.
-5. Complete the guided vehicle access workflow.
-6. Review Protocol Artifacts.
+5. Connect the vehicle, register the key fob, initialize vehicle trust, issue the certificate, generate the challenge, sign the canonical payload, verify authentication, activate the secure session, and finalize/export the report.
+6. Review Protocol Artifacts and confirm selected-context certificate/session details are loaded.
 7. Review Credential Storage and confirm private key values are redacted.
-8. Export the provisioning report from Logs / Report.
-9. Launch diagnostics separately when testing adversarial validation.
+8. Use the encrypted key recovery action only when intentionally producing local recovery evidence.
+9. Open Diagnostics and run the No-AIACS Clone or protected attack validations.
+10. Review `attacker_artifacts/`, `diagnostic_results/`, and Neon `diagnostic_results` rows for report evidence.
 
 Selected cloud metadata records are now bound to the cryptographic provisioning flow: a selected/custom key fob uses its own Ed25519 keypair, receives a CA-issued certificate for that fob ID, signs the vehicle challenge as that fob, and syncs only safe certificate/session/audit metadata. Plaintext private keys and session secrets are not uploaded.
 
@@ -626,9 +742,10 @@ cargo test --lib
 Run full local validation:
 
 ```bash
-cargo fmt
+cargo fmt -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --lib
+cargo test --bins
 cargo check --all-targets
 cargo check --bins
 ```
@@ -649,6 +766,7 @@ Current validation status:
 | Cloud tests             | Normal tests do not require a live database  |
 | Live cloud verification | Available behind `AIACS_RUN_LIVE_DB_TESTS=1` |
 | Secret redaction        | Covered by Debug/log/report tests            |
+| Docker                  | Dockerfile and `.dockerignore` provided for reproducible build/test/diagnostics support |
 
 ---
 
@@ -660,6 +778,10 @@ The application may generate local runtime files:
 keys/
 certs/
 logs/
+attacker_artifacts/
+diagnostic_results/
+recovery_artifacts/
+report_exports/
 ```
 
 Examples:
@@ -673,9 +795,17 @@ certs/fob_FOB-0001.json
 logs/aiacs_gui.log
 logs/aiacs_protocol_trace.log
 logs/aiacs_provisioning_report.txt
+attacker_artifacts/<fob_id>/attacker_clone_evidence.json
+attacker_artifacts/<fob_id>/protected_capture.enc
+diagnostic_results/<fob_id>/replay_attack.json
+recovery_artifacts/<fob_id>/encrypted_fob_key_local.bin
+recovery_artifacts/<fob_id>/encrypted_fob_key_cloud.bin
+recovery_artifacts/<fob_id>/recovery_evidence.json
 ```
 
-Private material may exist in local runtime storage for the prototype, but GUI output, logs, reports, and Debug formatting must redact sensitive values.
+Private material may exist in local runtime storage for the prototype, especially under `keys/` and the explicitly generated decrypted recovery file. GUI output, logs, reports, report-safe evidence, and Debug formatting must redact sensitive values.
+
+Recovery artifacts are local-only unless deliberately copied for review. `recovery_evidence.json` is report-safe by design; `decrypted_fob_key_recovered.json` is sensitive and must not be shared or committed.
 
 ---
 
@@ -712,6 +842,13 @@ AIACS treats the following values as sensitive. They must never be displayed, lo
 - Shared secret
 - AES session key
 - Raw session key bytes
+- HKDF output
+- Raw authentication payloads
+- Raw signatures
+- Raw nonce bytes
+- Raw ciphertext
+- Encrypted key blob bytes in GUI/report output
+- Encryption nonce bytes in GUI/report output
 - `AIACS_MASTER_KEY`
 - `DATABASE_URL`
 - Neon password
@@ -728,9 +865,15 @@ Allowed in GUI, logs, reports, or cloud metadata:
 - Timestamps
 - Nonce fingerprints or redacted nonce markers
 - Encrypted key backup status and fingerprints
+- Encrypted backup metadata
+- Diagnostic evidence paths
+- Attacker artifact paths
+- Nepal time display strings
 - `[REDACTED]` markers
 
 `[REDACTED]` means sensitive material may exist internally for protocol operation, but it is intentionally hidden from GUI output, logs, reports, Debug formatting, README examples, and cloud metadata sync.
+
+Neon may store `encrypted_key_blob` and `encryption_nonce` in the `encrypted_keys` table for encrypted backup. These bytes are not displayed in GUI/report text and are not decrypted by the cloud. Recovery is local-only and requires the operator's local `AIACS_MASTER_KEY`.
 
 ---
 
