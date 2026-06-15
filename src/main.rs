@@ -871,11 +871,13 @@ impl AIACSApp {
                 self.management_state.customer_owner_input.clear();
                 self.management_state.customer_email_input.clear();
                 self.management_state.customer_phone_input.clear();
+                self.sync_visible_provisioning_state_from_controller();
             }
             CloudOperation::SelectCustomer => {
                 self.management_state.customer_note = message.clone();
                 self.selected_detail = message.clone();
                 self.push_log("[INFO]", message);
+                self.sync_visible_provisioning_state_from_controller();
             }
             CloudOperation::LoadVehicles => {
                 self.management_state.vehicle_load_status = "Vehicles loaded".to_string();
@@ -900,11 +902,13 @@ impl AIACSApp {
                 self.management_state.vehicle_year_input.clear();
                 self.management_state.vehicle_vin_input.clear();
                 self.management_state.vehicle_registration_input.clear();
+                self.sync_visible_provisioning_state_from_controller();
             }
             CloudOperation::SelectVehicle => {
                 self.management_state.vehicle_note = message.clone();
                 self.selected_detail = message.clone();
                 self.push_log("[INFO]", message);
+                self.sync_visible_provisioning_state_from_controller();
             }
             CloudOperation::LoadKeyFobs => {
                 self.management_state.key_fob_load_status = "Key fobs loaded".to_string();
@@ -924,11 +928,13 @@ impl AIACSApp {
                 self.push_log("[DB]", message);
                 self.cloud_sync_metadata_status = "Synced".to_string();
                 self.management_state.key_fob_label_input.clear();
+                self.sync_visible_provisioning_state_from_controller();
             }
             CloudOperation::SelectKeyFob => {
                 self.management_state.keyfob_note = message.clone();
                 self.selected_detail = message.clone();
                 self.push_log("[INFO]", message);
+                self.sync_visible_provisioning_state_from_controller();
             }
             CloudOperation::ProvisioningConnectVehicle => {
                 self.workflow_state.vehicle_connected = true;
@@ -2899,8 +2905,9 @@ impl AIACSApp {
                 )
             },
         );
-        let chip_label = if selected { "Selected" } else { "Available" };
-        let action = if self.management_state.cloud_operation_in_progress {
+        let action = if selected {
+            disabled_compact_button(icon_name, "Selected", ButtonKind::DiagnosticPrimary)
+        } else if self.management_state.cloud_operation_in_progress {
             disabled_compact_button(icon_name, "Select", ButtonKind::Nav)
         } else {
             compact_button(icon_name, "Select", select_message, ButtonKind::Nav)
@@ -2910,9 +2917,7 @@ impl AIACSApp {
             row![
                 icon(icon_name, 20),
                 detail_column,
-                column![status_badge(chip_label), action]
-                    .spacing(8)
-                    .align_items(Alignment::End)
+                column![action].spacing(8).align_items(Alignment::End)
             ]
             .spacing(10)
             .align_items(Alignment::Center),
@@ -3504,6 +3509,107 @@ impl AIACSApp {
         }
     }
 
+    fn sync_visible_provisioning_state_from_controller(&mut self) {
+        let context = self.controller.get_visible_provisioning_context();
+        let vehicle_status = self
+            .controller
+            .selected_vehicle_record()
+            .and_then(|record| record.provisioning_status)
+            .unwrap_or_else(|| "pending".to_string());
+        let key_fob = self.controller.selected_key_fob_record();
+        let fob_provisioning_status = key_fob
+            .as_ref()
+            .and_then(|record| record.provisioning_status.clone())
+            .unwrap_or_else(|| "pending".to_string());
+        let fob_certificate_status = key_fob
+            .as_ref()
+            .and_then(|record| record.certificate_status.clone())
+            .unwrap_or_else(|| "not_issued".to_string());
+        let crypto_identity = self.controller.get_active_key_fob_crypto_identity();
+
+        self.workflow_state = WorkflowState::default();
+        self.status = SystemStatus::default();
+
+        if !context.customer_selected {
+            self.status.top_badge = "No Customer Selected".to_string();
+            return;
+        }
+        self.status.top_badge = "Customer Selected".to_string();
+
+        if context.vehicle_selected {
+            self.workflow_state.vehicle_connected = status_at_least(&vehicle_status, "connected")
+                || status_at_least(&fob_provisioning_status, "authenticated");
+            self.status.trust_status = if status_at_least(&vehicle_status, "trust_initialized")
+                || context.certificate_id != "N/A"
+            {
+                "Initialized".to_string()
+            } else {
+                "Not Initialized".to_string()
+            };
+        }
+
+        if context.key_fob_selected {
+            self.workflow_state.keyfob_detected = true;
+            self.workflow_state.keyfob_registered =
+                status_at_least(&fob_provisioning_status, "registered");
+            self.status.key_fob_status = format_status_label(&fob_provisioning_status);
+
+            let certificate_issued = context.certificate_id != "N/A"
+                || matches!(
+                    fob_certificate_status.as_str(),
+                    "issued" | "certificate_issued" | "finalized"
+                )
+                || matches!(
+                    crypto_identity.certificate_status.as_str(),
+                    "issued" | "certificate_issued" | "finalized"
+                );
+            self.workflow_state.certificate_issued = certificate_issued;
+            self.workflow_state.certificate_viewed = certificate_issued;
+            self.status.certificate_status = if certificate_issued {
+                "Issued".to_string()
+            } else {
+                "Not Issued".to_string()
+            };
+
+            let authenticated = status_at_least(&fob_provisioning_status, "authenticated")
+                || context.session_id != "N/A";
+            self.workflow_state.authentication_verified = authenticated;
+            self.status.authentication_status = if authenticated {
+                "Verified".to_string()
+            } else {
+                "Not Run".to_string()
+            };
+
+            let session_active = status_at_least(&fob_provisioning_status, "session_established")
+                || context.session_id != "N/A";
+            self.workflow_state.session_active = session_active;
+            self.status.session_status = if session_active {
+                "Active".to_string()
+            } else {
+                "Not Established".to_string()
+            };
+
+            self.workflow_state.report_exported =
+                fob_provisioning_status == "finalized" || vehicle_status == "finalized";
+            self.status.access_decision = if authenticated || session_active {
+                "Access Granted".to_string()
+            } else {
+                "N/A".to_string()
+            };
+            self.status.top_badge = if self.workflow_state.report_exported {
+                "Setup Complete".to_string()
+            } else if session_active {
+                "Session Active".to_string()
+            } else if authenticated {
+                "Key Verified".to_string()
+            } else if certificate_issued {
+                "Access Certificate Issued".to_string()
+            } else {
+                "Ready for Provisioning".to_string()
+            };
+        }
+    }
+
     fn credential_storage_status(&self) -> &'static str {
         if self.workflow_state.keyfob_registered {
             "Stored"
@@ -4015,22 +4121,19 @@ fn diagnostic_security_meaning(
 }
 
 fn diagnostic_evidence_folder(result: &aiacs::app_controller::DiagnosticDashboardResult) -> String {
-    if result.attack_name == "no_aiacs_signal_clone_attack" {
-        format!("attacker_artifacts/{}/", result.fob_id)
-    } else {
-        result
-            .evidence_file_path
-            .rsplit_once('/')
-            .map(|(folder, _)| folder.to_string())
-            .unwrap_or_else(|| "diagnostic_results".to_string())
-    }
+    result
+        .evidence_file_path
+        .rsplit_once('/')
+        .map(|(folder, _)| folder.to_string())
+        .unwrap_or_else(|| "diagnostic_results".to_string())
 }
 
 fn diagnostic_files_created(result: &aiacs::app_controller::DiagnosticDashboardResult) -> String {
     if result.attack_name == "no_aiacs_signal_clone_attack" {
         "insecure_cloned_signal.json, protected_cloned_signal.enc, protected_clone_metadata.json, attacker_clone_evidence.json".to_string()
     } else {
-        "diagnostic evidence JSON".to_string()
+        "protected_cloned_signal.enc, protected_clone_metadata.json, attacker_clone_evidence.json"
+            .to_string()
     }
 }
 
@@ -4296,6 +4399,25 @@ fn status_color(value: &str) -> Color {
         }
         _ => PRIMARY_TEXT,
     }
+}
+
+fn status_rank(status: &str) -> u8 {
+    match status {
+        "created" => 1,
+        "connected" => 2,
+        "registered" => 3,
+        "trust_initialized" => 4,
+        "certificate_issued" | "issued" => 5,
+        "challenge_generated" => 6,
+        "authenticated" => 7,
+        "session_established" | "secure_session_established" => 8,
+        "finalized" => 9,
+        _ => 0,
+    }
+}
+
+fn status_at_least(status: &str, minimum: &str) -> bool {
+    status_rank(status) >= status_rank(minimum)
 }
 
 fn step_status_color(status: StepStatus) -> Color {
@@ -4647,6 +4769,24 @@ mod tests {
                 "missing record-list UI: {expected}"
             );
         }
+    }
+
+    #[test]
+    fn selected_management_cards_convert_select_button_to_selected() {
+        let source = include_str!("main.rs");
+        let function_start = source
+            .find("fn selectable_record_card")
+            .expect("selectable_record_card should exist");
+        let function_end = source[function_start..]
+            .find("fn empty_records_card")
+            .map(|offset| function_start + offset)
+            .expect("empty_records_card should follow selectable_record_card");
+        let function_source = &source[function_start..function_end];
+
+        assert!(function_source.contains("disabled_compact_button(icon_name, \"Selected\""));
+        assert!(function_source.contains("compact_button(icon_name, \"Select\""));
+        assert!(!function_source.contains("status_badge(chip_label)"));
+        assert!(!function_source.contains("\"Available\""));
     }
 
     #[test]

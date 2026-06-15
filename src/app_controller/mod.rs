@@ -1875,6 +1875,8 @@ impl AppController {
             .cloned()
         {
             self.select_customer_context(customer.clone(), "CloudSelected");
+            let customer_id = customer.customer_id.clone();
+            let _ = self.load_vehicle_records_for_customer(&customer_id);
             return Ok(format!("Customer selected: {}", customer.customer_id));
         }
 
@@ -1883,6 +1885,8 @@ impl AppController {
             Ok(Some(customer)) => {
                 self.select_customer_context(customer.clone(), "CloudSelected");
                 upsert_local_customer(&mut self.customer_records, customer.clone());
+                let customer_id = customer.customer_id.clone();
+                let _ = self.load_vehicle_records_for_customer(&customer_id);
                 Ok(format!("Customer selected: {}", customer.customer_id))
             }
             Ok(None) => Err(AppControllerError::Backend(
@@ -2000,6 +2004,9 @@ impl AppController {
             .cloned()
         {
             self.select_vehicle_context(vehicle.clone(), "CloudSelected");
+            let _ = self.hydrate_selected_vehicle_status_from_cloud();
+            let vehicle_id = self.active_vehicle.vehicle_id.clone();
+            let _ = self.load_key_fob_records_for_vehicle(&vehicle_id);
             return Ok(format!("Vehicle selected: {}", vehicle.vehicle_id));
         }
 
@@ -2008,6 +2015,9 @@ impl AppController {
             Ok(Some(vehicle)) => {
                 self.select_vehicle_context(vehicle.clone(), "CloudSelected");
                 upsert_local_vehicle(&mut self.vehicle_records, vehicle.clone());
+                let _ = self.hydrate_selected_vehicle_status_from_cloud();
+                let vehicle_id = self.active_vehicle.vehicle_id.clone();
+                let _ = self.load_key_fob_records_for_vehicle(&vehicle_id);
                 Ok(format!("Vehicle selected: {}", vehicle.vehicle_id))
             }
             Ok(None) => Err(AppControllerError::Backend(
@@ -2054,6 +2064,7 @@ impl AppController {
         let message = self.persist_key_fob_record(key_fob.clone())?;
         self.select_key_fob_context(key_fob.clone(), "CreatedThisSession");
         upsert_local_key_fob(&mut self.key_fob_records, key_fob);
+        self.ensure_active_key_fob_crypto_identity()?;
         Ok(message)
     }
 
@@ -2110,12 +2121,16 @@ impl AppController {
             .cloned()
         {
             self.select_key_fob_context(key_fob.clone(), "CloudSelected");
+            let _ = self.hydrate_selected_key_fob_status_from_cloud();
             self.keyfob_detected = false;
             self.session = None;
             self.last_auth_result = None;
             self.last_access_decision = None;
             self.ensure_active_key_fob_crypto_identity()?;
             let _ = self.load_active_certificate_from_cloud();
+            if let Ok(Some(session)) = self.load_latest_session_for_selected_context() {
+                self.apply_loaded_provisioning_session_metadata(session);
+            }
             return Ok(format!(
                 "Key fob selected: {}; crypto identity ready",
                 key_fob.fob_id
@@ -2127,12 +2142,16 @@ impl AppController {
             Ok(Some(key_fob)) => {
                 self.select_key_fob_context(key_fob.clone(), "CloudSelected");
                 upsert_local_key_fob(&mut self.key_fob_records, key_fob.clone());
+                let _ = self.hydrate_selected_key_fob_status_from_cloud();
                 self.keyfob_detected = false;
                 self.session = None;
                 self.last_auth_result = None;
                 self.last_access_decision = None;
                 self.ensure_active_key_fob_crypto_identity()?;
                 let _ = self.load_active_certificate_from_cloud();
+                if let Ok(Some(session)) = self.load_latest_session_for_selected_context() {
+                    self.apply_loaded_provisioning_session_metadata(session);
+                }
                 Ok(format!(
                     "Key fob selected: {}; crypto identity ready",
                     key_fob.fob_id
@@ -2727,6 +2746,33 @@ impl AppController {
         let customer = self.selected_customer.as_ref();
         let vehicle = self.selected_vehicle.as_ref();
         let key_fob = self.selected_key_fob.as_ref();
+        let certificate_id = if key_fob.is_some()
+            && (self.current_certificate_belongs_to_active_fob()
+                || self
+                    .active_certificate_metadata
+                    .as_ref()
+                    .map(|metadata| metadata.fob_id == self.active_key_fob.fob_id)
+                    .unwrap_or(false))
+        {
+            self.derive_certificate_id_for_active_context()
+        } else {
+            "N/A".to_string()
+        };
+        let session_id = if key_fob.is_some()
+            && self
+                .session
+                .as_ref()
+                .map(|session| {
+                    session.established
+                        && session.subject_id == self.active_key_fob.fob_id
+                        && session.vehicle_id == self.active_vehicle.vehicle_id
+                })
+                .unwrap_or(false)
+        {
+            self.derive_session_id_for_active_context()
+        } else {
+            "N/A".to_string()
+        };
 
         VisibleProvisioningContext {
             customer_selected: customer.is_some(),
@@ -2750,12 +2796,8 @@ impl AppController {
             fob_label: key_fob
                 .map(|record| record.fob_label.clone())
                 .unwrap_or_else(|| "No key fob selected".to_string()),
-            certificate_id: key_fob
-                .map(|_| self.derive_certificate_id_for_active_context())
-                .unwrap_or_else(|| "N/A".to_string()),
-            session_id: key_fob
-                .map(|_| self.derive_session_id_for_active_context())
-                .unwrap_or_else(|| "N/A".to_string()),
+            certificate_id,
+            session_id,
             selection_source: self.selection_source.clone(),
         }
     }
@@ -3462,10 +3504,7 @@ impl AppController {
     fn select_key_fob_context(&mut self, key_fob: KeyFobMetadata, source: &str) {
         self.active_key_fob = key_fob.clone();
         self.selected_key_fob = Some(key_fob);
-        self.active_certificate_metadata = None;
-        self.active_challenge = None;
-        self.active_auth_proof = None;
-        self.last_key_fob_recovery_evidence = None;
+        self.clear_provisioning_runtime_state_for_new_selection();
         self.selection_source = source.to_string();
         self.align_active_vehicle_to_key_fob();
         if self
@@ -3490,12 +3529,23 @@ impl AppController {
 
     fn clear_selected_vehicle_and_fob(&mut self) {
         self.selected_vehicle = None;
+        self.active_vehicle = demo_vehicle_metadata(DEFAULT_PROVISIONING_STATUS);
         self.clear_selected_key_fob();
         self.reset_diagnostics_for_context_change();
     }
 
     fn clear_selected_key_fob(&mut self) {
         self.selected_key_fob = None;
+        self.active_key_fob = demo_key_fob_metadata(
+            None,
+            DEFAULT_CERTIFICATE_STATUS,
+            DEFAULT_PROVISIONING_STATUS,
+        );
+        self.clear_provisioning_runtime_state_for_new_selection();
+        self.reset_diagnostics_for_context_change();
+    }
+
+    fn clear_provisioning_runtime_state_for_new_selection(&mut self) {
         self.active_certificate_metadata = None;
         self.keyfob = None;
         self.keyfob_detected = false;
@@ -3507,7 +3557,11 @@ impl AppController {
         self.last_auth_result = None;
         self.last_access_decision = None;
         self.provisioning_report_exported = false;
-        self.reset_diagnostics_for_context_change();
+        self.active_session_id = if self.context_source_label() == "DemoDefault" {
+            DEMO_SESSION_ID.to_string()
+        } else {
+            generated_record_id("SESSION")
+        };
     }
 
     fn reset_diagnostics_for_context_change(&mut self) {
@@ -3804,6 +3858,50 @@ impl AppController {
         .map_err(Self::map_cloud_error)
     }
 
+    fn hydrate_selected_vehicle_status_from_cloud(&mut self) -> Result<bool, AppControllerError> {
+        let vehicle_id = self
+            .selected_vehicle
+            .as_ref()
+            .map(|record| record.vehicle_id.clone())
+            .ok_or_else(|| AppControllerError::Backend("missing_vehicle".to_string()))?;
+        let client = self.ensure_schema_initialized()?;
+        let loaded = self
+            .run_cloud(async { client.get_vehicle(&vehicle_id).await })
+            .map_err(Self::map_cloud_error)?;
+        let Some(vehicle) = loaded else {
+            return Ok(false);
+        };
+        if vehicle.customer_id != self.active_customer.customer_id {
+            return Ok(false);
+        }
+        self.active_vehicle = vehicle.clone();
+        self.selected_vehicle = Some(vehicle.clone());
+        upsert_local_vehicle(&mut self.vehicle_records, vehicle);
+        Ok(true)
+    }
+
+    fn hydrate_selected_key_fob_status_from_cloud(&mut self) -> Result<bool, AppControllerError> {
+        let fob_id = self
+            .selected_key_fob
+            .as_ref()
+            .map(|record| record.fob_id.clone())
+            .ok_or_else(|| AppControllerError::Backend("missing_key_fob".to_string()))?;
+        let client = self.ensure_schema_initialized()?;
+        let loaded = self
+            .run_cloud(async { client.get_key_fob(&fob_id).await })
+            .map_err(Self::map_cloud_error)?;
+        let Some(key_fob) = loaded else {
+            return Ok(false);
+        };
+        if key_fob.vehicle_id != self.active_vehicle.vehicle_id {
+            return Ok(false);
+        }
+        self.active_key_fob = key_fob.clone();
+        self.selected_key_fob = Some(key_fob.clone());
+        upsert_local_key_fob(&mut self.key_fob_records, key_fob);
+        Ok(true)
+    }
+
     fn load_encrypted_backup_metadata_for_selected_fob(
         &mut self,
     ) -> Result<Option<EncryptedKeyRecord>, AppControllerError> {
@@ -3822,6 +3920,17 @@ impl AppController {
         metadata: ProvisioningSessionMetadata,
     ) {
         self.active_session_id = metadata.session_id;
+        self.session = Some(SessionState {
+            session_id: self.active_session_id.clone(),
+            vehicle_id: metadata.vehicle_id.clone(),
+            subject_id: metadata.fob_id.clone(),
+            created_at: metadata
+                .started_at
+                .map(|timestamp| timestamp.to_rfc3339())
+                .unwrap_or_else(|| Utc::now().to_rfc3339()),
+            expires_at: (Utc::now() + chrono::Duration::seconds(300)).to_rfc3339(),
+            established: metadata.session_status == SECURE_SESSION_ESTABLISHED_STATUS,
+        });
         self.set_active_vehicle_status(&metadata.provisioning_status);
         self.set_active_key_fob_status(
             Some(ISSUED_CERTIFICATE_STATUS),
@@ -3954,18 +4063,31 @@ impl AppController {
         let evidence_file_path = if let Some(evidence_file_path) = custom_evidence_file_path {
             evidence_file_path
         } else {
-            self.save_diagnostic_evidence(DiagnosticEvidenceInput {
+            let _diagnostic_evidence_file_path =
+                self.save_diagnostic_evidence(DiagnosticEvidenceInput {
+                    definition,
+                    context: &context,
+                    certificate_id: &certificate_id,
+                    session_id: &session_id,
+                    actual_result: &comparison.actual_result,
+                    baseline_access_decision: &comparison.baseline_access_decision,
+                    baseline_status: &comparison.baseline_status,
+                    baseline_explanation: &comparison.baseline_explanation,
+                    protected_result: &comparison.protected_result,
+                    protected_status: &comparison.protected_status,
+                    protected_explanation: &comparison.protected_explanation,
+                    access_decision: &comparison.access_decision,
+                    security_control_triggered: &comparison.security_control_triggered,
+                    pass_fail: &comparison.pass_fail,
+                    created_at,
+                })?;
+            self.save_protected_attacker_capture(ProtectedAttackerCaptureInput {
                 definition,
                 context: &context,
                 certificate_id: &certificate_id,
                 session_id: &session_id,
                 actual_result: &comparison.actual_result,
-                baseline_access_decision: &comparison.baseline_access_decision,
-                baseline_status: &comparison.baseline_status,
-                baseline_explanation: &comparison.baseline_explanation,
                 protected_result: &comparison.protected_result,
-                protected_status: &comparison.protected_status,
-                protected_explanation: &comparison.protected_explanation,
                 access_decision: &comparison.access_decision,
                 security_control_triggered: &comparison.security_control_triggered,
                 pass_fail: &comparison.pass_fail,
@@ -4115,7 +4237,7 @@ impl AppController {
         };
 
         let artifact_dir =
-            PathBuf::from(ATTACKER_ARTIFACTS_DIR).join(safe_path_component(&context.fob_id));
+            protected_attacker_artifact_dir(&context.fob_id, "no_aiacs_signal_clone_attack");
         fs::create_dir_all(&artifact_dir)
             .map_err(|error| AppControllerError::Backend(error.to_string()))?;
 
@@ -4131,7 +4253,7 @@ impl AppController {
         }
 
         let insecure_signal = serde_json::json!({
-            "warning": "INSECURE BASELINE SIMULATION - FOR ACADEMIC DEMONSTRATION ONLY",
+            "warning": "INSECURE BASELINE MODE - PLAINTEXT SIGNAL CAPTURE",
             "mode": "no_aiacs_baseline",
             "customer_id": context.customer_id,
             "vehicle_id": context.vehicle_id,
@@ -4153,6 +4275,7 @@ impl AppController {
         });
 
         let protected_capture = simulated_protected_clone_capture(
+            "no_aiacs_signal_clone_attack",
             &context.fob_id,
             &context.vehicle_id,
             certificate_id,
@@ -4160,10 +4283,11 @@ impl AppController {
             security_control,
             &created_at_nepal_time,
         )?;
-        let ciphertext_fingerprint = fingerprint(protected_capture.as_bytes());
+        let ciphertext_fingerprint = fingerprint(&protected_capture);
         let protected_metadata = serde_json::json!({
-            "warning": "AIACS PROTECTED SIGNAL CAPTURE - SECRET MATERIAL REDACTED",
+            "warning": "AIACS PROTECTED CAPTURE - PAYLOAD STORED AS ENCRYPTED BINARY ARTIFACT",
             "mode": "aiacs_protected",
+            "attack_name": "no_aiacs_signal_clone_attack",
             "customer_id": context.customer_id,
             "vehicle_id": context.vehicle_id,
             "fob_id": context.fob_id,
@@ -4209,12 +4333,7 @@ impl AppController {
             },
             "pass_fail": "pass",
             "security_meaning": "Without AIACS protections, a cloned plaintext/static signal can be reused to open the vehicle. With AIACS enabled, the captured material is protected and the replayed/cloned attempt is rejected.",
-            "created_at_nepal_time": created_at_nepal_time,
-            "raw_payload": "[REDACTED]",
-            "raw_signature": "[REDACTED]",
-            "raw_nonce": "[REDACTED]",
-            "private_key_material": "[REDACTED]",
-            "master_key": "[REDACTED]"
+            "created_at_nepal_time": created_at_nepal_time
         });
 
         write_pretty_json(&insecure_path, &insecure_signal)?;
@@ -4240,6 +4359,89 @@ impl AppController {
             },
             evidence_path_for_report,
         ))
+    }
+
+    fn save_protected_attacker_capture(
+        &self,
+        input: ProtectedAttackerCaptureInput<'_>,
+    ) -> Result<String, AppControllerError> {
+        let definition = input.definition;
+        let created_at_nepal_time = format_nepal_time(input.created_at);
+        let artifact_dir =
+            protected_attacker_artifact_dir(&input.context.fob_id, definition.attack_name);
+        fs::create_dir_all(&artifact_dir)
+            .map_err(|error| AppControllerError::Backend(error.to_string()))?;
+
+        let protected_path = artifact_dir.join("protected_cloned_signal.enc");
+        let protected_metadata_path = artifact_dir.join("protected_clone_metadata.json");
+        let obsolete_protected_json_path = artifact_dir.join("protected_cloned_signal.json");
+        let evidence_path = artifact_dir.join("attacker_clone_evidence.json");
+        if obsolete_protected_json_path.exists() {
+            fs::remove_file(&obsolete_protected_json_path)
+                .map_err(|error| AppControllerError::Backend(error.to_string()))?;
+        }
+
+        let protected_capture = simulated_protected_clone_capture(
+            definition.attack_name,
+            &input.context.fob_id,
+            &input.context.vehicle_id,
+            input.certificate_id,
+            input.session_id,
+            input.security_control_triggered,
+            &created_at_nepal_time,
+        )?;
+        let ciphertext_fingerprint = fingerprint(&protected_capture);
+        fs::write(&protected_path, protected_capture)
+            .map_err(|error| AppControllerError::Backend(error.to_string()))?;
+
+        let protected_path_for_report = path_for_report(&protected_path);
+        let protected_metadata_path_for_report = path_for_report(&protected_metadata_path);
+        let evidence_path_for_report = path_for_report(&evidence_path);
+
+        let protected_metadata = serde_json::json!({
+            "warning": "AIACS PROTECTED CAPTURE - PAYLOAD STORED AS ENCRYPTED BINARY ARTIFACT",
+            "mode": "aiacs_protected",
+            "attack_name": definition.attack_name,
+            "customer_id": input.context.customer_id,
+            "vehicle_id": input.context.vehicle_id,
+            "fob_id": input.context.fob_id,
+            "certificate_id": input.certificate_id,
+            "session_id": input.session_id,
+            "protected_clone_file": protected_path_for_report,
+            "encryption_algorithm": "AES-256-GCM",
+            "identity_algorithm": "Ed25519",
+            "key_agreement": "X25519 + HKDF-SHA256",
+            "ciphertext_fingerprint": ciphertext_fingerprint,
+            "attacker_observation": "The attacker captured protected encrypted material but cannot read or reuse the signal successfully.",
+            "aiacs_access_decision": input.access_decision,
+            "protected_result": input.protected_result,
+            "actual_result": input.actual_result,
+            "security_control_triggered": input.security_control_triggered,
+            "created_at_nepal_time": created_at_nepal_time
+        });
+        let evidence = serde_json::json!({
+            "attack_name": definition.attack_name,
+            "customer_id": input.context.customer_id,
+            "vehicle_id": input.context.vehicle_id,
+            "fob_id": input.context.fob_id,
+            "certificate_id": input.certificate_id,
+            "session_id": input.session_id,
+            "aiacs_protected": {
+                "encrypted_clone_file": protected_path_for_report,
+                "metadata_file": protected_metadata_path_for_report,
+                "attacker_visibility": "encrypted_payload_only",
+                "protected_result": input.protected_result,
+                "access_decision": input.access_decision,
+                "security_control_triggered": input.security_control_triggered
+            },
+            "pass_fail": input.pass_fail,
+            "security_meaning": "The attacker can capture protected encrypted material, but the cloned signal cannot be reused to open the vehicle because AIACS validates certificate binding, freshness, replay protection, and session integrity.",
+            "created_at_nepal_time": created_at_nepal_time
+        });
+
+        write_pretty_json(&protected_metadata_path, &protected_metadata)?;
+        write_pretty_json(&evidence_path, &evidence)?;
+        Ok(evidence_path_for_report)
     }
 
     fn save_diagnostic_evidence(
@@ -5344,6 +5546,19 @@ struct DiagnosticEvidenceInput<'a> {
     created_at: DateTime<Utc>,
 }
 
+struct ProtectedAttackerCaptureInput<'a> {
+    definition: DiagnosticDefinition,
+    context: &'a VisibleProvisioningContext,
+    certificate_id: &'a str,
+    session_id: &'a str,
+    actual_result: &'a str,
+    protected_result: &'a str,
+    access_decision: &'a str,
+    security_control_triggered: &'a str,
+    pass_fail: &'a str,
+    created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SelectedReplayComparison {
     baseline_result: String,
@@ -5734,15 +5949,17 @@ fn no_aiacs_signal_clone_steps() -> &'static [&'static str] {
 }
 
 fn simulated_protected_clone_capture(
+    attack_name: &str,
     fob_id: &str,
     vehicle_id: &str,
     certificate_id: &str,
     session_id: &str,
     security_control: &str,
     created_at_nepal_time: &str,
-) -> Result<String, AppControllerError> {
+) -> Result<Vec<u8>, AppControllerError> {
     let protected_material = format!(
-        "AIACS_PROTECTED_CAPTURE|{}|{}|{}|{}|{}|{}",
+        "AIACS_PROTECTED_CAPTURE|{}|{}|{}|{}|{}|{}|{}",
+        fingerprint(attack_name.as_bytes()),
         fingerprint(fob_id.as_bytes()),
         fingerprint(vehicle_id.as_bytes()),
         fingerprint(certificate_id.as_bytes()),
@@ -5756,11 +5973,13 @@ fn simulated_protected_clone_capture(
         .map_err(AppControllerError::Backend)?;
     let mut ciphertext_with_tag = encrypted.ciphertext;
     ciphertext_with_tag.extend_from_slice(&encrypted.tag);
-    let ciphertext = general_purpose::STANDARD.encode(ciphertext_with_tag);
+    Ok(ciphertext_with_tag)
+}
 
-    Ok(format!(
-        "AIACS-PROTECTED-CLONE-V1\nalgorithm=AES-256-GCM\nencoding=base64\nciphertext={ciphertext}\ntag=included_in_aes_gcm_output\n"
-    ))
+fn protected_attacker_artifact_dir(fob_id: &str, attack_name: &str) -> PathBuf {
+    PathBuf::from(ATTACKER_ARTIFACTS_DIR)
+        .join(safe_path_component(fob_id))
+        .join(safe_path_component(attack_name))
 }
 
 fn canonical_auth_payload(
@@ -8418,6 +8637,61 @@ mod tests {
     }
 
     #[test]
+    fn test_loaded_cloud_session_metadata_hydrates_selected_completed_context() {
+        let mut controller = AppController::new();
+        bind_custom_context(&mut controller, "HYDRATE");
+
+        let started_at = Utc::now();
+        controller.apply_loaded_provisioning_session_metadata(ProvisioningSessionMetadata {
+            session_id: "SESSION-CRYPTO-HYDRATE".to_string(),
+            customer_id: "CUST-CRYPTO-HYDRATE".to_string(),
+            vehicle_id: "VEH-CRYPTO-HYDRATE".to_string(),
+            fob_id: "FOB-CRYPTO-HYDRATE".to_string(),
+            certificate_id: "CERT-FOB-CRYPTO-HYDRATE".to_string(),
+            auth_status: AUTHENTICATED_STATUS.to_string(),
+            auth_result: AUTHENTICATED_STATUS.to_string(),
+            session_status: SECURE_SESSION_ESTABLISHED_STATUS.to_string(),
+            access_decision: GRANT_ACCESS_DECISION.to_string(),
+            session_algorithm: SESSION_ALGORITHM.to_string(),
+            session_method: SESSION_ALGORITHM.to_string(),
+            provisioning_status: FINALIZED_PROVISIONING_STATUS.to_string(),
+            report_path: IN_APP_REPORT_ONLY_PATH.to_string(),
+            started_at: Some(started_at),
+            completed_at: Some(started_at),
+        });
+
+        let visible = controller.get_visible_provisioning_context();
+        assert_eq!(visible.customer_id, "CUST-CRYPTO-HYDRATE");
+        assert_eq!(visible.vehicle_id, "VEH-CRYPTO-HYDRATE");
+        assert_eq!(visible.fob_id, "FOB-CRYPTO-HYDRATE");
+        assert_eq!(visible.session_id, "SESSION-CRYPTO-HYDRATE");
+        assert_ne!(visible.session_id, "N/A");
+
+        assert_eq!(
+            controller
+                .selected_vehicle_record()
+                .and_then(|record| record.provisioning_status),
+            Some(FINALIZED_PROVISIONING_STATUS.to_string())
+        );
+        let selected_fob = controller
+            .selected_key_fob_record()
+            .expect("selected fob should remain active");
+        assert_eq!(
+            selected_fob.certificate_status,
+            Some(ISSUED_CERTIFICATE_STATUS.to_string())
+        );
+        assert_eq!(
+            selected_fob.provisioning_status,
+            Some(FINALIZED_PROVISIONING_STATUS.to_string())
+        );
+        assert_eq!(controller.last_auth_result, Some(AuthResult::Success));
+        assert_eq!(
+            controller.last_access_decision,
+            Some(AccessDecision::GrantAccess)
+        );
+    }
+
+    #[test]
     fn test_encrypted_key_sync_methods_return_safe_error_without_key_material() {
         let mut controller = AppController::new();
 
@@ -8720,23 +8994,32 @@ mod tests {
         assert_eq!(result.pass_fail, "pass");
         assert_eq!(result.cloud_sync_status, "disabled");
         assert!(!result.customer_id.contains(DEMO_CUSTOMER_ID));
+        assert!(result
+            .evidence_file_path
+            .ends_with("attacker_artifacts/FOB-CRYPTO-PHASE10REPLAY/replay_attack/attacker_clone_evidence.json"));
 
         let evidence =
             fs::read_to_string(&result.evidence_file_path).expect("evidence file should exist");
         assert!(evidence.contains("created_at_nepal_time"));
         assert!(evidence.contains("NPT"));
-        assert!(evidence.contains("\"insecure_baseline_simulation\""));
-        assert!(evidence.contains("\"aiacs_protected_validation\""));
-        assert!(evidence.contains("\"status\": \"vulnerable\""));
-        assert!(evidence.contains("\"access_decision\": \"grant_access\""));
-        assert!(evidence.contains("\"status\": \"protected\""));
+        assert!(evidence.contains("\"aiacs_protected\""));
+        assert!(evidence.contains("protected_cloned_signal.enc"));
+        assert!(evidence.contains("protected_clone_metadata.json"));
+        assert!(evidence.contains("\"attacker_visibility\": \"encrypted_payload_only\""));
         assert!(evidence.contains("\"access_decision\": \"deny_access\""));
         assert!(evidence.contains("FOB-CRYPTO-PHASE10REPLAY"));
         assert!(!evidence.contains("FOB-TEST-001"));
         assert!(!evidence.contains("VEH-TEST-001"));
-        assert!(evidence.contains("\"raw_payload\": \"[REDACTED]\""));
-        assert!(evidence.contains("\"raw_signature\": \"[REDACTED]\""));
-        assert!(evidence.contains("\"raw_nonce\": \"[REDACTED]\""));
+        let artifact_dir = PathBuf::from(ATTACKER_ARTIFACTS_DIR)
+            .join("FOB-CRYPTO-PHASE10REPLAY")
+            .join("replay_attack");
+        let protected = fs::read(artifact_dir.join("protected_cloned_signal.enc"))
+            .expect("protected replay capture should exist");
+        let protected_text = String::from_utf8_lossy(&protected);
+        assert!(!protected_text.contains("AIACS-PROTECTED-CLONE-V1"));
+        assert!(!protected_text.contains("ciphertext="));
+        assert!(!protected_text.contains("algorithm="));
+        assert!(!protected_text.contains("FOB-CRYPTO-PHASE10REPLAY"));
         for forbidden in [
             "AIACS_MASTER_KEY",
             "DATABASE_URL",
@@ -8750,6 +9033,9 @@ mod tests {
         }
         let _ = fs::remove_dir_all(
             PathBuf::from(DIAGNOSTIC_RESULTS_DIR).join("FOB-CRYPTO-PHASE10REPLAY"),
+        );
+        let _ = fs::remove_dir_all(
+            PathBuf::from(ATTACKER_ARTIFACTS_DIR).join("FOB-CRYPTO-PHASE10REPLAY"),
         );
     }
 
@@ -8782,6 +9068,8 @@ mod tests {
 
         let _ =
             fs::remove_dir_all(PathBuf::from(DIAGNOSTIC_RESULTS_DIR).join("FOB-CRYPTO-REPLAYREAL"));
+        let _ =
+            fs::remove_dir_all(PathBuf::from(ATTACKER_ARTIFACTS_DIR).join("FOB-CRYPTO-REPLAYREAL"));
     }
 
     #[test]
@@ -8812,9 +9100,11 @@ mod tests {
         assert_eq!(result.pass_fail, "pass");
         assert!(result
             .evidence_file_path
-            .ends_with("attacker_artifacts/FOB-CRYPTO-NOAIACS/attacker_clone_evidence.json"));
+            .ends_with("attacker_artifacts/FOB-CRYPTO-NOAIACS/no_aiacs_signal_clone_attack/attacker_clone_evidence.json"));
 
-        let artifact_dir = PathBuf::from(ATTACKER_ARTIFACTS_DIR).join("FOB-CRYPTO-NOAIACS");
+        let artifact_dir = PathBuf::from(ATTACKER_ARTIFACTS_DIR)
+            .join("FOB-CRYPTO-NOAIACS")
+            .join("no_aiacs_signal_clone_attack");
         let insecure_path = artifact_dir.join("insecure_cloned_signal.json");
         let protected_path = artifact_dir.join("protected_cloned_signal.enc");
         let protected_metadata_path = artifact_dir.join("protected_clone_metadata.json");
@@ -8834,13 +9124,18 @@ mod tests {
         assert!(insecure.contains("grant_access"));
         assert!(insecure.contains("attack_successful_vehicle_opened"));
 
-        let protected = fs::read_to_string(&protected_path).expect("protected signal should exist");
-        assert!(protected.starts_with("AIACS-PROTECTED-CLONE-V1"));
-        assert!(protected.contains("ciphertext="));
-        assert!(!protected.trim_start().starts_with('{'));
+        let protected = fs::read(&protected_path).expect("protected signal should exist");
+        assert!(!protected.is_empty());
+        let protected_text = String::from_utf8_lossy(&protected);
+        assert!(!protected_text.contains("AIACS-PROTECTED-CLONE-V1"));
+        assert!(!protected_text.contains("ciphertext="));
+        assert!(!protected_text.contains("algorithm="));
+        assert!(!protected_text.trim_start().starts_with('{'));
         for forbidden_plaintext in [
             "FOB-CRYPTO-NOAIACS",
             "VEH-CRYPTO-NOAIACS",
+            "fob_id",
+            "vehicle_id",
             "unlock_vehicle",
             "static_authorization_value",
             "private_key",
@@ -8848,7 +9143,7 @@ mod tests {
             "AIACS_MASTER_KEY",
         ] {
             assert!(
-                !protected.contains(forbidden_plaintext),
+                !protected_text.contains(forbidden_plaintext),
                 "protected encrypted artifact leaked {forbidden_plaintext}"
             );
         }
@@ -8904,8 +9199,41 @@ mod tests {
         assert_eq!(result.cloud_sync_status, "disabled");
         assert_eq!(controller.diagnostic_dashboard_results().len(), 1);
         assert!(PathBuf::from(&result.evidence_file_path).exists());
+        assert!(result
+            .evidence_file_path
+            .ends_with("attacker_artifacts/FOB-CRYPTO-PHASE10DISABLED/forged_signature/attacker_clone_evidence.json"));
+        let artifact_dir = PathBuf::from(ATTACKER_ARTIFACTS_DIR)
+            .join("FOB-CRYPTO-PHASE10DISABLED")
+            .join("forged_signature");
+        let protected_path = artifact_dir.join("protected_cloned_signal.enc");
+        let metadata_path = artifact_dir.join("protected_clone_metadata.json");
+        let evidence_path = artifact_dir.join("attacker_clone_evidence.json");
+        assert!(protected_path.exists());
+        assert!(metadata_path.exists());
+        assert!(evidence_path.exists());
+        assert!(!artifact_dir.join("insecure_cloned_signal.json").exists());
+        let protected = fs::read(&protected_path).expect("protected capture should exist");
+        let protected_text = String::from_utf8_lossy(&protected);
+        for forbidden in [
+            "AIACS-PROTECTED-CLONE-V1",
+            "ciphertext=",
+            "algorithm=",
+            "FOB-CRYPTO-PHASE10DISABLED",
+            "fob_id",
+            "vehicle_id",
+            "unlock_vehicle",
+            "static_authorization_value",
+        ] {
+            assert!(
+                !protected_text.contains(forbidden),
+                "protected attack artifact leaked {forbidden}"
+            );
+        }
         let _ = fs::remove_dir_all(
             PathBuf::from(DIAGNOSTIC_RESULTS_DIR).join("FOB-CRYPTO-PHASE10DISABLED"),
+        );
+        let _ = fs::remove_dir_all(
+            PathBuf::from(ATTACKER_ARTIFACTS_DIR).join("FOB-CRYPTO-PHASE10DISABLED"),
         );
     }
 
@@ -8932,6 +9260,9 @@ mod tests {
         );
         let _ = fs::remove_dir_all(
             PathBuf::from(DIAGNOSTIC_RESULTS_DIR).join("FOB-CRYPTO-PHASE10CLEAR"),
+        );
+        let _ = fs::remove_dir_all(
+            PathBuf::from(ATTACKER_ARTIFACTS_DIR).join("FOB-CRYPTO-PHASE10CLEAR"),
         );
     }
 
@@ -9061,6 +9392,9 @@ mod tests {
         assert!(controller.active_auth_proof.is_some());
         assert!(controller.active_challenge.is_some());
         assert!(!result.customer_id.contains(DEMO_CUSTOMER_ID));
+        let _ = fs::remove_dir_all(
+            PathBuf::from(ATTACKER_ARTIFACTS_DIR).join("FOB-CRYPTO-PHASE101PROOF"),
+        );
     }
 
     #[test]
