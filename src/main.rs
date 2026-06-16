@@ -2919,7 +2919,7 @@ impl AIACSApp {
             },
         );
         let action = if selected {
-            disabled_compact_button(icon_name, "Selected", ButtonKind::DiagnosticPrimary)
+            disabled_compact_button(icon_name, "Selected", ButtonKind::SelectedSuccess)
         } else if self.management_state.cloud_operation_in_progress {
             disabled_compact_button(icon_name, "Select", ButtonKind::Nav)
         } else {
@@ -3015,6 +3015,17 @@ impl AIACSApp {
 
     fn view_credential_storage_tab(&self) -> Element<'_, Message> {
         let storage_summary = self.controller.credential_storage_summary();
+        let recovery_test_completed = self.cloud_sync_encrypted_key_status == "Recovery tested";
+        let recovery_button_label = if recovery_test_completed {
+            "Recovery Tested"
+        } else {
+            "Test / Decrypt Selected Fob Backup"
+        };
+        let recovery_button_kind = if recovery_test_completed {
+            ButtonKind::SelectedSuccess
+        } else {
+            ButtonKind::Nav
+        };
         let rows = storage_summary.iter().fold(
             column![
                 text("Credential Storage")
@@ -3027,9 +3038,9 @@ impl AIACSApp {
                     .style(theme::Text::Color(SECONDARY_TEXT)),
                 wide_compact_button(
                     "lock",
-                    "Test / Decrypt Selected Fob Backup",
+                    recovery_button_label,
                     Message::TestDecryptSelectedFobBackup,
-                    ButtonKind::Nav
+                    recovery_button_kind
                 ),
                 text("Decrypted private key file is sensitive. Do not share this file.")
                     .size(11)
@@ -3798,6 +3809,7 @@ enum ButtonKind {
     StepAction,
     Nav,
     DiagnosticPrimary,
+    SelectedSuccess,
     Tab(bool),
     Artifact(bool),
 }
@@ -3815,6 +3827,7 @@ impl iced::widget::button::StyleSheet for ButtonStyle {
             ButtonKind::StepAction => (PRIMARY_TEXT, ACCENT_PINK),
             ButtonKind::Nav => (ACCENT_BLUE, ACCENT_BLUE),
             ButtonKind::DiagnosticPrimary => (PRIMARY_TEXT, ACCENT_PINK),
+            ButtonKind::SelectedSuccess => (SUCCESS_GREEN, SUCCESS_GREEN),
             ButtonKind::Tab(selected) => {
                 if selected {
                     (ACCENT_PINK, ACCENT_PINK)
@@ -3832,6 +3845,7 @@ impl iced::widget::button::StyleSheet for ButtonStyle {
         };
         let background = match self.kind {
             ButtonKind::DiagnosticPrimary => Color::from_rgb(0.22, 0.14, 0.19),
+            ButtonKind::SelectedSuccess => Color::from_rgb(0.10, 0.17, 0.12),
             _ => BUTTON_BG,
         };
 
@@ -3840,7 +3854,10 @@ impl iced::widget::button::StyleSheet for ButtonStyle {
             text_color,
             border: Border {
                 color: border_color,
-                width: if matches!(self.kind, ButtonKind::DiagnosticPrimary) {
+                width: if matches!(
+                    self.kind,
+                    ButtonKind::DiagnosticPrimary | ButtonKind::SelectedSuccess
+                ) {
                     1.4
                 } else {
                     1.0
@@ -3991,10 +4008,19 @@ fn wide_compact_button<'a>(
     message: Message,
     kind: ButtonKind,
 ) -> Element<'a, Message> {
+    let label_color = if matches!(kind, ButtonKind::SelectedSuccess) {
+        SUCCESS_GREEN
+    } else {
+        PRIMARY_TEXT
+    };
+
     button(
         row![
             icon(icon_name, 16),
-            text(label).size(11).font(Font::MONOSPACE)
+            text(label)
+                .size(11)
+                .font(Font::MONOSPACE)
+                .style(theme::Text::Color(label_color))
         ]
         .spacing(7)
         .align_items(Alignment::Center),
@@ -4035,13 +4061,19 @@ fn disabled_compact_button<'a>(
     label: &'a str,
     kind: ButtonKind,
 ) -> Element<'a, Message> {
+    let label_color = if matches!(kind, ButtonKind::SelectedSuccess) {
+        SUCCESS_GREEN
+    } else {
+        MUTED_TEXT
+    };
+
     button(
         row![
             icon(icon_name, 16),
             text(label)
                 .size(11)
                 .font(Font::MONOSPACE)
-                .style(theme::Text::Color(MUTED_TEXT))
+                .style(theme::Text::Color(label_color))
         ]
         .spacing(7)
         .align_items(Alignment::Center),
