@@ -2672,23 +2672,28 @@ impl AIACSApp {
     ) -> Element<'_, Message> {
         let buttons = column![
             row![
-                diagnostic_button(
+                self.diagnostic_action_button(
                     "No-AIACS Test",
                     "no_aiacs_signal_clone_attack",
                     selected_context_ready,
                     ButtonKind::DiagnosticPrimary
                 ),
-                diagnostic_button("Replay Attack", "replay_attack", enabled, ButtonKind::Nav),
+                self.diagnostic_action_button(
+                    "Replay Attack",
+                    "replay_attack",
+                    enabled,
+                    ButtonKind::Nav
+                ),
             ]
             .spacing(6),
             row![
-                diagnostic_button(
+                self.diagnostic_action_button(
                     "Forged Signature",
                     "forged_signature",
                     enabled,
                     ButtonKind::Nav
                 ),
-                diagnostic_button(
+                self.diagnostic_action_button(
                     "Fake Certificate",
                     "fake_certificate",
                     enabled,
@@ -2697,23 +2702,28 @@ impl AIACSApp {
             ]
             .spacing(6),
             row![
-                diagnostic_button(
+                self.diagnostic_action_button(
                     "Identity Mismatch",
                     "identity_mismatch",
                     enabled,
                     ButtonKind::Nav
                 ),
-                diagnostic_button("Delayed Relay", "delayed_relay", enabled, ButtonKind::Nav),
+                self.diagnostic_action_button(
+                    "Delayed Relay",
+                    "delayed_relay",
+                    enabled,
+                    ButtonKind::Nav
+                ),
             ]
             .spacing(6),
             row![
-                diagnostic_button(
+                self.diagnostic_action_button(
                     "Packet Tampering",
                     "packet_tampering",
                     enabled,
                     ButtonKind::Nav
                 ),
-                diagnostic_button(
+                self.diagnostic_action_button(
                     "Tampered Ciphertext",
                     "tampered_ciphertext",
                     enabled,
@@ -2722,13 +2732,13 @@ impl AIACSApp {
             ]
             .spacing(6),
             row![
-                diagnostic_button(
+                self.diagnostic_action_button(
                     "Wrong Session Key",
                     "wrong_session_key",
                     enabled,
                     ButtonKind::Nav
                 ),
-                diagnostic_button(
+                self.diagnostic_action_button(
                     "Wrong Master Key",
                     "wrong_master_key_recovery",
                     enabled,
@@ -2744,6 +2754,32 @@ impl AIACSApp {
             .padding(10)
             .style(container_style(PanelKind::Elevated))
             .into()
+    }
+
+    fn diagnostic_action_button(
+        &self,
+        label: &'static str,
+        attack_key: &'static str,
+        enabled: bool,
+        default_kind: ButtonKind,
+    ) -> Element<'static, Message> {
+        let tested = self
+            .controller
+            .diagnostic_dashboard_results()
+            .iter()
+            .any(|result| result.attack_name == attack_key);
+        let display_label = if tested {
+            diagnostic_tested_label(label)
+        } else {
+            label
+        };
+        let button_kind = if tested {
+            ButtonKind::SelectedSuccess
+        } else {
+            default_kind
+        };
+
+        diagnostic_button(&display_label, attack_key, enabled, button_kind)
     }
 
     fn diagnostic_result_card(
@@ -3740,6 +3776,13 @@ enum StepStatus {
 }
 
 #[derive(Clone, Copy)]
+enum BadgeState {
+    Neutral,
+    Success,
+    Error,
+}
+
+#[derive(Clone, Copy)]
 enum PanelKind {
     Window,
     Status,
@@ -3753,6 +3796,7 @@ enum PanelKind {
     StatusChip(StepStatus),
     StatusDot(Color),
     Badge,
+    StatusBadge(BadgeState),
 }
 
 #[derive(Clone, Copy)]
@@ -3785,6 +3829,17 @@ impl iced::widget::container::StyleSheet for PanelStyle {
             },
             PanelKind::StatusDot(color) => (color, color, 999.0),
             PanelKind::Badge => (BUTTON_BG, BUTTON_BORDER, 5.0),
+            PanelKind::StatusBadge(BadgeState::Neutral) => (BUTTON_BG, BUTTON_BORDER, 5.0),
+            PanelKind::StatusBadge(BadgeState::Success) => (
+                Color::from_rgb(0.10, 0.17, 0.12),
+                Color::from_rgb(0.28, 0.50, 0.31),
+                5.0,
+            ),
+            PanelKind::StatusBadge(BadgeState::Error) => (
+                Color::from_rgb(0.19, 0.10, 0.12),
+                Color::from_rgb(0.55, 0.23, 0.27),
+                5.0,
+            ),
         };
 
         iced::widget::container::Appearance {
@@ -4099,6 +4154,22 @@ fn diagnostic_label(attack_key: &str) -> &'static str {
     }
 }
 
+fn diagnostic_tested_label(label: &'static str) -> &'static str {
+    match label {
+        "No-AIACS Test" => "No-AIACS Tested",
+        "Replay Attack" => "Replay Tested",
+        "Forged Signature" => "Signature Tested",
+        "Fake Certificate" => "Certificate Tested",
+        "Identity Mismatch" => "Identity Tested",
+        "Delayed Relay" => "Relay Tested",
+        "Packet Tampering" => "Packet Tested",
+        "Tampered Ciphertext" => "Ciphertext Tested",
+        "Wrong Session Key" => "Session Key Tested",
+        "Wrong Master Key" => "Master Key Tested",
+        _ => "Tested",
+    }
+}
+
 fn format_diagnostic_execution_step(index: usize, step: &str) -> String {
     let step_number = index + 1;
     let redundant_prefix = format!("Step {}: ", step_number);
@@ -4343,7 +4414,7 @@ fn status_badge(label: &str) -> Element<'_, Message> {
             .style(theme::Text::Color(badge_color(label))),
     )
     .padding([5, 8])
-    .style(container_style(PanelKind::Badge))
+    .style(container_style(PanelKind::StatusBadge(badge_state(label))))
     .into()
 }
 
@@ -4371,6 +4442,7 @@ fn cloud_ui_status_color(status: CloudUiStatus) -> Color {
 fn badge_color(value: &str) -> Color {
     match value {
         "Not Initialized" => PENDING_TEXT,
+        "Ready" | "PASS" => SUCCESS_GREEN,
         "Vehicle Connected"
         | "Connected"
         | "Detected"
@@ -4393,8 +4465,16 @@ fn badge_color(value: &str) -> Color {
         | "Access Certificate Issued"
         | "Key Verified"
         | "Session Active" => SUCCESS_GREEN,
-        "Error" | "Failed" => DANGER_RED,
+        "Not Ready" | "FAIL" | "Error" | "Failed" => DANGER_RED,
         _ => PRIMARY_TEXT,
+    }
+}
+
+fn badge_state(value: &str) -> BadgeState {
+    match value {
+        "Ready" | "PASS" => BadgeState::Success,
+        "Not Ready" | "FAIL" | "Error" | "Failed" => BadgeState::Error,
+        _ => BadgeState::Neutral,
     }
 }
 
