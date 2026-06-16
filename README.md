@@ -65,26 +65,27 @@ The main desktop application is the **Vehicle Access Provisioning Console**. Sec
 
 1. [Overview](#overview)
 2. [Key Features](#key-features)
-3. [Project Structure](#project-structure)
-4. [System Architecture](#system-architecture)
-5. [Workflow Illustration](#workflow-illustration)
-6. [Demo Records](#demo-records)
-7. [GUI Pages](#gui-pages)
-8. [Cryptographic Protocol Flow](#cryptographic-protocol-flow)
-9. [Diagnostics and Attack Validation](#diagnostics-and-attack-validation)
-10. [Cloud Database Support](#cloud-database-support)
-11. [Environment Configuration](#environment-configuration)
-12. [Neon PostgreSQL Setup](#neon-postgresql-setup)
-13. [Installation](#installation)
-14. [Running the Application](#running-the-application)
-15. [Docker Support](#docker-support)
-16. [Testing and Validation](#testing-and-validation)
-17. [Runtime Generated Files](#runtime-generated-files)
-18. [Provisioning Audit Report](#provisioning-audit-report)
-19. [Screenshots](#screenshots)
-20. [Security Design Notes](#security-design-notes)
-21. [Academic Scope and Limitations](#academic-scope-and-limitations)
-22. [License](#license)
+3. [Performance and Latency Metrics](#performance-and-latency-metrics)
+4. [Project Structure](#project-structure)
+5. [System Architecture](#system-architecture)
+6. [Workflow Illustration](#workflow-illustration)
+7. [Demo Records](#demo-records)
+8. [GUI Pages](#gui-pages)
+9. [Cryptographic Protocol Flow](#cryptographic-protocol-flow)
+10. [Diagnostics and Attack Validation](#diagnostics-and-attack-validation)
+11. [Cloud Database Support](#cloud-database-support)
+12. [Environment Configuration](#environment-configuration)
+13. [Neon PostgreSQL Setup](#neon-postgresql-setup)
+14. [Installation](#installation)
+15. [Running the Application](#running-the-application)
+16. [Docker Support](#docker-support)
+17. [Testing and Validation](#testing-and-validation)
+18. [Runtime Generated Files](#runtime-generated-files)
+19. [Provisioning Audit Report](#provisioning-audit-report)
+20. [Screenshots](#screenshots)
+21. [Security Design Notes](#security-design-notes)
+22. [Academic Scope and Limitations](#academic-scope-and-limitations)
+23. [License](#license)
 
 ---
 
@@ -121,6 +122,34 @@ AIACS is an academic prototype. It is designed to demonstrate protocol structure
 | Attacker artifacts    | Report-friendly No-AIACS and protected attack evidence folders                         |
 | Docker packaging      | Reproducible build/test/diagnostics container support                                  |
 | Secret handling       | Public debug/log/report output redacts private keys and session secrets                |
+
+---
+
+## Performance and Latency Metrics
+
+AIACS records operation latency for major GUI-controlled workflows using Rust's `Instant` timer. Latency entries are written to the event log with safe metadata only.
+
+Measured operations include:
+
+- startup cloud connection
+- customer, vehicle, and key fob cloud loading
+- vehicle access provisioning steps
+- certificate issuance
+- authentication verification
+- secure session activation
+- encrypted key recovery testing
+- diagnostics and attack validation runs
+
+Example event log output:
+
+```text
+[LATENCY] Startup cloud connection completed in 423 ms
+[LATENCY] Issue Access Certificate completed in 38 ms
+[LATENCY] Verify Authentication completed in 16 ms
+[LATENCY] Replay Attack diagnostic completed in 91 ms
+```
+
+Local cryptographic operations usually complete faster than cloud synchronization because cloud operations include Neon PostgreSQL network round-trip time.
 
 ---
 
