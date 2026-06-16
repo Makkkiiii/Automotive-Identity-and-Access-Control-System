@@ -2,7 +2,7 @@
   "access_decision": "grant_access",
   "attack_name": "no_aiacs_signal_clone_attack",
   "certificate_id": "not_issued",
-  "created_at_nepal_time": "2026-06-16 16:41:48 NPT",
+  "created_at_nepal_time": "2026-06-16 15:56:53 NPT",
   "customer_id": "CUST-429BAB3B",
   "diagnostic_status": "vulnerable",
   "fob_id": "FOB-5AE984AE",
