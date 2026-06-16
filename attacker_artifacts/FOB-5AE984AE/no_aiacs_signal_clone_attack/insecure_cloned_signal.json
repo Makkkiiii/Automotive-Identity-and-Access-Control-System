@@ -1,0 +1,21 @@
+{
+  "attacker_observation": "The attacker can read and clone the plaintext signal because no certificate, challenge-response, freshness, replay protection, or session encryption is enforced.",
+  "baseline_access_decision": "grant_access",
+  "baseline_result": "attack_successful_vehicle_opened",
+  "captured_fob_identifier": "FOB-5AE984AE",
+  "captured_signal_payload": {
+    "command": "unlock_vehicle",
+    "fob_id": "FOB-5AE984AE",
+    "static_authorization_value": "PLAINTEXT_STATIC_SIGNAL_FOR_SIMULATION",
+    "vehicle_id": "VEH-A485454F"
+  },
+  "captured_vehicle_identifier": "VEH-A485454F",
+  "command": "unlock_vehicle",
+  "created_at_nepal_time": "2026-06-16 16:41:48 NPT",
+  "customer_id": "CUST-429BAB3B",
+  "fob_id": "FOB-5AE984AE",
+  "mode": "no_aiacs_baseline",
+  "signal_type": "static_plaintext_unlock_signal",
+  "vehicle_id": "VEH-A485454F",
+  "warning": "INSECURE BASELINE MODE - PLAINTEXT SIGNAL CAPTURE"
+}
