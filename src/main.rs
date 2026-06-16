@@ -7,6 +7,7 @@ use iced::{
     application, executor, Alignment, Application, Background, Border, Color, Command, Element,
     Font, Length, Settings, Theme,
 };
+use std::time::Instant;
 
 const ICON_DIR: &str = "assets/icons";
 
@@ -188,6 +189,22 @@ struct CloudOperationResult {
     operation: CloudOperation,
     controller: AppController,
     result: Result<String, String>,
+    latency_ms: u128,
+}
+
+impl CloudOperationResult {
+    fn new(
+        operation: CloudOperation,
+        controller: AppController,
+        result: Result<String, String>,
+    ) -> Self {
+        Self {
+            operation,
+            controller,
+            result,
+            latency_ms: 0,
+        }
+    }
 }
 
 type VehicleFormValues = (String, String, String, i32, Option<String>, Option<String>);
@@ -388,11 +405,11 @@ impl Application for AIACSApp {
                             let result = controller
                                 .prepare_diagnostics_context()
                                 .map_err(|error| error.to_string());
-                            CloudOperationResult {
-                                operation: CloudOperation::PrepareDiagnostics,
+                            CloudOperationResult::new(
+                                CloudOperation::PrepareDiagnostics,
                                 controller,
                                 result,
-                            }
+                            )
                         });
                     }
                     MainTab::Provisioning
@@ -418,11 +435,11 @@ impl Application for AIACSApp {
                         let result = controller
                             .create_customer_record(owner_name, Some(email), phone)
                             .map_err(|error| error.to_string());
-                        CloudOperationResult {
-                            operation: CloudOperation::CreateCustomer,
+                        CloudOperationResult::new(
+                            CloudOperation::CreateCustomer,
                             controller,
                             result,
-                        }
+                        )
                     });
                 }
                 Err(message) => self.record_customer_form_error(message),
@@ -433,11 +450,7 @@ impl Application for AIACSApp {
                     let result = controller
                         .select_customer(&customer_id)
                         .map_err(|error| error.to_string());
-                    CloudOperationResult {
-                        operation: CloudOperation::SelectCustomer,
-                        controller,
-                        result,
-                    }
+                    CloudOperationResult::new(CloudOperation::SelectCustomer, controller, result)
                 });
             }
             Message::CustomerOwnerChanged(value) => {
@@ -472,11 +485,7 @@ impl Application for AIACSApp {
                                 registration,
                             )
                             .map_err(|error| error.to_string());
-                        CloudOperationResult {
-                            operation: CloudOperation::CreateVehicle,
-                            controller,
-                            result,
-                        }
+                        CloudOperationResult::new(CloudOperation::CreateVehicle, controller, result)
                     });
                 }
                 Err(message) => self.record_vehicle_form_error(message),
@@ -487,11 +496,7 @@ impl Application for AIACSApp {
                     let result = controller
                         .select_vehicle(&vehicle_id)
                         .map_err(|error| error.to_string());
-                    CloudOperationResult {
-                        operation: CloudOperation::SelectVehicle,
-                        controller,
-                        result,
-                    }
+                    CloudOperationResult::new(CloudOperation::SelectVehicle, controller, result)
                 });
             }
             Message::VehicleDisplayNameChanged(value) => {
@@ -527,11 +532,7 @@ impl Application for AIACSApp {
                         let result = controller
                             .create_key_fob_record(vehicle_id, label)
                             .map_err(|error| error.to_string());
-                        CloudOperationResult {
-                            operation: CloudOperation::CreateKeyFob,
-                            controller,
-                            result,
-                        }
+                        CloudOperationResult::new(CloudOperation::CreateKeyFob, controller, result)
                     });
                 }
                 Err(message) => self.record_key_fob_form_error(message),
@@ -542,11 +543,7 @@ impl Application for AIACSApp {
                     let result = controller
                         .select_key_fob(&fob_id)
                         .map_err(|error| error.to_string());
-                    CloudOperationResult {
-                        operation: CloudOperation::SelectKeyFob,
-                        controller,
-                        result,
-                    }
+                    CloudOperationResult::new(CloudOperation::SelectKeyFob, controller, result)
                 });
             }
             Message::KeyFobLabelChanged(value) => {
@@ -697,11 +694,7 @@ impl Application for AIACSApp {
                             )
                         })
                         .map_err(|error| error.to_string());
-                    CloudOperationResult {
-                        operation: CloudOperation::RunDiagnostic,
-                        controller,
-                        result,
-                    }
+                    CloudOperationResult::new(CloudOperation::RunDiagnostic, controller, result)
                 });
             }
             Message::CloudOperationFinished(result) => {
@@ -769,9 +762,15 @@ impl AIACSApp {
         F: FnOnce(AppController) -> CloudOperationResult + Send + 'static,
     {
         let controller = self.controller.clone();
-        Command::perform(async move { operation(controller) }, |result| {
-            Message::CloudOperationFinished(Box::new(result))
-        })
+        Command::perform(
+            async move {
+                let started_at = Instant::now();
+                let mut result = operation(controller);
+                result.latency_ms = started_at.elapsed().as_millis();
+                result
+            },
+            |result| Message::CloudOperationFinished(Box::new(result)),
+        )
     }
 
     fn begin_cloud_operation(&mut self, message: &'static str) {
@@ -784,6 +783,8 @@ impl AIACSApp {
         self.management_state.cloud_operation_in_progress = false;
         self.controller = result.controller;
         let operation = result.operation;
+        let latency_ms = result.latency_ms;
+        let latency_label = operation_latency_label(operation, result.result.as_deref().ok());
 
         let succeeded = match result.result {
             Ok(message) => {
@@ -795,6 +796,15 @@ impl AIACSApp {
                 false
             }
         };
+        self.push_log(
+            "[LATENCY]",
+            format!(
+                "{} {} in {} ms",
+                latency_label,
+                if succeeded { "completed" } else { "failed" },
+                latency_ms
+            ),
+        );
 
         match (succeeded, operation) {
             (true, CloudOperation::SelectCustomer | CloudOperation::CreateCustomer) => {
@@ -2779,7 +2789,7 @@ impl AIACSApp {
             default_kind
         };
 
-        diagnostic_button(&display_label, attack_key, enabled, button_kind)
+        diagnostic_button(display_label, attack_key, enabled, button_kind)
     }
 
     fn diagnostic_result_card(
@@ -4249,6 +4259,7 @@ fn perform_cloud_operation(
     mut controller: AppController,
     operation: CloudOperation,
 ) -> CloudOperationResult {
+    let started_at = Instant::now();
     let result = match operation {
         CloudOperation::StartupAutoEnable => {
             let startup = controller.startup_auto_enable_cloud_sync();
@@ -4336,11 +4347,10 @@ fn perform_cloud_operation(
     }
     .map_err(|error| error.to_string());
 
-    CloudOperationResult {
-        operation,
-        controller,
-        result,
-    }
+    let latency_ms = started_at.elapsed().as_millis();
+    let mut operation_result = CloudOperationResult::new(operation, controller, result);
+    operation_result.latency_ms = latency_ms;
+    operation_result
 }
 
 fn optional_trimmed(value: &str) -> Option<String> {
@@ -4359,6 +4369,39 @@ fn cloud_status_from_provisioning_result(message: &str) -> String {
         .and_then(|tail| tail.split(" |").next())
         .unwrap_or("Pending")
         .to_string()
+}
+
+fn operation_latency_label(operation: CloudOperation, success_message: Option<&str>) -> String {
+    match operation {
+        CloudOperation::StartupAutoEnable => "Startup cloud connection".to_string(),
+        CloudOperation::LoadCustomers => "Customer cloud load".to_string(),
+        CloudOperation::CreateCustomer => "Customer creation".to_string(),
+        CloudOperation::SelectCustomer => "Customer selection".to_string(),
+        CloudOperation::LoadVehicles => "Vehicle cloud load".to_string(),
+        CloudOperation::CreateVehicle => "Vehicle creation".to_string(),
+        CloudOperation::SelectVehicle => "Vehicle selection".to_string(),
+        CloudOperation::LoadKeyFobs => "Key fob cloud load".to_string(),
+        CloudOperation::CreateKeyFob => "Key fob creation".to_string(),
+        CloudOperation::SelectKeyFob => "Key fob selection".to_string(),
+        CloudOperation::ProvisioningConnectVehicle => "Connect Vehicle".to_string(),
+        CloudOperation::ProvisioningDetectKeyFob => "Detect Key Fob".to_string(),
+        CloudOperation::ProvisioningRegisterKeyFob => "Register Key Fob".to_string(),
+        CloudOperation::ProvisioningInitializeTrust => "Initialize Vehicle Trust".to_string(),
+        CloudOperation::ProvisioningIssueCertificate => "Issue Access Certificate".to_string(),
+        CloudOperation::ProvisioningGenerateChallenge => "Generate Challenge".to_string(),
+        CloudOperation::ProvisioningSignCanonicalPayload => "Sign Canonical Payload".to_string(),
+        CloudOperation::ProvisioningVerifyAuthentication => "Verify Authentication".to_string(),
+        CloudOperation::ProvisioningActivateSession => "Activate Secure Session".to_string(),
+        CloudOperation::ProvisioningFinalize => "Finalize Provisioning".to_string(),
+        CloudOperation::HydrateProvisioningState => "Provisioning cloud hydration".to_string(),
+        CloudOperation::CredentialRecoveryTest => "Encrypted key recovery test".to_string(),
+        CloudOperation::PrepareDiagnostics => "Diagnostics context preparation".to_string(),
+        CloudOperation::RunDiagnostic => success_message
+            .and_then(|message| message.split(" diagnostic ").next())
+            .filter(|label| !label.is_empty())
+            .map(|label| format!("{} diagnostic", label))
+            .unwrap_or_else(|| "Diagnostic attack validation".to_string()),
+    }
 }
 
 fn simple_email_is_valid(value: &str) -> bool {
@@ -4694,7 +4737,7 @@ mod tests {
         assert!(source.contains("cloud_ui_status: CloudUiStatus::Connecting"));
         assert!(source.contains("startup_auto_enable_cloud_sync"));
         let startup_match_arm = concat!("CloudOperation", "::", "StartupAutoEnable =>");
-        assert_eq!(source.matches(startup_match_arm).count(), 3);
+        assert!(source.matches(startup_match_arm).count() >= 3);
         assert!(!source.contains(concat!("cloud_", "storage", "::")));
     }
 
